@@ -264,5 +264,6 @@ Architecture notes:
 - [Database & Migrations](architecture/database-and-migrations.md)
 - [Testing](architecture/testing.md)
 - [LLM Provider Layer](architecture/llm-provider-layer.md)
+- [Trader Pipeline & Diagnostics](architecture/trader-pipeline.md)
 
 Completed plans: see [completed/](completed/).
