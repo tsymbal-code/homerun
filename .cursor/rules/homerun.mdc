@@ -1,0 +1,108 @@
+---
+description: Homerun base rules — read first. Project runs on remote polyhome-1, not localhost.
+alwaysApply: true
+---
+
+# Homerun base rules for Cursor
+
+This rule loads on every chat in this repo. The authoritative agent
+guides are [`agents.md`](mdc:agents.md), [`deploy/AGENTS.md`](mdc:deploy/AGENTS.md),
+and [`CLAUDE.md`](mdc:CLAUDE.md). Open them before any non-trivial
+task. The summary below is what you must internalize even before
+reading those.
+
+## The single most important fact
+
+**Homerun does NOT run on the operator's local machine.** The full
+application stack (postgres, redis, backend, three worker planes,
+frontend) lives on remote server `polyhome-1` (SSH alias resolved via
+`~/.ssh/config`) under `/home/polyhome/homerun`. Locally is **editor
++ git only** — no postgres, no backend, no scanner, no Vite dev
+server.
+
+Concretely:
+
+- `localhost:8888`, `localhost:3000`, `localhost:5432` — **nothing
+  there**. Don't `curl` or `psql` against them.
+- `docker compose up` locally — produces an empty stack disconnected
+  from prod state. Don't treat its output as representative.
+- `alembic upgrade head` locally — runs against an empty DB, not the
+  production schema.
+
+## How to actually look at the running system
+
+Every diagnostic command must be wrapped in SSH:
+
+```bash
+ssh polyhome-1 'cd /home/polyhome/homerun && docker compose ps'
+ssh polyhome-1 'cd /home/polyhome/homerun && docker compose logs --tail=200 backend'
+ssh polyhome-1 'curl -fsS http://127.0.0.1:8888/api/strategies' | jq
+ssh polyhome-1 'cd /home/polyhome/homerun && docker compose exec -T postgres \
+  psql -U homerun -d homerun -c "select id, llm_provider from app_settings"'
+```
+
+Full command catalog (logs, redis, exec, redeploy recipes, breakage
+diagnostics) lives in [`deploy/AGENTS.md`](mdc:deploy/AGENTS.md).
+
+## Deploy cycle
+
+Code reaches the server **only** through `./deploy/sync_remote.sh`
+from the local checkout. `git push` does nothing for the running
+stack — there is no CI deploying.
+
+```bash
+./deploy/sync_remote.sh                                  # rsync + remote redeploy
+DEPLOY_AFTER_SYNC=0 ./deploy/sync_remote.sh              # sync, don't restart
+ssh polyhome-1 'cd /home/polyhome/homerun && BUILD_IMAGES=0 bash deploy/remote_redeploy.sh'
+ssh polyhome-1 'cd /home/polyhome/homerun && docker compose restart backend'
+```
+
+## Code conventions (excerpted from `agents.md`)
+
+- **Ship complete code only.** No stubs, no TODOs, no "implement
+  later". This is a financial app; partial code = silent losses.
+- **Clean cut, not back-compat.** Replace, don't preserve. Delete the
+  old, write the new. No tombstone comments.
+- **No speculative abstractions.** Three similar lines beats a
+  premature abstraction. Add complexity only when the current task
+  demands it.
+- **Trust internal code.** Single-user, locally-deployed app — no
+  CSRF, no auth on internal calls, no defensive checks for impossible
+  states. Validate only at true boundaries.
+- **Delete, don't deprecate.** Remove the route, the column, the
+  component, the type — entirely.
+
+## Documentation conventions
+
+- All docs in this repo are **English**: `docs/plans/`,
+  `docs/plans/architecture/`, code comments, commit messages.
+  Single exception: `docs/strategies/` is Ukrainian by explicit
+  operator request.
+- Conversation with the operator is in **Ukrainian** when running
+  interactively.
+- Plans follow Ralphex format ([`docs/plans/README.md`](mdc:docs/plans/README.md)).
+- Every commit produced for a plan carries a `Plan: <NNNN>` git
+  trailer. Retrieve: `git log --grep='Plan: 0001'`.
+
+## Hard "don't" list
+
+- Don't `git pull` on the server. The tree is rsynced, not cloned.
+- Don't edit files directly on the server (vim/nano over SSH). The
+  next `sync_remote.sh --delete` overwrites.
+- Don't delete or `chown` `data/postgres/` — that is the live
+  database. Postgres inside the container runs as uid 70.
+- Don't `rm -rf data/` locally either; `sync_remote.sh` does not
+  exclude `data/`, so an `rsync --delete` would wipe the server's
+  bind mount.
+- Don't `docker compose up` locally and treat its output as prod.
+
+## Where to read more
+
+| Topic | File |
+|---|---|
+| Full agent codex (architecture, patterns, footguns) | [`agents.md`](mdc:agents.md) |
+| Server access, logs, redeploy, recipes | [`deploy/AGENTS.md`](mdc:deploy/AGENTS.md) |
+| Plans system + commit-trailer convention | [`docs/plans/README.md`](mdc:docs/plans/README.md) |
+| Runtime topology and worker planes | [`docs/plans/architecture/system-overview.md`](mdc:docs/plans/architecture/system-overview.md) |
+| Backend / Frontend / DB / Settings / Testing notes | [`docs/plans/architecture/`](mdc:docs/plans/architecture/) |
+| Strategies (28 of them, one doc each, Ukrainian) | [`docs/strategies/`](mdc:docs/strategies/) |

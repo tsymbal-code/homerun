@@ -15,7 +15,9 @@ hold/cut.
 
 - **Файл**: [`backend/services/strategies/manual_manage_hold.py`](../../backend/services/strategies/manual_manage_hold.py)
 - **Клас**: `ManualManageHoldStrategy`
-- **slug**: `manual_manage_hold`
+- **slug у БД**: `manual_wallet_position` (той самий клас; історичний
+  файл-slug `manual_manage_hold` зберігся в репозиторії, але БД-row
+  зареєстрована як `manual_wallet_position`)
 - **source_key**: `manual`
 - **Subscriptions**: `—` (нічого не слухає; тільки реагує на periodic
   position-state-tick)
