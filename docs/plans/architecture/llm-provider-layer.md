@@ -59,13 +59,13 @@ Implementations:
 - `AnthropicProvider`, `GoogleProvider` — bespoke implementations for
   their non-OpenAI REST protocols.
 - `XAIProvider`, `DeepSeekProvider`, `OpenRouterProvider`,
-  `OllamaProvider`, `LMStudioProvider` — thin wrappers around
-  `OpenAIProvider` with their own `base_url` and (where needed)
-  custom `model_prefixes` or `structured_output_format`.
+  `OllamaProvider`, `LMStudioProvider`, `NvidiaProvider` — thin
+  wrappers around `OpenAIProvider` with their own `base_url` and
+  (where needed) custom `model_prefixes` or `structured_output_format`.
 
 ### `LLMProvider` enum
 
-`"openai" | "anthropic" | "google" | "xai" | "deepseek" | "openrouter" | "ollama" | "lmstudio"`.
+`"openai" | "anthropic" | "google" | "xai" | "deepseek" | "openrouter" | "ollama" | "lmstudio" | "nvidia"`.
 
 The enum value is mirrored across:
 
@@ -94,6 +94,7 @@ matches by name prefix:
 | `openrouter/` | OpenRouter |
 | `ollama/` | Ollama |
 | `lmstudio/` | LM Studio |
+| `nvidia/` | NVIDIA NIM |
 | (anything else) | `_preferred_provider` → first configured |
 
 A new provider that hosts models from third-party namespaces (Llama,
@@ -117,9 +118,8 @@ proxies (OpenRouter, NIM, Together) require the key, base URL is
 optional.
 
 The most recent example of column addition is
-[`alembic/versions/202603200001_add_openrouter_columns.py`](../../../backend/alembic/versions/202603200001_add_openrouter_columns.py).
-The current migration head is `202605060001` (see
-[`alembic/versions/202605060001_backtest_run_jobs.py`](../../../backend/alembic/versions/202605060001_backtest_run_jobs.py)).
+[`alembic/versions/202605070001_add_nvidia_nim_columns.py`](../../../backend/alembic/versions/202605070001_add_nvidia_nim_columns.py).
+The current migration head is `202605070001`.
 The `migrate` service in [docker-compose.yml:150](../../../docker-compose.yml)
 runs `alembic upgrade head` automatically on stack start.
 
