@@ -18,6 +18,41 @@ This is a **financial application** — a full-stack prediction market arbitrage
 
 ---
 
+## Deployment Topology — READ BEFORE RUNNING ANYTHING
+
+**This project runs on a remote server, not on your local machine.** The
+operator does NOT keep `docker compose up` running locally. Locally is a
+code-editing workspace only — no postgres, no backend, no scanner, no
+frontend dev server. Treat the local checkout as source-of-truth for
+edits and nothing else.
+
+- **Server:** SSH alias `polyhome-1` (resolves via the operator's
+  `~/.ssh/config`). User `polyhome`. Repo path `/home/polyhome/homerun`.
+- **Edge:** host nginx (TLS + Basic Auth) → `127.0.0.1:3000` →
+  `homerun-frontend` container → docker-net to `backend:8000`.
+- **Deploy flow:** edit locally → `./deploy/sync_remote.sh` rsyncs the
+  tree and runs `deploy/remote_redeploy.sh` over SSH, which does
+  `docker compose down --remove-orphans && docker compose up -d --build`
+  (or `pull` when `BUILD_IMAGES=0`). Migrations run automatically via
+  the `migrate` one-shot service that `backend` and `worker-*` depend on.
+- **Logs / DB / state live ONLY on the server.** To inspect anything
+  runtime — logs, postgres rows, redis, container status, `curl`-ing an
+  endpoint, `docker exec` — SSH to `polyhome-1` first. Do not run
+  `docker compose ...`, `psql`, `redis-cli`, `curl localhost:8888`, or
+  similar against your local checkout: there is nothing to talk to, and
+  any state you'd see would be stale or empty.
+- **`.env` and `data/` live on the server.** The local `.env` is a dev
+  placeholder; the server's `.env` carries production secrets. The
+  server's `data/postgres` holds real positions, settings, and usage
+  history — never overwrite or `chown` it carelessly.
+
+Full deployment guide, log paths, common debug recipes, and exact
+SSH/docker commands live in [`deploy/AGENTS.md`](deploy/AGENTS.md).
+Read that file the moment your task touches deployment, server state,
+or "why doesn't this work locally".
+
+---
+
 ## Architecture Overview
 
 ```
