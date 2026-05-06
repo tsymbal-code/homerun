@@ -769,11 +769,19 @@ class OpenAIProvider(BaseLLMProvider):
                 logger.warning("Failed to list OpenAI models: %s", response.text[:200])
                 return []
             data = response.json()
-            models = []
+            seen_ids: set[str] = set()
+            models: list[dict[str, str]] = []
             for m in data.get("data", []):
                 model_id = m.get("id", "")
+                if not model_id or model_id in seen_ids:
+                    # Some OpenAI-compatible backends (e.g. NVIDIA NIM)
+                    # return duplicate entries for the same model id; the
+                    # downstream cache primary key is `provider_<id>` so
+                    # dedupe here keeps the cache write atomic.
+                    continue
                 if self._model_prefixes and not any(model_id.startswith(p) for p in self._model_prefixes):
                     continue
+                seen_ids.add(model_id)
                 display_name = m.get("name") or model_id
                 models.append({"id": model_id, "name": display_name})
             models.sort(key=lambda x: x["id"])

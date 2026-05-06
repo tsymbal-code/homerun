@@ -47,7 +47,7 @@ notes.
 
 | ID   | Title                                                | Category | Prerequisites |
 | ---- | ---------------------------------------------------- | -------- | ------------- |
-| 0001 | [Add NVIDIA NIM as LLM provider](0001-add-nvidia-nim-provider.md) | I        | —             |
+| 0001 | [Add NVIDIA NIM as LLM provider](completed/0001-add-nvidia-nim-provider.md) | I        | —             |
 
 When adding a row: keep this table sorted by ID ascending. Don't
 re-number plans — gaps in IDs are normal and expected (deleted or

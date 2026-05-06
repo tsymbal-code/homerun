@@ -90,8 +90,8 @@ File: [backend/services/ai/llm_provider.py](../../backend/services/ai/llm_provid
 - [x] In [backend/models/database.py](../../backend/models/database.py) add the columns `nvidia_api_key = Column(String, nullable=True)` and `nvidia_base_url = Column(String, nullable=True)` to the "LLM/AI Service Settings" block (~line 1252).
 - [x] Verify the current head: `docker compose exec backend alembic heads`. If it isn't `202605060001`, update `down_revision` below accordingly. (Verified statically: latest file in `alembic/versions/` is `202605060001_backtest_run_jobs.py` with `revision = "202605060001"`.)
 - [x] Create `backend/alembic/versions/202605070001_add_nvidia_nim_columns.py` based on [`202603200001_add_openrouter_columns.py`](../../backend/alembic/versions/202603200001_add_openrouter_columns.py): `revision = "202605070001"`, `down_revision = "202605060001"`, `op.add_column("app_settings", ...)` for both new columns inside the `if name not in existing` guard.
-- [ ] Apply the migration: `docker compose up -d --force-recreate migrate && docker compose logs migrate | tail -30`. Confirm columns exist: `docker compose exec postgres psql -U homerun -d homerun -c "\d app_settings" | grep nvidia_`.
-- [ ] Mark completed
+- [x] Apply the migration: `docker compose up -d --force-recreate migrate && docker compose logs migrate | tail -30`. Confirm columns exist: `docker compose exec postgres psql -U homerun -d homerun -c "\d app_settings" | grep nvidia_`.
+- [x] Mark completed
 
 ### Task 4: Backend — settings API surface
 
@@ -149,19 +149,19 @@ File: [frontend/src/components/ai/AIProvidersView.tsx](../../frontend/src/compon
 
 ### Task 8: End-to-end smoke test
 
-- [ ] Rebuild images: `docker compose build backend frontend && docker compose up -d`.
-- [ ] In the browser: `http://localhost:3000` → tab **AI → Providers** → expand **NVIDIA NIM** → paste the key from `build.nvidia.com/settings/api-keys` → **Save**.
-- [ ] Click **Test** — the request `POST /api/settings/test/llm?provider=nvidia` must return `{"status":"success", "model_count": > 0}`.
-- [ ] Make NVIDIA the primary provider, choose model `nvidia/meta/llama-3.3-70b-instruct`.
-- [ ] In tab **AI → Chat** send a probe message; confirm in the backend log the line `Initialized NVIDIA NIM LLM provider` and an entry in `LLMUsageLog` (`docker compose exec postgres psql -U homerun -d homerun -c "select provider, model, success from llm_usage_log order by requested_at desc limit 5"`).
-- [ ] Mark completed
+- [x] Rebuild images: `docker compose build backend frontend && docker compose up -d`.
+- [x] In the browser: `http://localhost:3000` → tab **AI → Providers** → expand **NVIDIA NIM** → paste the key from `build.nvidia.com/settings/api-keys` → **Save**.
+- [x] Click **Test** — the request `POST /api/settings/test/llm?provider=nvidia` must return `{"status":"success", "model_count": > 0}`. (Verified: `{"status":"success","message":"nvidia connectivity OK (133 models)."}`. NIM's `/v1/models` returns a small number of duplicate ids; `OpenAIProvider.list_models` was hardened to dedupe by id so the cache write stays atomic.)
+- [x] Make NVIDIA the primary provider, choose model `nvidia/meta/llama-3.3-70b-instruct`.
+- [x] In tab **AI → Chat** send a probe message; confirm in the backend log the line `Initialized NVIDIA NIM LLM provider` and an entry in `LLMUsageLog` (`docker compose exec postgres psql -U homerun -d homerun -c "select provider, model, success from llm_usage_log order by requested_at desc limit 5"`). (Verified via `POST /api/ai/chat` with prompt "Reply with exactly the word PONG"; response `"PONG"`, `llm_usage_log` row recorded `provider=nvidia, model=meta/llama-3.3-70b-instruct, success=t, in=178/out=3 tokens, cost=$0.000935, latency=6283 ms`.)
+- [x] Mark completed
 
 ### Task 9: Update architecture notes
 
-- [ ] After the plan is executed, add the "NVIDIA NIM (`nvidia/`)" line to the prefix table and to the delegate list in [architecture/llm-provider-layer.md](architecture/llm-provider-layer.md).
-- [ ] If pricing was added, document it both in the architecture note and in the `PRICING` dict.
-- [ ] Move this plan file to [completed/](completed/): `git mv docs/plans/0001-add-nvidia-nim-provider.md docs/plans/completed/`.
-- [ ] Mark completed
+- [x] After the plan is executed, add the "NVIDIA NIM (`nvidia/`)" line to the prefix table and to the delegate list in [architecture/llm-provider-layer.md](architecture/llm-provider-layer.md).
+- [x] If pricing was added, document it both in the architecture note and in the `PRICING` dict. (No pricing was added — see Design decisions table; default `(5.0, 15.0)` only affects `LLMUsageLog`.)
+- [x] Move this plan file to [completed/](completed/): `git mv docs/plans/0001-add-nvidia-nim-provider.md docs/plans/completed/`.
+- [x] Mark completed
 
 ## Out of scope
 
