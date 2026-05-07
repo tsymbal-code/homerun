@@ -204,6 +204,47 @@ The two invariants that **must** survive every extension:
    filter. Otherwise the chooser can't see tags the operator hasn't
    already whitelisted, and the system becomes self-locked.
 
+## Sibling toggles
+
+The tag-whitelist filter described above gates the **Polymarket
+general scanner** (catalog scope). It does **not** reach the
+**crypto fast-binary lane** in
+[`market_runtime.py`](../../../backend/services/market_runtime.py),
+which fetches its own market list from
+[`crypto_service.get_live_markets()`](../../../backend/services/crypto_service.py)
+and never consults `market_catalog`. `CryptoMarket` carries no
+`tags` field, so a tag whitelist would be semantically wrong
+there anyway.
+
+Plan 0006
+([`completed/0006-crypto-fast-binary-lane-toggle.md`](../completed/0006-crypto-fast-binary-lane-toggle.md))
+shipped a sibling on/off toggle for that lane in
+`Settings → Scanner → Crypto fast-binary lane`. It is wired
+through the existing
+`POST /api/workers/crypto/{pause|start}` endpoint
+(`worker_control(name='crypto').is_paused`) and respected by:
+
+- `MarketRuntime.start()` — startup `_refresh_crypto_markets`
+  runs only when the lane is active.
+- `MarketRuntime._drain_reactive_updates` — Binance-tick-driven
+  payload rebuilds short-circuit when the lane is off; the
+  Binance feeds keep flowing but accumulated `_pending_tokens`
+  / `_pending_assets` are dropped.
+- `MarketRuntime._run_loop_iteration` — detects the
+  active↔off transition and either clears the in-process cache
+  (so `get_crypto_markets()` returns `[]` immediately) or
+  schedules a one-shot `_refresh_crypto_markets(trigger=
+  "lane_re_enabled", full_source_sweep=True)`.
+
+The two filters compose: the tag whitelist controls how many
+Polymarket general markets reach the strategy fan-out; the
+crypto-lane toggle controls whether the parallel crypto-binary
+scanner runs at all. Operators trading only Polymarket general
+markets keep the crypto lane off; operators trading both leave
+it on. See
+[`worker-trading.md`](worker-trading.md#after-plan-0006-2026-05-07-crypto-fast-binary-lane-off)
+for the CPU-profile impact.
+
 ## Known footguns
 
 - **Don't filter inside `_is_market_tradable` alone.** That helper is

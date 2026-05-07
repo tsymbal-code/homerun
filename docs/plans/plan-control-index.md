@@ -50,8 +50,9 @@ notes.
 | 0001 | [Add NVIDIA NIM as LLM provider](completed/0001-add-nvidia-nim-provider.md) | I        | —             |
 | 0002 | [Tune Postgres for the 7 GB host](completed/0002-tune-postgres-for-7gb-host.md) | R        | —             |
 | 0003 | [Profile worker-trading hotspots](completed/0003-profile-worker-trading-hotspots.md) | R        | —             |
-| 0004 | [Optimize worker-trading CPU hotspots](0004-optimize-worker-trading-cpu-hotspots.md) | R        | 0003, 0005    |
+| 0004 | [Optimize worker-trading CPU hotspots](backlog/0004-optimize-worker-trading-cpu-hotspots.md) | R        | 0003, 0005, 0006 |
 | 0005 | [Tag-based market filter at ingest](completed/0005-tag-based-market-filter-at-ingest.md) | B        | —             |
+| 0006 | [Crypto fast-binary lane toggle](completed/0006-crypto-fast-binary-lane-toggle.md) | B        | —             |
 
 When adding a row: keep this table sorted by ID ascending. Don't
 re-number plans — gaps in IDs are normal and expected (deleted or
@@ -104,14 +105,13 @@ Only notes that aren't obvious from the title. All plans must follow
   `market_runtime._queue_opportunity_dispatch`, TTL-cache
   `reference_runtime.get_oracle_history`, vectorise
   `market_monitor._compute_stability`, plus replace stdlib
-  `json` with `orjson` on the dispatch path. Originally parked
-  pending plan 0005's upstream tag filter; promoted back into
-  the active queue on 2026-05-07 after plan 0005 Task 8's
-  re-profile showed `get_oracle_history` (~36 %) and
-  `copy.deepcopy` (~10.8 %) still ≥ 10 % CPU. Task 3
-  (`_compute_stability` vectorisation) is descoped because that
-  hotspot already dropped under 1 % post-filter; Tasks 1, 2, 4,
-  5, 6 remain.
+  `json` with `orjson` on the dispatch path. **Re-archived to
+  backlog on 2026-05-07** after plan 0006's re-profile showed
+  all three hotspots collapse below 1 % of CPU when the crypto
+  fast-binary lane is off (the actual operating mode for the
+  current operator workload). Resurrect this plan if the
+  operator turns the crypto lane back on and a fresh `py-spy`
+  profile shows the post-filter distribution returning.
 - **Plan 0005 — Tag-based market filter at ingest.** Adds an
   OR-logic whitelist filter applied inside
   `scanner._apply_market_tag_whitelist` (called from every
@@ -129,7 +129,31 @@ Only notes that aren't obvious from the title. All plans must follow
   category: U (Settings tab section). Re-profile after this
   plan's Task 8 confirmed plan 0004's hotspots are still
   dominant, so plan 0004 was promoted back into the active
-  queue on 2026-05-07.
+  queue on 2026-05-07. Also revealed a parallel ingest lane
+  (crypto fast-binary) that the tag filter cannot reach,
+  spawning plan 0006.
+- **Plan 0006 — Crypto fast-binary lane toggle.** Plan 0005's
+  tag filter only gates the Polymarket general scanner;
+  `market_runtime._refresh_crypto_markets` runs a parallel
+  pipeline via `crypto_service.get_live_markets()` that fetches
+  crypto-binary markets directly from Gamma and never consults
+  `market_catalog`. `CryptoMarket` has no `tags` field, so
+  applying the whitelist there is semantically wrong; this plan
+  added an operator-managed on/off toggle for the lane in
+  `Settings → Scanner`. Most plumbing already existed
+  (`worker_control(name="crypto")` row + generic
+  `POST /api/workers/crypto/{pause|start}` API); the plan
+  plugged the two existing gaps — startup refresh and
+  `_drain_reactive_updates` ignored the control — plus surfaced
+  the toggle in the Scanner tab. The toggle reflects the
+  collapsed semantics of "lane active" =
+  `is_enabled and not is_paused`, matching the existing
+  `pause/start` API which writes `is_paused`. Default: lane on
+  (backward-compatible). Re-profile on close confirmed the
+  expected drop: `get_oracle_history` + `_oracle_move_from_history`
+  collapsed from ~42 % to < 2 % CPU with the lane off, and
+  `copy.deepcopy` collapsed alongside, so plan 0004 was
+  re-archived. Secondary category: U.
 
 ## Ordering decision tree (for agents picking the next plan)
 

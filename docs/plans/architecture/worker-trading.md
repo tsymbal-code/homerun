@@ -324,6 +324,69 @@ Source data (post-filter):
   re-applied for the capture and reverted immediately after —
   see plan 0005 Task 8 for the exact sequence).
 
+### After plan 0006 (2026-05-07, crypto fast-binary lane off)
+
+A third 60 s `py-spy record --rate 100` capture was taken with
+the **crypto fast-binary lane disabled** through the new toggle
+in `Settings → Scanner` (worker_control(crypto).is_paused=True
+via `POST /api/workers/crypto/pause`). Same fast trader still
+running (`Sandbox - Traders Copy Trade`). Tag whitelist remained
+on (`['sports']`). 2 437 CPU-active samples in the raw export.
+
+Top self-time hotspots (lane off):
+
+| Rank | Hotspot | File:line | % CPU |
+|---|---|---|---:|
+| 1 | `_worker` (ThreadPoolExecutor) | [`concurrent/futures/thread.py:90`](https://docs.python.org/3/library/concurrent.futures.html) | **9.8 %** |
+| 2 | `_normalize_history_points` | [`shared_state.py:275`](../../../backend/services/shared_state.py) | 4.4 % |
+| 3 | `pydantic.model_dump` | pydantic stdlib | 3.8 % |
+| 4 | `json.raw_decode` | json stdlib | 3.7 % |
+| 5 | asyncio `selector_events.write` | stdlib | 3.0 % |
+| 6 | asyncio `_read_ready__get_buffer` | stdlib | 2.2 % |
+| 7 | `ssl.read` | stdlib | 2.0 % |
+| 8 | websockets `permessage_deflate.decode` | stdlib | 1.2 % |
+| 9 | `_ensure_hot_subscriptions` | [`intent_runtime.py:1083`](../../../backend/services/intent_runtime.py) | 0.8 % |
+| 10 | `_deepcopy_dict` | stdlib | 0.7 % |
+
+Comparison vs. the post-filter point:
+
+| Hotspot | Post-filter | Lane off | Δ |
+|---|---:|---:|---|
+| `get_oracle_history` (sum) | **~36 %** | < 1 % (out of top-25) | **−97 %** |
+| `_oracle_move_from_history` | **~6.6 %** | < 1 % | **−85 %+** |
+| `_rebuild_crypto_rows_from_cache` | ~2.9 % | < 1 % | dropped |
+| `copy.deepcopy` (sum) | ~10.8 % | ~0.7 % | **−93 %** |
+| `_compute_stability` | < 1 % | < 1 % | unchanged |
+
+**Decision.** All three Plan 0004 hotspots
+([`docs/plans/backlog/0004-optimize-worker-trading-cpu-hotspots.md`](../backlog/0004-optimize-worker-trading-cpu-hotspots.md))
+collapsed below 1 % of CPU after the lane was disabled. `get_oracle_history`
+disappears almost entirely (it runs in the crypto-lane payload
+rebuild path), and the catalog-driven `copy.deepcopy` chain runs
+only on `get_crypto_markets()` which is now no-op while the lane
+is off. **Plan 0004 is therefore archived without further work**
+when the operator keeps the crypto lane off.
+
+If the operator re-enables the crypto lane (e.g. trading a
+crypto-fast-binary strategy), the post-filter hotspot
+distribution will return and Plan 0004 should be revisited then.
+Track this in [`plan-control-index.md`](../plan-control-index.md).
+
+The current top of the profile is dominated by stdlib I/O
+machinery (asyncio selector loops, ssl/websockets decode,
+pydantic + json serialisation). None of these is a meaningful
+single-file fix; if `worker-trading` saturates again, the next
+escalation is the multi-process split path described in the
+"Options if the CPU plane saturates after upstream + local
+fixes" section below, not another local-hotspot pass.
+
+Source data (lane off):
+
+- Flamegraph: [`worker-trading-profile-2026-05-07-crypto-lane-off.svg`](worker-trading-profile-2026-05-07-crypto-lane-off.svg)
+- Raw stacks: same `py-spy` recipe as above; the temporary
+  `cap_add: [SYS_PTRACE]` was re-applied for the capture and
+  reverted immediately after (plan 0006 Task 7).
+
 ## Why a bigger box helped only halfway
 
 The 2026-05-07 resource bump (4→8 vCPU, 7.6→15 GiB RAM) gave
@@ -526,15 +589,28 @@ ordering:
    from the top-25 entirely; `copy.deepcopy` shrank ~28 %; the
    crypto-fast-binary reference path
    (`get_oracle_history`/`_oracle_move_from_history`) was
-   not addressable from the catalog filter and remains the
-   dominant hotspot.
-2. **Local opportunistic fixes second — ACTIVE.** Plan 0004
-   ([`0004-optimize-worker-trading-cpu-hotspots.md`](../0004-optimize-worker-trading-cpu-hotspots.md))
-   was promoted from backlog after the post-filter re-profile.
-   Targets: TTL cache for `get_oracle_history`, halve the
-   crypto-payload `deepcopy`, swap stdlib `json` for `orjson`
-   on the dispatch path. `_compute_stability` is descoped
-   because it already dropped under 1 %.
+   not addressable from the catalog filter and remained the
+   dominant hotspot until step 1.5.
+1.5. **Disable parallel ingest lanes the operator does not need
+   — DONE.** Plan 0006
+   ([`completed/0006-crypto-fast-binary-lane-toggle.md`](../completed/0006-crypto-fast-binary-lane-toggle.md))
+   surfaced an on/off toggle for the crypto fast-binary scanner
+   in `Settings → Scanner`, plugged the two paths the existing
+   `worker_control(crypto)` row did not cover (startup refresh,
+   reactive Binance-tick rebuild), and shipped cache
+   invalidation on the active↔off transition. With the lane off,
+   `get_oracle_history` and `_oracle_move_from_history` collapse
+   from ~42 % combined to < 2 %; `copy.deepcopy` collapses from
+   ~10.8 % to ~0.7 %. See
+   ["After plan 0006" above](#after-plan-0006-2026-05-07-crypto-fast-binary-lane-off).
+2. **Local opportunistic fixes second — ARCHIVED.** Plan 0004
+   ([`backlog/0004-optimize-worker-trading-cpu-hotspots.md`](../backlog/0004-optimize-worker-trading-cpu-hotspots.md))
+   targeted exactly the hotspots that step 1.5 made disappear.
+   With the lane off all three Plan 0004 hotspots are < 1 % of
+   CPU, so no local-fix work is needed. The plan is parked; if
+   the operator later turns the crypto lane back on (e.g. trades
+   a crypto-fast-binary strategy) and the post-filter
+   distribution returns, Plan 0004 should be revived.
 3. **Architectural options (1–4 above) third** — only if a
    re-profile after step 2 shows genuinely GIL-bound behaviour.
    At that point Option 1 (3.13 free-threaded) remains the

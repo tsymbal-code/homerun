@@ -1,31 +1,33 @@
 # Plan: Optimize worker-trading CPU hotspots (deepcopy, oracle history, json)
 
 > **Plan policy.** This plan follows
-> [`docs/plans/README.md`](README.md) — task format, validation
+> [`docs/plans/README.md`](../README.md) — task format, validation
 > commands, "Mark completed" pattern, move to
-> [`completed/`](completed/) on close. Every commit produced by
+> [`completed/`](../completed/) on close. Every commit produced by
 > this plan carries a `Plan: <NNNN>` git trailer (see
-> [Commits and traceability](README.md#commits-and-traceability)).
+> [Commits and traceability](../README.md#commits-and-traceability)).
 > Ordering, category, and prerequisites for this plan live in
-> [`plan-control-index.md`](plan-control-index.md).
+> [`plan-control-index.md`](../plan-control-index.md).
 >
-> **Status: ACTIVE (2026-05-07).** Originally backlog'd pending the
-> upstream tag filter (plan 0005). After plan 0005 landed, a
-> 2026-05-07 post-filter re-profile (see
-> [`architecture/worker-trading.md`](architecture/worker-trading.md#after-plan-0005-2026-05-07-tag-whitelist-active))
-> showed `get_oracle_history` (~36 % combined) and `copy.deepcopy`
-> (~10.8 %) still ≥ 10 % CPU, so this plan was promoted back into
-> the active queue. `_compute_stability` already dropped under 1 %
-> post-filter — the original Task 3 is descoped to
-> "no-op, hotspot already below threshold". Tasks 1, 2, 4, 5, 6
-> remain.
+> **Status: BACKLOG (2026-05-07, second archival).** Originally
+> backlog'd pending plan 0005. Promoted to ACTIVE on
+> 2026-05-07 after plan 0005's post-filter re-profile, then
+> **re-archived on 2026-05-07** after plan 0006's lane-off
+> re-profile (see
+> [`architecture/worker-trading.md`](../architecture/worker-trading.md#after-plan-0006-2026-05-07-crypto-fast-binary-lane-off))
+> showed all three remaining hotspots collapse below 1 % of CPU
+> when the crypto fast-binary lane is off (the actual operating
+> mode — operator trades only Polymarket general markets).
+> Resurrect this plan if the operator turns the crypto lane back
+> on and a fresh `py-spy` profile shows
+> `get_oracle_history` / `copy.deepcopy` returning to ≥ 10 %.
 
 ## Overview
 
 After plan 0005's tag-filter landed and trimmed the catalog by
 ~27 %, the 2026-05-07 post-filter py-spy profile of
 `worker-trading`
-([architecture note section "After plan 0005"](architecture/worker-trading.md#after-plan-0005-2026-05-07-tag-whitelist-active))
+([architecture note section "After plan 0005"](../architecture/worker-trading.md#after-plan-0005-2026-05-07-tag-whitelist-active))
 shows two pure-Python CPU hotspots still dominate:
 
 1. `get_oracle_history` linear scan + bucketing on every call,
@@ -55,7 +57,7 @@ profiling.
 
 The natural way to reduce these hotspots was to feed less data
 into them: a tag whitelist at the Polymarket ingest layer
-([`scanner.py`](../../backend/services/scanner.py)) multiplies
+([`scanner.py`](../../../backend/services/scanner.py)) multiplies
 the funnel reduction across **every** Polymarket-derived
 downstream consumer. Plan 0005 delivered that whitelist and
 shrank the catalog by ~27 %. But the two surviving hotspots run
@@ -70,14 +72,16 @@ relief.
 
 ## Context / References
 
-- [Architecture: worker-trading process model + CPU profile](architecture/worker-trading.md)
-- [Plan 0003 — Profile worker-trading hotspots](completed/0003-profile-worker-trading-hotspots.md)
-- [Plan 0005 — Tag-based market filter at ingest](0005-tag-based-market-filter-at-ingest.md)
-- [Pre-filter flamegraph](architecture/worker-trading-profile-2026-05-07.svg)
-- [Post-filter flamegraph](architecture/worker-trading-profile-2026-05-07-post-filter.svg)
-- [`market_runtime.py:1525-1583`](../../backend/services/market_runtime.py)
-- [`reference_runtime.py:200-240`](../../backend/services/reference_runtime.py)
-- [`market_monitor.py:140-167`](../../backend/services/market_monitor.py)
+- [Architecture: worker-trading process model + CPU profile](../architecture/worker-trading.md)
+- [Plan 0003 — Profile worker-trading hotspots](../completed/0003-profile-worker-trading-hotspots.md)
+- [Plan 0005 — Tag-based market filter at ingest](../completed/0005-tag-based-market-filter-at-ingest.md)
+- [Plan 0006 — Crypto fast-binary lane toggle](../completed/0006-crypto-fast-binary-lane-toggle.md)
+- [Pre-filter flamegraph](../architecture/worker-trading-profile-2026-05-07.svg)
+- [Post-filter flamegraph](../architecture/worker-trading-profile-2026-05-07-post-filter.svg)
+- [Lane-off flamegraph](../architecture/worker-trading-profile-2026-05-07-crypto-lane-off.svg)
+- [`market_runtime.py:1525-1583`](../../../backend/services/market_runtime.py)
+- [`reference_runtime.py:200-240`](../../../backend/services/reference_runtime.py)
+- [`market_monitor.py:140-167`](../../../backend/services/market_monitor.py)
 
 ## Validation Commands
 
@@ -89,7 +93,7 @@ relief.
 
 ### Task 1: Eliminate the redundant deepcopy in the crypto dispatch path
 
-- [ ] Read [`market_runtime.py:1525-1583`](../../backend/services/market_runtime.py)
+- [ ] Read [`market_runtime.py:1525-1583`](../../../backend/services/market_runtime.py)
   end-to-end. Confirm that the payload is *not* mutated between
   `_queue_opportunity_dispatch` (line 1533) and
   `_run_opportunity_dispatch_loop` (line 1560). If true, the
@@ -112,7 +116,7 @@ relief.
 
 ### Task 2: Add a TTL cache to `get_oracle_history`
 
-- [ ] Read [`reference_runtime.py:200-240`](../../backend/services/reference_runtime.py).
+- [ ] Read [`reference_runtime.py:200-240`](../../../backend/services/reference_runtime.py).
   Note that the function is keyed by
   `(asset, points, max_age_seconds)` and walks `_history` linearly
   every call. Chainlink price ticks arrive at most once per few
@@ -146,7 +150,7 @@ relief.
 - [ ] Identify the exact `json.dump` and `raw_decode` callers
   visible in both 2026-05-07 profiles. Most likely candidates:
   the `DataEvent.payload` serialisation in
-  [`market_runtime.py:1556-1561`](../../backend/services/market_runtime.py)
+  [`market_runtime.py:1556-1561`](../../../backend/services/market_runtime.py)
   and the WS message decode loop in `services/ws_feeds.py`.
 - [ ] Add `orjson` to the backend's dependency manifest (already
   used in some places? check first to avoid duplication).
@@ -160,8 +164,8 @@ relief.
 ### Task 5: Re-capture profile, verify each hotspot is below threshold
 
 - [ ] Re-apply the temporary `cap_add: [SYS_PTRACE]` per
-  [plan 0003 Task 2](completed/0003-profile-worker-trading-hotspots.md)
-  / [plan 0005 Task 8](completed/0005-tag-based-market-filter-at-ingest.md)
+  [plan 0003 Task 2](../completed/0003-profile-worker-trading-hotspots.md)
+  / [plan 0005 Task 8](../completed/0005-tag-based-market-filter-at-ingest.md)
   (whichever lands as completed first).
 - [ ] Re-run the 60 s py-spy capture (`--rate 100`, no `--idle`)
   under the same workload as 2026-05-07 (one fast trader,
@@ -184,7 +188,7 @@ relief.
 
 ### Task 6: Update architecture note + close
 
-- [ ] In [`architecture/worker-trading.md`](architecture/worker-trading.md),
+- [ ] In [`architecture/worker-trading.md`](../architecture/worker-trading.md),
   in the "Measured CPU profile" section, append a "Post-0004"
   table with the new top-N. State whether the targeted hotspots
   fell below the 5 % threshold.
@@ -196,7 +200,7 @@ relief.
   next step.
 - [ ] `git mv docs/plans/0004-optimize-worker-trading-cpu-hotspots.md
   docs/plans/completed/`.
-- [ ] Update [`plan-control-index.md`](plan-control-index.md):
+- [ ] Update [`plan-control-index.md`](../plan-control-index.md):
   link target to `completed/0004-...md`.
 - [ ] Mark completed
 
@@ -204,7 +208,7 @@ relief.
 
 - **GIL removal / Python 3.13 free-threaded build / ProcessPool /
   plane split.** Those are Options 1–3 in
-  [`architecture/worker-trading.md`](architecture/worker-trading.md)
+  [`architecture/worker-trading.md`](../architecture/worker-trading.md)
   and remain *candidates* if 0004 leaves residual GIL pressure.
 - **Reducing the input volume of markets.** That was plan 0005
   (upstream tag filter), now landed. The two are complementary —

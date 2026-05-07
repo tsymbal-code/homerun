@@ -747,3 +747,90 @@ ssh polyhome-1 "cd /home/polyhome/homerun && docker compose exec -T postgres \
   `config.MARKET_TAG_AGGREGATOR_ENABLED = False` if a future
   bug ever requires stopping the writes without redeploying
   the schema.
+
+## 2026-05-07 ~17:00 UTC — Plan 0006: crypto fast-binary lane toggle live
+
+- **Surface**: `worker_control(name='crypto')` row +
+  `Settings → Scanner → Crypto fast-binary lane` UI toggle.
+- **Applied via**: redeploy via `./deploy/sync_remote.sh` (image
+  rebuild for backend / 4 worker images / frontend).
+- **Why**: the post-filter `worker-trading` profile from plan
+  0005 showed `get_oracle_history` and `_oracle_move_from_history`
+  combined eating ~42 % of CPU-active samples even when the
+  operator filters the catalog to non-crypto tags. The two
+  hotspots live in the parallel crypto fast-binary lane in
+  [`market_runtime.py`](../../backend/services/market_runtime.py),
+  which fetches its market list from
+  [`crypto_service`](../../backend/services/crypto_service.py)
+  and never consults `market_catalog`, so the tag filter cannot
+  reach it. Plan 0006 plugs the two paths the existing
+  `worker_control(crypto)` row didn't cover (startup refresh +
+  reactive Binance-tick payload rebuild), wires cache
+  invalidation on the active↔off transition, and surfaces the
+  toggle in the Scanner tab.
+- **Expected effect**: with the lane off, `worker-trading` no
+  longer rebuilds per-market crypto payloads on every Binance
+  tick. The 4 Binance feeds remain connected (cheap, ~1–5 µs
+  per tick); only the per-market rebuild + WS broadcast stops.
+  `get_crypto_markets()` returns `[]` immediately after the
+  toggle (within the next loop iteration, ≤ 2 s).
+
+### Verification (post-deploy, lane off)
+
+```bash
+# Toggle off via the existing API (the UI calls the same)
+ssh polyhome-1 'curl -fsS -X POST http://127.0.0.1:8888/api/workers/crypto/pause | jq .status'
+# Settings reflect the new state
+ssh polyhome-1 "curl -fsS http://127.0.0.1:8888/api/settings/scanner | jq '.crypto_lane_enabled'"
+# Worker stats show the cache cleared
+ssh polyhome-1 "curl -fsS http://127.0.0.1:8888/api/workers/status \
+  | jq '[.workers[] | select(.worker_name==\"crypto\") | {market_count: .stats.market_count, current_activity}]'"
+```
+
+Observed:
+
+- `crypto_lane_enabled = false` in `/api/settings/scanner`.
+- `market_count = 0`, `current_activity = "Paused"` in
+  `/api/workers/status`.
+- Toggle back on: `current_activity = "Live"`, `market_count = 15`,
+  `dispatch_last_trigger = "reference_ws"` within ≤ 10 s.
+
+### Re-profile (60 s `py-spy record --rate 100`)
+
+| Hotspot | Plan 0005 post-filter | Plan 0006 lane off |
+|---|---:|---:|
+| `get_oracle_history` (sum) | ~36 % | < 1 % |
+| `_oracle_move_from_history` | ~6.6 % | < 1 % |
+| `_rebuild_crypto_rows_from_cache` | ~2.9 % | < 1 % |
+| `copy.deepcopy` (sum) | ~10.8 % | ~0.7 % |
+
+Top of the lane-off profile is dominated by stdlib I/O
+machinery (`_worker` thread idle, asyncio selectors, ssl read,
+pydantic + json). All three Plan 0004 hotspots collapsed below
+1 %, so Plan 0004 is **archived** until the operator re-enables
+the crypto lane.
+
+Flamegraph captured for the record at
+[`docs/plans/architecture/worker-trading-profile-2026-05-07-crypto-lane-off.svg`](../plans/architecture/worker-trading-profile-2026-05-07-crypto-lane-off.svg).
+The temporary `cap_add: [SYS_PTRACE]` on the `worker-trading`
+service in `docker-compose.yml` was reverted immediately after
+the capture.
+
+### Lane state at handover
+
+Lane is currently **off** (`is_paused = true`). The operator
+trades only Polymarket general markets right now; turn back on
+via the UI toggle (or `POST /api/workers/crypto/start`) when a
+crypto-fast-binary strategy is added to the active set.
+
+### Rollback
+
+The plan is fully runtime-toggleable — no rollback needed for
+the code change itself. Operationally:
+
+- `POST /api/workers/crypto/start` (or click the toggle on)
+  re-enables the lane on the next loop iteration; the cache
+  repopulates within `interval_seconds` (default 1 s).
+- The `worker_control(name='crypto')` row stores the state
+  across restarts. To wipe it, drop the row in psql; default is
+  `is_enabled=true, is_paused=false`.

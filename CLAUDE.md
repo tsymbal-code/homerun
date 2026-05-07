@@ -122,7 +122,8 @@ ssh polyhome-1 'cd /home/polyhome/homerun && docker compose restart backend'
 | Settings & secret encryption | [`docs/plans/architecture/settings-and-secrets.md`](docs/plans/architecture/settings-and-secrets.md) |
 | Database schema, Alembic conventions | [`docs/plans/architecture/database-and-migrations.md`](docs/plans/architecture/database-and-migrations.md) |
 | Test layout (pytest + 60 s timeout, no frontend tests) | [`docs/plans/architecture/testing.md`](docs/plans/architecture/testing.md) |
-| LLM provider layer | [`docs/plans/architecture/llm-provider-layer.md`](docs/plans/architecture/llm-provider-layer.md) |
+| **AI & LLM end-to-end (which decisions, where, how a "winning market" is identified)** | [`docs/plans/architecture/ai-and-llm.md`](docs/plans/architecture/ai-and-llm.md) |
+| LLM provider layer (transport: providers, routing, keys) | [`docs/plans/architecture/llm-provider-layer.md`](docs/plans/architecture/llm-provider-layer.md) |
 | **Trader pipeline + "why isn't bot X opening positions"** | [`docs/plans/architecture/trader-pipeline.md`](docs/plans/architecture/trader-pipeline.md) |
 | **`worker-trading` process model + GIL bottleneck options** | [`docs/plans/architecture/worker-trading.md`](docs/plans/architecture/worker-trading.md) |
 | **Runtime knob-twists (DB-only, not in git): rollback recipes** | [`docs/operational/runtime-tweaks.md`](docs/operational/runtime-tweaks.md) |

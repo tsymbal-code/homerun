@@ -142,7 +142,9 @@ runtime switch each worker reads to gate plane-specific behaviour
 6. **AI loop (optional)** — `services/ai/*` calls `LLMManager` for
    judging opportunities, scoring news, running Cortex agent
    research. Spend is capped per month (`AppSettings.ai_max_monthly_spend`)
-   and logged in `LLMUsageLog`.
+   and logged in `LLMUsageLog`. End-to-end map of which decisions are
+   LLM vs classical ML (and how news-edge identifies a "winning
+   market"): [AI & LLM](ai-and-llm.md).
 
 ## Cross-plane communication
 
@@ -216,4 +218,5 @@ worker plane split. They differ only in process supervision.
 | React UI, atoms, WebSocket client, state | [Frontend Architecture](frontend-architecture.md) |
 | `AppSettings`, encrypted secrets, runtime hot-reload | [Settings & Secrets](settings-and-secrets.md) |
 | Schema, Alembic migrations, `AsyncSessionLocal` patterns | [Database & Migrations](database-and-migrations.md) |
+| AI & LLM end-to-end (what decisions, what's classical ML, how news-edge picks a market) | [AI & LLM](ai-and-llm.md) |
 | Adding/changing an LLM provider | [LLM Provider Layer](llm-provider-layer.md) |

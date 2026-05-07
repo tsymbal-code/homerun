@@ -6,6 +6,12 @@ layer works today and where to extend it. Plans that add providers or
 change routing (`detect_provider`) link here from their
 `## Context / References` section.
 
+> **Looking for what AI actually does in the product** (which
+> decisions are LLM-driven, how news-edge picks a market, where
+> Cortex / OpportunityJudge / Resolution Analyzer fit)? Start with
+> [AI & LLM](ai-and-llm.md). This file covers the transport layer
+> only — providers, routing, key save, model listing.
+
 ## Purpose
 
 The layer is responsible for:
