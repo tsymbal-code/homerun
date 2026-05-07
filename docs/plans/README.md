@@ -14,6 +14,8 @@ docs/plans/
 ├── plan-control-index.md            # ordering, prerequisites, categories
 ├── architecture/                    # reference docs that plans cite
 │   └── <topic>.md                   # one layer per file (LLM, sandbox…)
+├── backlog/                         # parked plans — written but deferred
+│   └── <NNNN>-<plan-slug>.md
 ├── completed/                       # archive of finished plans
 │   └── <NNNN>-<plan-slug>.md
 ├── <NNNN>-<plan-slug>.md            # active plan
@@ -25,6 +27,16 @@ docs/plans/
   by sequence number, but the actual ordering rules — categories,
   prerequisites, which plan to pick next — live in
   [`plan-control-index.md`](plan-control-index.md).
+- **Backlog plans** live in `docs/plans/backlog/`. They are fully
+  written (same format, same checkboxes) but **deliberately
+  parked** — usually because a different plan supersedes them, or
+  because they only make sense after some future trigger. Every
+  backlog plan must include a `**Status: BACKLOG.**` line in its
+  policy header explaining the condition under which it gets
+  pulled back into the active queue. `plan-control-index.md` lists
+  the row but with the `backlog/` link target. To activate a
+  backlog plan, `git mv` it to the top level of `docs/plans/` and
+  update the index link.
 - **Completed plans** move to `docs/plans/completed/` the moment all
   their tasks are checked off (`- [x]`). The file content does not
   change — only its directory. That move is the boundary between
@@ -265,6 +277,6 @@ Architecture notes:
 - [Testing](architecture/testing.md)
 - [LLM Provider Layer](architecture/llm-provider-layer.md)
 - [Trader Pipeline & Diagnostics](architecture/trader-pipeline.md)
-- [worker-trading & the GIL ceiling](architecture/worker-trading.md)
+- [worker-trading process model and CPU profile](architecture/worker-trading.md)
 
 Completed plans: see [completed/](completed/).

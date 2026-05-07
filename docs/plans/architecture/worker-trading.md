@@ -1,15 +1,34 @@
-# Architecture: worker-trading & the GIL ceiling
+# Architecture: worker-trading process model and CPU profile
+
+> **Status note (2026-05-07).** An earlier version of this note
+> framed worker-trading as **GIL-bound**, with four hypothesised
+> hotspots (strategy eval, WS JSON parsing, Cox-PH inference,
+> copy-trade processor). A live `py-spy` profile (see "Measured
+> CPU profile" section below) **partially refuted** that framing:
+> with `--idle` sampling, ~90 % of "100 % CPU" turned out to be
+> idle ThreadPool workers, and the actual top-3 hotspots are
+> algorithmic (`copy.deepcopy` ×2, uncached `get_oracle_history`,
+> nested-loop `_compute_stability`) rather than GIL contention.
+> The "Options to lift the GIL ceiling" section retains its
+> original analysis because those options remain *contingent
+> candidates* — they become relevant only if the algorithmic
+> hotspots are addressed first and the next profile shows
+> genuinely GIL-bound behaviour. Treat references to "GIL
+> ceiling" / "GIL signature" in this document as the
+> pre-profile hypothesis. The measured ground truth is in the
+> "Measured CPU profile" section.
 
 The `worker-trading` plane is the hot-path container of Homerun: it
 ingests live WebSocket feeds, runs strategies, makes decisions, and
-fires orders (real or shadow). On production it consistently
-saturates **one** CPU core at 100% — the classical Python GIL
-signature. After the 2026-05-07 host upgrade (4→8 vCPU, 7.6→15 GiB
-RAM) every other resource constraint disappeared, but
-`worker-trading` is still pinned to a single core. This note
-explains what runs inside that single process, where the GIL
-actually hurts, and what the realistic options are for breaking the
-ceiling.
+fires orders (real or shadow). On production `docker stats` shows
+one CPU core at ~100 %, but as the 2026-05-07 profile clarifies,
+most of that reading is idle thread-pool workers waiting on
+queues; real CPU-active work is closer to 10 % of one core. After
+the 2026-05-07 host upgrade (4→8 vCPU, 7.6→15 GiB RAM) every other
+resource constraint disappeared. This note explains what runs
+inside the single worker-trading process, the measured CPU
+profile, and the realistic next steps if scaling the plane
+becomes necessary.
 
 For the broader topology see [System Overview](system-overview.md).
 For the stage-by-stage signal flow see
@@ -156,6 +175,95 @@ CPU but they're omnipresent and contend for the same lock.
   GIL released on the socket call.
 - **Redis pub/sub bridging.** Same — socket I/O.
 
+## Measured CPU profile (2026-05-07)
+
+A 60-second `py-spy` sample on the live `worker-trading` process
+under steady-state load (one active fast trader,
+`Sandbox - Traders Copy Trade`, ~1 selected/5 min, ~63 decisions/min)
+revealed that **the four hypotheses above are largely wrong about
+which code paths actually burn CPU**. The dominant hotspots are
+algorithmic, not GIL-bound.
+
+Methodology:
+
+- `py-spy 0.4.2`, sample rate 100 Hz, duration 60 s, no `--idle`
+  (CPU-active samples only). 7 221 samples captured.
+- Container had `CAP_SYS_PTRACE` added temporarily via plan 0003.
+- Companion `--idle` capture (157 800 samples) confirmed that
+  ~90 % of "100 % CPU" reading is actually idle ThreadPool workers
+  in `concurrent/futures/thread.py:90` waiting on a queue. Real
+  CPU-active work is ~10 % of one core, not 100 %.
+
+Top self-time hotspots (CPU-active sampling):
+
+| Rank | Hotspot | File:line | % CPU |
+|---|---|---|---:|
+| 1 | `copy.deepcopy` chain (caller `_run_opportunity_dispatch_loop` + `_queue_opportunity_dispatch`) | [`market_runtime.py:1533, 1560`](../../../backend/services/market_runtime.py) | **~15 %** |
+| 2 | `get_oracle_history` (linear scan + bucketing on every call, no cache) | [`reference_runtime.py:215-238`](../../../backend/services/reference_runtime.py) | **~14 %** |
+| 3 | `_compute_stability` (nested Python loop over price history) | [`market_monitor.py:152-157`](../../../backend/services/market_monitor.py) | **~5 %** |
+| 4 | `json.dump` + `json.raw_decode` (stdlib pure-Python json) | stdlib | **~4 %** |
+| 5 | `_oracle_move_from_history` | [`reference_runtime.py:298-300`](../../../backend/services/reference_runtime.py) | **~2.5 %** |
+| 6 | `_rebuild_realtime_graph` | [`scanner.py:664`](../../../backend/services/scanner.py) | **~3 %** |
+
+**Confirmed vs refuted hypotheses (A–D from above):**
+
+- **A. Strategy evaluation (`ps_strategy_evaluate`).** Refuted as
+  the dominant hotspot. Strategy genexpr / evaluate frames
+  appear (e.g. `<genexpr> (<strategy:negrisk>:655)` at 0.14 %)
+  but cumulatively well under 5 % of CPU. The `_STRATEGY_EVAL_POOL`
+  was idle in the `--idle` capture for 90 % of the wall-clock
+  time, indicating eval is not the bottleneck on this workload.
+- **B. WebSocket JSON parsing.** Partially confirmed. `raw_decode`
+  + ssl read = ~3 %, modest. Replacing stdlib `json` with `orjson`
+  is a small but easy win.
+- **C. Cox-PH fill inference.** Refuted on this workload. No
+  `cox_inference.py` frames in the top 30. Likely because the
+  trained model row doesn't exist yet (bootstrap phase) — but
+  the *aspirational* hypothesis that this is a hot path doesn't
+  hold once we measure.
+- **D. Copy-trade processor.** Partially refuted. The `_processor_loop`
+  appears in the idle capture (8 always-on tasks, as documented),
+  but in the CPU capture they account for under 2 %.
+
+**The actual top finding** is `copy.deepcopy` of the crypto
+opportunity payload, called **twice** on the same nested
+list/dict structure: once in `_queue_opportunity_dispatch`
+(line 1533) when buffering, and again in
+`_run_opportunity_dispatch_loop` (line 1560) when wrapping into
+a `DataEvent`. This is pure-Python recursive structure copying
+running on every crypto-feed update tick (Binance: 4 symbols,
+~10 Hz aggregate). Eliminating one of the two deepcopy passes is
+a ~10–15 lines fix with no architectural risk.
+
+The second-largest finding is `get_oracle_history`: every call
+walks the full Chainlink history, filters by cutoff, and rebuilds
+buckets. There is no memoisation; the function is called
+repeatedly per crypto opportunity dispatch with overlapping
+parameters. A 1–3 second TTL cache or an incremental
+data-structure would cut this hotspot by ≥ 80 %.
+
+**Implication for the four options below.** Two paths reduce
+the same hotspots without touching the GIL: shrinking the input
+volume of markets at the ingest layer (a category whitelist —
+the higher-leverage move, supersedes the local optimisation
+plan) **or** local edits on each hotspot (deepcopy halving,
+oracle-history caching, stability vectorisation). The local
+optimisation plan is parked in
+[`backlog/0004-optimize-worker-trading-cpu-hotspots.md`](../backlog/0004-optimize-worker-trading-cpu-hotspots.md)
+pending a re-profile after the upstream-filter plan lands.
+Options 1–3 below (free-threaded Python, ProcessPoolExecutor,
+plane split) remain **contingent candidates** — they only
+become relevant if a future profile (post-filter, post-local-fix)
+shows genuinely GIL-bound behaviour.
+
+Source data:
+
+- Flamegraph: [`worker-trading-profile-2026-05-07.svg`](worker-trading-profile-2026-05-07.svg)
+- Raw stacks (CPU-only): preserved at
+  `/tmp/worker-trading-cpu.txt` on the operator's machine; can
+  be re-derived with `py-spy record --format raw` per plan 0003
+  Task 3.
+
 ## Why a bigger box helped only halfway
 
 The 2026-05-07 resource bump (4→8 vCPU, 7.6→15 GiB RAM) gave
@@ -165,7 +273,9 @@ restored normal asyncpg latency and `pg_stat_database.cache_hit_pct`
 ≥ 99%. Indirectly that helped `worker-trading` (its DB calls
 returned faster, freeing the loop sooner).
 
-But the GIL ceiling did not move:
+But the single-core CPU reading did not move (and as the profile
+later showed, that reading was largely idle threads — see
+caveat at the top of this note):
 
 | Metric | Before (4 vCPU/7.6 G) | After (8 vCPU/15 G) |
 |---|---:|---:|
@@ -176,10 +286,21 @@ But the GIL ceiling did not move:
 | Idle CPU on host | ~30% (load 1.7/4 vCPU) | ~85% (load 1.9/8 vCPU) |
 
 `worker-trading` still uses ~1.1 cores. The 6.9 cores around it sit
-idle from its perspective. Vertical scaling does not fix the
-GIL — it just makes the wait shorter.
+idle from its perspective. Vertical scaling alone does not fix
+the within-process limit — it just makes the wait shorter.
 
-## Options to lift the GIL ceiling
+## Options if the CPU plane saturates after upstream + local fixes
+
+> **Read order.** These options were written when GIL contention
+> was the leading hypothesis. The 2026-05-07 profile reframed
+> that picture (see "Measured CPU profile" above). Treat the
+> options below as **contingent**: they're the right toolbox
+> *if* a future profile — captured *after* the upstream
+> category-filter plan and the local-optimisation plan
+> ([`backlog/0004-...`](../backlog/0004-optimize-worker-trading-cpu-hotspots.md)) —
+> shows the worker genuinely CPU-bound across many small frames
+> with no single dominant hotspot. Until then, do not treat
+> these options as the next step.
 
 Four options, ranked by effort/reward.
 
@@ -328,21 +449,26 @@ extensions.
 
 ## Recommendation
 
-The cheapest meaningful win is **Option 1** — the existing
-`ThreadPoolExecutor` already does the right thing semantically,
-it's only the GIL that prevents real parallelism. Bump
-`PYTHON_VERSION` to 3.13 free-threaded in
-[`backend/Dockerfile`](../../../backend/Dockerfile), run a 1-week
-soak on staging with production traffic, measure the stall
-distribution. If 3.13t holds together — done, no application code
-needed.
+**Updated 2026-05-07 after profile.** The original recommendation
+("start with Option 1 — Python 3.13 free-threaded build")
+assumed worker-trading was GIL-saturated. The profile showed
+that's not the current state — real CPU-active work is ~10 % of
+one core, dominated by three algorithmic hotspots. The revised
+ordering:
 
-If after Option 1 the orchestrator latency budget is still tight
-(p95 of `ps_strategy_evaluate` > 100 ms with 5+ traders), add
-**Option 2** for explicit cross-process parallelism. After both,
-revisit whether the residual stalls are still strategy-eval
-contention or have shifted to feed parsing — that decides whether
-Option 3 is worth the 4–6 weeks.
+1. **Reduce input volume first** — apply a category whitelist at
+   the Polymarket ingest layer (separate plan, see
+   [`plan-control-index.md`](../plan-control-index.md)). This
+   trims the same hotspots by shrinking what they operate on.
+2. **Local opportunistic fixes second** — the
+   [`backlog/0004-...`](../backlog/0004-optimize-worker-trading-cpu-hotspots.md)
+   plan, only if a re-profile after step 1 still shows the three
+   hotspots ≥ 10 % each.
+3. **Architectural options (1–4 above) third** — only if a
+   re-profile after step 2 shows genuinely GIL-bound behaviour.
+   At that point Option 1 (3.13 free-threaded) remains the
+   cheapest meaningful win; Option 2 (ProcessPool) is the
+   natural follow-up.
 
 Option 4 (Cython) is a "do it if you're already extending the
 build pipeline for something else" item, not a solo project.
@@ -350,17 +476,16 @@ build pipeline for something else" item, not a solo project.
 ## Out of scope for this note
 
 - **Live-trading semantics.** Everything above applies equally to
-  shadow and live; the GIL ceiling is process-level, not
-  mode-level.
-- **Backend / `worker-news` / `worker-discovery` GIL.** Those
-  processes have different workload mixes; backend is mostly I/O
-  (a Python 3.13 bump there is even safer), worker-news loads big
-  ML models (free-threaded compatibility for sentence-transformers
-  needs separate testing), worker-discovery is REST-bound (already
-  GIL-friendly). Each merits its own assessment.
-- **Vertical scaling further.** Going to 16+ vCPU does nothing for
-  `worker-trading` until the GIL is addressed; a bigger host is
-  pure waste of budget on its own.
+  shadow and live; the per-process CPU model is mode-agnostic.
+- **Backend / `worker-news` / `worker-discovery` profiling.**
+  Those processes have different workload mixes; each merits its
+  own profile if a similar question arises (backend is mostly
+  I/O, worker-news loads big ML models, worker-discovery is
+  REST-bound). They are not covered by the 2026-05-07 profile.
+- **Vertical scaling further.** Going to 16+ vCPU does little
+  for `worker-trading` while the algorithmic hotspots dominate;
+  a bigger host alone is a poor budget allocation until the
+  upstream-filter and local-fix plans land.
 
 ## Reading list
 

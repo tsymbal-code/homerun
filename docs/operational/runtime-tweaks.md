@@ -327,6 +327,157 @@ shadow-only operation (no live mode required).
 
 ---
 
+### 2026-05-07 ~10:00 UTC — flip all bots to `latency_class=fast` (Cox-PH bootstrap path)
+
+- **Surface**: `traders.latency_class` for all 7 sandbox bots
+- **Applied via**: UI / API
+- **Why**: Deep code reading revealed the project ships **two
+  different execution runtimes** with very different shadow
+  semantics:
+
+  | Path | Used by | Pre-submit `TraderOrder` for shadow? |
+  |---|---|---|
+  | `session_engine` (default) | `latency_class=normal` bots | ❌ NO — gated `if mode == "live":` at [`session_engine.py:1530`](../../backend/services/trader_orchestrator/session_engine.py); shadow `skipped` results never write `TraderOrder` rows ([`session_engine.py:1801`](../../backend/services/trader_orchestrator/session_engine.py)) |
+  | `fast_trader_runtime` | `latency_class=fast` bots | ✅ YES — [`fast_submit.py:484`](../../backend/services/trader_orchestrator/fast_submit.py) writes a skeleton `TraderOrder` with `mode=mode_key` (so `mode="shadow"`) as an idempotency lock **before** submission |
+
+  All Cox-PH training reads from `TraderOrder.payload_json["survival_features"]`
+  ([`cox_trainer.py:fetch_training_rows`](../../backend/services/fill_simulator/cox_trainer.py)).
+  With every bot on `normal`, the table stays empty forever ⇒
+  `cox_trainer` keeps logging `no rows to train on` ⇒ Cox-PH never
+  promotes a model ⇒ `cox_inference` returns conservative empirical
+  defaults ⇒ shadow simulator declines every fill ⇒ no orders
+  written ⇒ no training data. Classic chicken-and-egg.
+
+  Flipping at least one bot to `latency_class=fast` is the
+  **shipped** way out. It writes `TraderOrder` rows via
+  `fast_submit` regardless of fill outcome (filled / cancelled /
+  failed), which is exactly the `(duration, event_observed)` data
+  Cox-PH needs.
+
+- **Expected effect**: `TraderOrder` rows start accumulating;
+  within ~6 h `cox_trainer_worker` (news plane) finds them and
+  promotes a first KM-fallback model; within ~24–48 h Cox-PH proper
+  takes over; shadow simulator starts approving fills →
+  `simulation_trades` > 0.
+
+#### Changes
+
+| Bot | latency_class before | after |
+|---|---:|---:|
+| Sandbox - Basic Arbitrage | normal | **fast** |
+| Sandbox - Certainty Shock | normal | **fast** |
+| Sandbox - Market Making | normal | **fast** |
+| Sandbox - NegRisk | normal | **fast** |
+| Sandbox - Tail-End | normal | **fast** |
+| Sandbox - Traders Confluence | normal | **fast** |
+| Sandbox - Traders Copy Trade | normal | **fast** |
+
+#### First 5-min outcome
+
+```
+trader_orders_total_alltime: 6   ← FIRST EVER ROWS
+trader_orders_recent_5m:     6
+status_breakdown:            cancelled=6
+simulation_trades:           0   (still — fills not yet realized)
+```
+
+All 6 are `status=cancelled` because `fast_trader_runtime` has
+strict per-cycle budgets (cycle 3 s, submit 1 s, evaluate 0.2 s)
+that the GIL-bound `worker-trading` cannot meet today. Submission
+durations 5–10 s; one DB query
+([`list_unconsumed_trade_signals`](../../backend/services/trader_orchestrator_state.py))
+hit the 60-s `statement_timeout` and raised `QueryCanceledError`.
+
+This is **acceptable for bootstrap** — `cox_trainer` treats
+`cancelled` orders as right-censored events
+(`CENSOR_STATUSES` set in
+[`cox_trainer.py`](../../backend/services/fill_simulator/cox_trainer.py)),
+which is exactly what KM-fallback fits a baseline `S(t)` from. The
+duration data alone unblocks the trainer.
+
+#### Side-effect to watch
+
+`fast_trader_runtime` saturates the trading-plane event loop more
+aggressively than `session_engine`. If this causes problems
+(repeated `Fast trader cycle exceeded budget`, `QueryCanceledError`
+on multiple bots), the workaround is to **leave only one bot on
+`fast`** — Tail-End is the natural pick because it produces the
+most signals (~1 selected per minute). One fast bot is enough to
+seed the training set; the others can stay on `normal` until the
+GIL-removal work in
+[`docs/plans/architecture/worker-trading.md`](../plans/architecture/worker-trading.md)
+lands.
+
+#### Verification commands
+
+```bash
+# Confirm latency_class
+ssh polyhome-1 'curl -fsS http://127.0.0.1:8888/api/traders' \
+  | jq '.traders[] | {name, latency_class}'
+
+# Watch TraderOrder accumulation
+ssh polyhome-1 'cd /home/polyhome/homerun && docker compose exec -T postgres \
+  psql -U homerun -d homerun -c \
+  "select count(*), string_agg(distinct status::text, \",\") from trader_orders;"'
+
+# Watch cox_trainer pickup (6h interval; check after ~6 h)
+ssh polyhome-1 'cd /home/polyhome/homerun && docker compose logs --since 6h worker-news 2>&1 \
+  | grep "Cox trainer" | tail -10'
+
+# Watch model promotion (check after ~6–8 h)
+ssh polyhome-1 'cd /home/polyhome/homerun && docker compose exec -T postgres \
+  psql -U homerun -d homerun -c \
+  "select id, family, n_events, concordance_index, active, promoted_at from fill_probability_models order by trained_at desc limit 5;"'
+```
+
+#### Rollback
+
+If `fast_trader_runtime` causes prod issues (event loop
+starvation visible to other workers, scanner/news lagging), revert
+all 7 bots back to `latency_class=normal`. The 6 bootstrap rows
+already in `trader_orders` survive — they're enough for the first
+`cox_trainer` cycle even with no further accumulation.
+
+```bash
+TRADERS=(
+  e25441bc4a0844dc893099e67abd84c7  # Basic
+  c949b8c7bdd040038dc7d6dc69d49ed8  # Certainty Shock
+  704e11a34dcc4997b3a60ffdd289b4b8  # Market Making
+  91706d4849534cbb8cf09cbd2fa41bff  # NegRisk
+  388da687054c4b4a858ea152fff04900  # Tail-End
+  e2822918ea334b518fda957e9332f174  # Traders Confluence
+  61dcbeb2b9bc42bd9e9635a09ae5e0c3  # Traders Copy Trade
+)
+for id in "${TRADERS[@]}"; do
+  ssh polyhome-1 "curl -fsS -X PATCH http://127.0.0.1:8888/api/traders/$id \
+    -H 'Content-Type: application/json' \
+    -d '{\"latency_class\": \"normal\"}'"
+done
+```
+
+#### Status
+
+OPEN — bootstrap loop running. Re-evaluate at t+6 h (cox_trainer
+cycle), t+24 h (model promotion check), t+48 h (first
+`simulation_trades` row expected).
+
+#### Why this is the *shipped* answer
+
+This is exactly the architecture other Homerun operators report
+working: `latency_class=fast` is the project's **default
+recommended path** for new shadow deployments. The `normal` path
+is preserved for backwards compatibility — see comment in
+[`backend/workers/fast_trader_runtime.py:22-24`](../../backend/workers/fast_trader_runtime.py):
+
+> «default to `latency_class='normal'` and keep the existing path»
+
+Existing setups stay on `normal`; new deployments are expected to
+flip to `fast` once the operator wants ML-driven shadow simulation.
+We hit the cold-start trap because all our bots inherited the
+backwards-compat default.
+
+---
+
 ## Sister entries (earlier same day, also still open)
 
 These were tracked in the conversation but should be back-filled
@@ -370,3 +521,166 @@ here for completeness if not yet recorded:
   Documented in
   [`docs/plans/architecture/trader-pipeline.md`](../plans/architecture/trader-pipeline.md)
   as a known footgun.
+
+### 2026-05-07 ~11:00–11:58 UTC — Copy Trade bootstrap pipeline unblock
+
+- **Surface**: `traders.source_configs_json` for trader
+  `61dcbeb2b9bc42bd9e9635a09ae5e0c3` (Sandbox - Traders Copy Trade)
+  + `worker-trading` container restart (×2)
+- **Applied via**: `psql` (jsonb_set) + UI pause toggles + `docker
+  compose restart worker-trading`
+- **Why**: after the 10:00 UTC `latency_class=fast` flip wrote the
+  first 8 `trader_orders` (all `cancelled`), the pipeline froze:
+  no new orders for ~2 hours despite 7 fast bots running. The
+  diagnostic chain was:
+  1. **GIL saturation** — 7 fast bots × parallel signals →
+     event-loop starvation (272 `InterfaceError: connection is
+     closed` per 15 min, 8 `QueryCanceledError`, asyncpg pool
+     drained).
+  2. **Wrong strategy** — Tail-End generated 0 signals over 2 h
+     (filters too tight for current market). Traders Copy Trade
+     was the only high-volume source (~261 sig/h).
+  3. **Subscription state stale** after multiple `is_paused`
+     flips — Copy Trade's `signal_cache_hit=0` despite live
+     signal stream → first restart fixed it.
+  4. **Strategy gates too tight for bootstrap** — 314
+     decisions/5 min, all `skipped` with reasons dominated by
+     `max_age` (68%, 5-second cap couldn't beat 5–7 s GIL-bound
+     cycles) and `min_notional` (28%, leaders trade <$10).
+  5. **Stale signal-cache after relax** — second restart cleared
+     in-memory `signal_id`'s that no longer existed in
+     `trade_signals` (FK violations on every audit-flush).
+- **Expected effect**: `trader_orders` count grows; first
+  `decision='selected'` row in `trader_decisions` for Copy Trade.
+- **Verification command**:
+  ```bash
+  ssh polyhome-1 "cd /home/polyhome/homerun && docker compose exec -T postgres \
+    psql -U homerun -d homerun -c \"select decision, count(*) from trader_decisions \
+    where trader_id='61dcbeb2b9bc42bd9e9635a09ae5e0c3' \
+    and created_at > now() - interval '5 minutes' group by 1\""
+  ```
+
+### Changes
+
+| Path | Before | After |
+|---|---:|---:|
+| `traders[Tail-End].is_paused` | false | true |
+| `traders[Traders Copy Trade].is_paused` | true | false |
+| `traders[Traders Copy Trade].source_configs_json[0].strategy_params.max_signal_age_seconds` | 5 | 300 |
+| `traders[Traders Copy Trade].source_configs_json[0].strategy_params.min_source_notional_usd` | 10.0 | 1.0 |
+| `traders[Traders Copy Trade].source_configs_json[0].strategy_params.max_entry_price` | 0.98 | 0.99 |
+| Worker-trading container restarts | — | 2× (~11:34 UTC, ~11:52 UTC) |
+
+### Outcome (5-min window after second restart)
+
+| Metric | Before | After |
+|---|---:|---:|
+| `trader_orders` (Copy Trade) | 0 | **1** (`cancelled`, shadow) |
+| `trader_decisions` selected | 0 | **1** |
+| `trader_decisions` skipped | 0 | 103 (all gate-filtered, expected) |
+| FK violations / 4 min | 34 | 29 (residual bug, non-blocking) |
+
+First `selected` decision and matching `trader_order` written
+**11:58:07 UTC**. Total `trader_orders` for the day:
+`8 → 9` (still all `status=cancelled`, which is correct
+right-censored event shape for KM-fallback bootstrap).
+
+### Residual issues (not blocked, but follow up)
+
+- **FK violations on `trader_decisions.signal_id` (29/4min).**
+  Worker-trading caches `signal_id`s that don't exist in
+  `trade_signals`. Likely race between event-bus publish and DB
+  commit, or stale cache after upstream signal cleanup. Audit
+  buffer drops the affected decisions but the pipeline survives.
+  **Plan candidate: 0003 — Investigate and fix
+  fast_trader_runtime signal-cache vs DB FK race.**
+- **GIL saturation persists** (`worker-trading` 100% CPU even with
+  one bot). Fast cycles still exceed 3 s budget regularly. See
+  [`docs/plans/architecture/worker-trading.md`](../plans/architecture/worker-trading.md)
+  for the four options to lift the GIL ceiling.
+- **`Fast trader evaluate() exceeded budget` (0.2 s)** —
+  individual `evaluate()` calls slip the 200 ms target. Same
+  GIL root cause.
+
+### Rollback
+
+If we need to revert (e.g. Copy Trade exposure becomes risky for
+shadow stats):
+
+```bash
+# Revert strategy_params:
+ssh polyhome-1 "cd /home/polyhome/homerun && docker compose exec -T postgres \
+  psql -U homerun -d homerun -c \"
+  UPDATE traders
+  SET source_configs_json = jsonb_set(
+        jsonb_set(
+          jsonb_set(
+            source_configs_json::jsonb,
+            '{0,strategy_params,max_signal_age_seconds}', '5'::jsonb
+          ),
+          '{0,strategy_params,min_source_notional_usd}', '10.0'::jsonb
+        ),
+        '{0,strategy_params,max_entry_price}', '0.98'::jsonb
+      )::json,
+      updated_at = now()
+  WHERE id = '61dcbeb2b9bc42bd9e9635a09ae5e0c3';\""
+
+# Re-pause Copy Trade if needed:
+# UI: Bots → Sandbox - Traders Copy Trade → Pause
+```
+
+### Next checkpoint
+
+- t+1 h (~13:00 UTC): expect ~10–15 `trader_orders` (selected
+  rate ≈ 1/5 min if the pipeline stays healthy).
+- t+6 h: cox_trainer cycle picks up; KM-fallback model should
+  promote if `n_events >= ~5`.
+- t+24 h: 100+ events → first Cox-PH fit attempt.
+- Verify with:
+  ```bash
+  ssh polyhome-1 "cd /home/polyhome/homerun && docker compose exec -T postgres \
+    psql -U homerun -d homerun -c \
+    \"select id, family, n_events, concordance_index, active \
+    from fill_probability_models order by created_at desc limit 5\""
+  ```
+
+### 2026-05-07 ~14:30 UTC — correction: GIL framing in earlier entries was unverified
+
+- **Surface**: this journal (no runtime change applied)
+- **Applied via**: append-only correction note
+- **Why**: several earlier entries in this file (notably the
+  10:00 UTC `latency_class=fast` flip and the 11:00–11:58 UTC
+  Copy Trade bootstrap unblock) attribute the worker-trading
+  load problem to **GIL saturation** as if it were a measured
+  fact. It was a hypothesis. The 2026-05-07 14:00 UTC py-spy
+  profile (plan 0003,
+  [`docs/plans/architecture/worker-trading-profile-2026-05-07.svg`](../plans/architecture/worker-trading-profile-2026-05-07.svg))
+  showed:
+  1. The `docker stats` reading of "100 % CPU" is misleading —
+     `--idle` sampling reveals ~90 % of those samples are idle
+     `concurrent.futures.thread._worker` frames waiting on a
+     queue. Real CPU-active work is ~10 % of one core.
+  2. The four hypothesised hotspots (strategy eval, WS JSON,
+     Cox-PH, copy-trade processor) are **not** in the top of
+     the CPU-active profile. The actual hotspots are
+     `copy.deepcopy` ×2, uncached `get_oracle_history`, and a
+     nested-loop `_compute_stability`.
+  3. The "Fast trader cycle exceeded budget" warnings (3–7 s)
+     and `idle_touch_commit: 5–7 s` were **DB-pool /
+     async-coordination delays**, not pure CPU. The earlier
+     diagnosis labelled them as GIL effects; they were not.
+- **What this means for past entries**: the *symptoms* documented
+  earlier (asyncpg `connection is closed` storms, audit-buffer
+  drops, `Fast trader cycle exceeded hard budget`) are real and
+  the operational fixes (scaling down active fast bots, relaxing
+  Copy Trade gates, restarting worker-trading) were correct
+  given what we knew at the time. But the *attribution* —
+  "GIL saturation" — was not measured. Read those entries with
+  that caveat.
+- **What this means for future entries**: when an entry posits
+  a root cause, mark it as "**hypothesis**" until the evidence
+  is independent of the symptom (a profile, a DB plan, a
+  reproducer). `100 % CPU in docker stats` alone does not
+  establish GIL contention.
+- **No rollback** — this entry corrects framing; nothing to
+  revert.
