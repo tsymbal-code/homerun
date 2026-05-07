@@ -438,6 +438,49 @@ Search hints:
   the bot field overrides it. If both are empty, decisions stay
   `selected` but no `simulation_trades` rows appear — the symptom
   looks like Step 7 fill failure but is actually configuration.
+- **Frontend / API validation mismatch on `trader_cycle_timeout_seconds`.**
+  The `Trader Cycle Timeout` input in the Bots → ⚙ Settings flyout
+  ([TradingPanel.tsx:12751](../../../frontend/src/components/TradingPanel.tsx))
+  declares `min=3, max=120`, but the backend Pydantic model
+  ([routes_trader_orchestrator.py:159](../../../backend/api/routes_trader_orchestrator.py))
+  enforces `ge=30.0, le=180.0`. Values in `[3, 30)` pass the UI but
+  return HTTP 422 from the API; values in `(120, 180]` get capped by
+  the UI before they're sent. Safe range that satisfies both today:
+  **`30..120`**. This is a known divergence — when fixing, raise
+  the UI minimum to 30 and the maximum to 180 to match backend
+  semantics. Direct API call works around the UI bound:
+  `curl -X PUT /api/trader-orchestrator/settings -d
+  '{"global_runtime":{"trader_cycle_timeout_seconds":150}}'`.
+- **`Trader cycle slow` log is the gold-standard latency view.**
+  When `_run_trader_once_inner` exceeds half the timeout it emits a
+  WARNING with a per-stage breakdown
+  ([trader_orchestrator_worker.py:7944](../../../backend/services/trader_orchestrator/) — line varies by build):
+
+  ```json
+  {"duration_s": 10.2, "processed_signals": 1, "decisions_written": 1,
+   "orders_written": 0,
+   "stage_timings_ms": {"signal_loop": 9531, "ps_decision_writes": 5029,
+     "ps_submit_order": 2143, "ps_risk_eval_setup": 1638,
+     "per_signal_total": 7376, ...}}
+  ```
+
+  Search this log line first when latency is the suspect. Stages worth
+  watching:
+  `ps_decision_writes` (DB write latency on `trader_decisions` /
+  `trader_signal_consumption`),
+  `ps_submit_order` (shadow Cox-PH or live CLOB submit),
+  `ps_risk_eval_setup` (risk-gate fixture loading),
+  `per_signal_total` (whole signal-to-decision round-trip).
+  A healthy signal round-trip is 50–200 ms; anything > 1000 ms is a
+  bottleneck. `ps_decision_writes > 1000ms` typically means DB-pool
+  exhaustion or lock contention on `trader_decisions`-related tables.
+
+  Recorded baselines on the `polyhome-1` host:
+
+  | When | `ps_decision_writes` samples | Notes |
+  |---|---|---|
+  | Pre Plan 0002 (May 7 2026, 1 h pre-redeploy window) | `1077.6 ms`, `5029.4 ms` (n=2) | Postgres oversized for the host: `shared_buffers=4GB` against 7.6 GiB RAM, `effective_cache_size=10GB` (lying to the planner). RAM `available` ≈ 363 MiB. |
+  | Post Plan 0002 (15 min post-redeploy window) | n=0 — no `Trader cycle slow` events fired | Postgres re-sized to `shared_buffers=1.5GB`, `effective_cache_size=3GB` (truthful), `max_connections=100`. Cache hit 99.29%, RAM `available` 1.7 GiB. The trade-signal feed collapsed to ≈0.4/min after the restart due to **out-of-scope** `worker-trading` event-loop saturation, so no signals → no slow-cycle samples. The Postgres layer is no longer the bottleneck on this host. |
 
 ## Extension points
 

@@ -72,6 +72,47 @@ backtest queries on `AsyncSessionLocal` would otherwise starve the
 scanner; isolating the hot path on a small pool keeps the loop
 predictable.
 
+### Postgres allocation on the production host
+
+The compose `postgres` service is sized for the production host
+`polyhome-1` (7.6 GiB total RAM, no swap). The relevant `command:`
+flags in [docker-compose.yml](../../../docker-compose.yml) are:
+
+| Setting | Value | Why |
+|---|---|---|
+| `shared_buffers` | `1536MB` | ~20% of host RAM. Empirically holds the entire working set: cache hit pct stays at 99%+ once buffer pool is warm. |
+| `effective_cache_size` | `3GB` | Truthful hint to the planner: shared_buffers + page cache. Setting it above total RAM (the previous `10GB`) biased the planner toward index scans that miss cache. |
+| `work_mem` | `16MB` | Caps peak risk: `max_connections × work_mem` = 1.6 GB worst case. |
+| `maintenance_work_mem` | `256MB` | VACUUM / CREATE INDEX rare on this DB. |
+| `max_connections` | `100` | Observed peak ~78 across all engine pools combined; 100 leaves ~28% headroom. |
+| `effective_io_concurrency` | `32` | Tuned for the QEMU-backed SSD on this host (the previous `200` is for NVMe RAID). |
+| `autovacuum_max_workers` | `3` | 4-vCPU host — 3 vacuum workers leave headroom for the trader workers. |
+| `max_wal_size` | `2GB` | Faster checkpoint recovery than the previous `4GB`; disk space is not the constraint. |
+| `synchronous_commit` | `off` | Acceptable for shadow / single-tenant workload; documented for live awareness. |
+| `shm_size` (Docker) | `2g` | shared_buffers (1.5 GB) + working room (0.5 GB). |
+
+If the cache hit ratio drops below 95% sustained, bump
+`shared_buffers` to `2GB`. Don't go below 1 GB on PG 16 — planner
+overhead becomes noticeable.
+
+### `pg_stat_statements`
+
+`shared_preload_libraries=pg_stat_statements` is loaded by the
+postgres container. The matching SQL view is created once via
+`CREATE EXTENSION IF NOT EXISTS pg_stat_statements;` and persists in
+the `homerun` database afterwards. It is the canonical slow-query
+view — sample query:
+
+```sql
+SELECT query, calls, round(mean_exec_time::numeric, 1) AS mean_ms
+FROM pg_stat_statements
+ORDER BY total_exec_time DESC
+LIMIT 10;
+```
+
+Stats reset on Postgres restart. Wait at least 10 minutes after a
+redeploy before reading them for meaningful aggregation.
+
 ### Connection settings (per-connection)
 
 `async_engine`'s `connect_args` set:
@@ -261,9 +302,9 @@ __table_args__ = (
 When adding a new query path, add an index in the same migration as
 the schema change. The Postgres tuning in
 [docker-compose.yml](../../../docker-compose.yml) (low
-`random_page_cost=1.1`, high `effective_io_concurrency=200`) assumes
-indexed access patterns; full table scans on million-row tables will
-hit `statement_timeout`.
+`random_page_cost=1.1`, modest `effective_io_concurrency=32` matching
+the QEMU SSD) assumes indexed access patterns; full table scans on
+million-row tables will hit `statement_timeout`.
 
 ## Dependencies (both directions)
 

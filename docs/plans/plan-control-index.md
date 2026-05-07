@@ -48,6 +48,7 @@ notes.
 | ID   | Title                                                | Category | Prerequisites |
 | ---- | ---------------------------------------------------- | -------- | ------------- |
 | 0001 | [Add NVIDIA NIM as LLM provider](completed/0001-add-nvidia-nim-provider.md) | I        | —             |
+| 0002 | [Tune Postgres for the 7 GB host](completed/0002-tune-postgres-for-7gb-host.md) | R        | —             |
 
 When adding a row: keep this table sorted by ID ascending. Don't
 re-number plans — gaps in IDs are normal and expected (deleted or
@@ -67,6 +68,17 @@ Only notes that aren't obvious from the title. All plans must follow
   as binding context. No public contracts change; the only schema
   delta is two nullable columns on `app_settings`. Safe to land in
   isolation.
+- **Plan 0002 — Tune Postgres for the 7 GB host.** Right-sizes the
+  Postgres `command:` block in `docker-compose.yml` for the actual
+  `polyhome-1` capacity (7.6 GB RAM, 4 vCPU). Existing config was
+  written for a much larger host (`shared_buffers=4GB`,
+  `effective_cache_size=10GB` exceeds total RAM). Cache hit is
+  already 100%, so the change is safe — its purpose is freeing
+  ~3 GB RAM for the memory-pressured Python workers and giving the
+  query planner a truthful `effective_cache_size`. Includes brief
+  redeploy downtime and a rollback recipe. Touches infrastructure
+  only — no schema, no business code. Diagnostic ground truth is
+  the `Trader cycle slow` log's `ps_decision_writes` p95.
 
 ## Ordering decision tree (for agents picking the next plan)
 

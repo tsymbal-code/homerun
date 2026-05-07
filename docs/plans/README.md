@@ -253,7 +253,7 @@ granularity: 1 commit per plan or 30, the grep query is the same.
 Active plans (canonical order, prerequisites and categories live in
 [`plan-control-index.md`](plan-control-index.md)):
 
-- [0001 — Add NVIDIA NIM as LLM provider](0001-add-nvidia-nim-provider.md)
+_None at the moment — see [`completed/`](completed/) for finished plans._
 
 Architecture notes:
 

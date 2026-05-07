@@ -74,7 +74,7 @@ before `backend` and the worker planes start.
 
 | Service | Image / entrypoint | Job |
 |---|---|---|
-| `postgres` | `postgres:16-alpine` | Single source of truth for everything: settings, strategies, opportunities, trades, positions, model cache, usage logs. Tuned for write-heavy workloads (`max_connections=200`, `shared_buffers=4GB`, `synchronous_commit=off`). |
+| `postgres` | `postgres:16-alpine` | Single source of truth for everything: settings, strategies, opportunities, trades, positions, model cache, usage logs. Tuned for the 7.6 GiB production host (`shared_buffers=1.5GB`, `effective_cache_size=3GB`, `max_connections=100`, `work_mem=16MB`, `synchronous_commit=off`). `pg_stat_statements` is loaded and the matching extension is created in the `homerun` database. See [Database & Migrations](database-and-migrations.md#postgres-allocation-on-the-production-host) for the full table. |
 | `redis` | `redis:7-alpine` | Volatile pub/sub: cross-plane signals, wallet state deltas, trader-event broadcast. No persistence (`--save ""` `--appendonly no`); restart wipes Redis but never loses durable state. |
 | `migrate` | backend image, runs `init_database()` | One-shot. Creates schema on a fresh DB or runs `alembic upgrade head` on an existing one. The same code path also runs at FastAPI startup, so docker and the desktop launchers share one bootstrap. |
 | `backend` | uvicorn `main:app` :8000 | API plane. FastAPI app, `/api/*` routes, WebSocket fan-out at `/ws`, FeedManager (Polymarket CLOB + Kalshi for price push to UI), market cache, position-mark loop, AI manager. **Does not** run worker loops. |
