@@ -265,5 +265,6 @@ Architecture notes:
 - [Testing](architecture/testing.md)
 - [LLM Provider Layer](architecture/llm-provider-layer.md)
 - [Trader Pipeline & Diagnostics](architecture/trader-pipeline.md)
+- [worker-trading & the GIL ceiling](architecture/worker-trading.md)
 
 Completed plans: see [completed/](completed/).
