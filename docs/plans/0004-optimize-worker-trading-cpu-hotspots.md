@@ -1,83 +1,95 @@
-# Plan: Optimize worker-trading CPU hotspots (deepcopy, oracle history, stability)
+# Plan: Optimize worker-trading CPU hotspots (deepcopy, oracle history, json)
 
 > **Plan policy.** This plan follows
-> [`docs/plans/README.md`](../README.md) — task format, validation
+> [`docs/plans/README.md`](README.md) — task format, validation
 > commands, "Mark completed" pattern, move to
-> [`completed/`](../completed/) on close. Every commit produced by
+> [`completed/`](completed/) on close. Every commit produced by
 > this plan carries a `Plan: <NNNN>` git trailer (see
-> [Commits and traceability](../README.md#commits-and-traceability)).
+> [Commits and traceability](README.md#commits-and-traceability)).
 > Ordering, category, and prerequisites for this plan live in
-> [`plan-control-index.md`](../plan-control-index.md).
+> [`plan-control-index.md`](plan-control-index.md).
 >
-> **Status: BACKLOG.** This plan is parked because the upstream
-> mitigation (market category filtering — see plan that supersedes
-> it) is expected to reduce the same hotspots by shrinking the
-> input volume. Pull this plan back into the active queue only if
-> a re-profile *after* the filtering plan still shows ≥ 10 % CPU
-> in any of these three hotspots.
+> **Status: ACTIVE (2026-05-07).** Originally backlog'd pending the
+> upstream tag filter (plan 0005). After plan 0005 landed, a
+> 2026-05-07 post-filter re-profile (see
+> [`architecture/worker-trading.md`](architecture/worker-trading.md#after-plan-0005-2026-05-07-tag-whitelist-active))
+> showed `get_oracle_history` (~36 % combined) and `copy.deepcopy`
+> (~10.8 %) still ≥ 10 % CPU, so this plan was promoted back into
+> the active queue. `_compute_stability` already dropped under 1 %
+> post-filter — the original Task 3 is descoped to
+> "no-op, hotspot already below threshold". Tasks 1, 2, 4, 5, 6
+> remain.
 
 ## Overview
 
-The 2026-05-07 py-spy profile of worker-trading
-([architecture note section "Measured CPU profile"](../architecture/worker-trading.md#measured-cpu-profile-2026-05-07))
-identified three pure-Python CPU hotspots that together account
-for ~34 % of CPU-active time:
+After plan 0005's tag-filter landed and trimmed the catalog by
+~27 %, the 2026-05-07 post-filter py-spy profile of
+`worker-trading`
+([architecture note section "After plan 0005"](architecture/worker-trading.md#after-plan-0005-2026-05-07-tag-whitelist-active))
+shows two pure-Python CPU hotspots still dominate:
 
-1. `copy.deepcopy` called twice on the crypto opportunity payload
-   (~15 %).
-2. `get_oracle_history` linear scan + bucketing on every call,
-   no cache (~14 %).
-3. `_compute_stability` nested Python loop over price history
-   (~5 %).
+1. `get_oracle_history` linear scan + bucketing on every call,
+   no cache (~36 % combined across multiple inner lines).
+2. `copy.deepcopy` chain on the crypto opportunity payload
+   (~10.8 % combined).
 
-Plus a smaller bonus target:
+Plus a smaller bonus target that survives across both profiles:
 
-4. `stdlib json` on the dispatch hot path (~4 %).
+3. `stdlib json` on the dispatch hot path (`json.dump` +
+   `raw_decode` ≈ 3 %).
 
-Each is a 10–50 line localised change. Done = worker-trading CPU
-samples show all four hotspots reduced to < 5 % each, with a
-re-captured flamegraph as evidence.
+(`_compute_stability` was the third hotspot in the pre-filter
+profile but dropped from ~5 % to <1 % post-filter; see plan
+notes — Task 3 below skipped.)
+
+Each remaining hotspot is a 10–50 line localised change. Done =
+worker-trading CPU samples show the surviving hotspots reduced
+to < 5 % each, with a re-captured flamegraph as evidence.
 
 This plan is **opportunistic, not architectural**. It does not
 touch the GIL, the process model, or the async event loop. It
 treats specific algorithmic inefficiencies discovered by
 profiling.
 
-## Why this is in backlog
+## Why the upstream filter alone wasn't enough
 
-The natural way to reduce these hotspots is to feed less data
-into them: a category whitelist at the Polymarket ingest layer
-([`scanner.py:937`](../../../backend/services/scanner.py))
-multiplies the funnel reduction across **every** downstream
-consumer — the same deepcopy now copies a shorter list, the same
-oracle lookup runs over fewer assets, the same stability loop
-processes fewer rows. Instead of fixing each leaf, fix the root.
-
-If the upstream filter lands and the next profile still shows
-material time in any of these three frames, this plan returns to
-the active queue with the **same task list** (no re-derivation
-needed). The hotspots are stable code, not flaky.
+The natural way to reduce these hotspots was to feed less data
+into them: a tag whitelist at the Polymarket ingest layer
+([`scanner.py`](../../backend/services/scanner.py)) multiplies
+the funnel reduction across **every** Polymarket-derived
+downstream consumer. Plan 0005 delivered that whitelist and
+shrank the catalog by ~27 %. But the two surviving hotspots run
+on data that **isn't gated by the catalog**: the crypto
+fast-binary lane reads its reference series from the **Binance**
+WS feed and the Chainlink oracle history, neither of which the
+tag filter touches. Their absolute CPU cost was therefore
+roughly constant across the two profiles — and rose in *share*
+because the catalog-driven hotspots shrank around them. So the
+local fixes below are now the primary lever for further CPU
+relief.
 
 ## Context / References
 
-- [Architecture: worker-trading process model + CPU profile](../architecture/worker-trading.md)
-- [Plan 0003 — Profile worker-trading hotspots](../completed/0003-profile-worker-trading-hotspots.md)
-- [Profiling artefacts](../architecture/worker-trading-profile-2026-05-07.svg)
-- [`market_runtime.py:1525-1583`](../../../backend/services/market_runtime.py)
-- [`reference_runtime.py:200-240`](../../../backend/services/reference_runtime.py)
-- [`market_monitor.py:140-167`](../../../backend/services/market_monitor.py)
+- [Architecture: worker-trading process model + CPU profile](architecture/worker-trading.md)
+- [Plan 0003 — Profile worker-trading hotspots](completed/0003-profile-worker-trading-hotspots.md)
+- [Plan 0005 — Tag-based market filter at ingest](0005-tag-based-market-filter-at-ingest.md)
+- [Pre-filter flamegraph](architecture/worker-trading-profile-2026-05-07.svg)
+- [Post-filter flamegraph](architecture/worker-trading-profile-2026-05-07-post-filter.svg)
+- [`market_runtime.py:1525-1583`](../../backend/services/market_runtime.py)
+- [`reference_runtime.py:200-240`](../../backend/services/reference_runtime.py)
+- [`market_monitor.py:140-167`](../../backend/services/market_monitor.py)
 
 ## Validation Commands
 
 - `ssh polyhome-1 'cd /home/polyhome/homerun && docker compose exec -T backend pytest -q backend/tests/services/test_market_runtime.py backend/tests/services/test_reference_runtime.py'`
 - `ssh polyhome-1 'cd /home/polyhome/homerun && docker compose exec -T backend ruff check backend/services/market_runtime.py backend/services/reference_runtime.py backend/services/market_monitor.py'`
 - Re-profile (manual, requires plan-0003 ptrace cap recipe): a
-  fresh py-spy capture under steady-state load shows each of the
-  four hotspots reduced to < 5 % self-time.
+  fresh py-spy capture under steady-state load shows the
+  remaining hotspots reduced to < 5 % self-time.
 
 ### Task 1: Eliminate the redundant deepcopy in the crypto dispatch path
 
-- [ ] Read [`market_runtime.py:1525-1583`](../../../backend/services/market_runtime.py)
+- [ ] Read [`market_runtime.py:1525-1583`](../../backend/services/market_runtime.py)
   end-to-end. Confirm that the payload is *not* mutated between
   `_queue_opportunity_dispatch` (line 1533) and
   `_run_opportunity_dispatch_loop` (line 1560). If true, the
@@ -100,7 +112,7 @@ needed). The hotspots are stable code, not flaky.
 
 ### Task 2: Add a TTL cache to `get_oracle_history`
 
-- [ ] Read [`reference_runtime.py:200-240`](../../../backend/services/reference_runtime.py).
+- [ ] Read [`reference_runtime.py:200-240`](../../backend/services/reference_runtime.py).
   Note that the function is keyed by
   `(asset, points, max_age_seconds)` and walks `_history` linearly
   every call. Chainlink price ticks arrive at most once per few
@@ -115,28 +127,26 @@ needed). The hotspots are stable code, not flaky.
   that a new tick (changes `last_history_len`) busts the cache.
 - [ ] Confirm `get_oracle_motion_summary` (same module) doesn't
   duplicate the same scan — if it does, factor a shared helper.
+  The post-filter profile shows `_oracle_move_from_history` at
+  ~6.6 %, which suggests it does walk the same history; expect
+  the shared helper to fall out of this cache as a bonus.
 - [ ] Mark completed
 
-### Task 3: Vectorise `_compute_stability`
+### Task 3: Vectorise `_compute_stability` — DESCOPED
 
-- [ ] Read [`market_monitor.py:140-167`](../../../backend/services/market_monitor.py).
-  The current Python double loop computes
-  `sum(abs(curr_prices[j] - prev_prices[j]))` over a price-history
-  list. Convert to a numpy single-pass computation:
-  `np.diff(np.array(price_history), axis=0)` then
-  `np.abs(...).sum()`.
-- [ ] Make sure the numpy path handles the "fewer than 2
-  observations" edge case the same way (return 0.5).
-- [ ] Add a unit test that the numpy result equals the Python
-  result for several fixture histories (regression guard).
-- [ ] Mark completed
+- [x] **Skipped** — the post-filter profile shows
+  `_compute_stability` at <1 % CPU (down from ~5 % pre-filter).
+  No remaining work; the hotspot is already below the < 5 %
+  target threshold. This task remains in the file as a
+  historical record only.
+- [x] Mark completed
 
 ### Task 4: Replace stdlib `json` with `orjson` on the dispatch path
 
 - [ ] Identify the exact `json.dump` and `raw_decode` callers
-  visible in the 2026-05-07 profile. Most likely candidates:
+  visible in both 2026-05-07 profiles. Most likely candidates:
   the `DataEvent.payload` serialisation in
-  [`market_runtime.py:1556-1561`](../../../backend/services/market_runtime.py)
+  [`market_runtime.py:1556-1561`](../../backend/services/market_runtime.py)
   and the WS message decode loop in `services/ws_feeds.py`.
 - [ ] Add `orjson` to the backend's dependency manifest (already
   used in some places? check first to avoid duplication).
@@ -150,17 +160,22 @@ needed). The hotspots are stable code, not flaky.
 ### Task 5: Re-capture profile, verify each hotspot is below threshold
 
 - [ ] Re-apply the temporary `cap_add: [SYS_PTRACE]` per
-  [plan 0003 Task 2](../completed/0003-profile-worker-trading-hotspots.md).
+  [plan 0003 Task 2](completed/0003-profile-worker-trading-hotspots.md)
+  / [plan 0005 Task 8](completed/0005-tag-based-market-filter-at-ingest.md)
+  (whichever lands as completed first).
 - [ ] Re-run the 60 s py-spy capture (`--rate 100`, no `--idle`)
   under the same workload as 2026-05-07 (one fast trader,
-  Sandbox - Traders Copy Trade active).
-- [ ] Compare top-N table to the original. Each of the four
-  targeted frames should be < 5 % self-time. If any is not,
-  open a sub-issue rather than re-opening this whole plan —
+  `Sandbox - Traders Copy Trade` active) **with the same tag
+  filter active** (`crypto`, `sports`, `politics`) so the
+  comparison stays apples-to-apples vs the post-filter baseline.
+- [ ] Compare top-N table to the post-filter baseline. Each of
+  the targeted frames (`get_oracle_history`, `copy.deepcopy`
+  chain, `json` callers) should be < 5 % self-time. If any is
+  not, open a sub-issue rather than re-opening this whole plan —
   there's likely a second-order hotspot that needs its own
   treatment.
 - [ ] Save the new SVG to
-  `docs/plans/architecture/worker-trading-profile-<YYYY-MM-DD>.svg`
+  `docs/plans/architecture/worker-trading-profile-<YYYY-MM-DD>-post-0004.svg`
   and append a "After plan-0004" subsection to the architecture
   note's "Measured CPU profile" section.
 - [ ] Revert the cap_add. Confirm the worker keeps writing
@@ -169,18 +184,19 @@ needed). The hotspots are stable code, not flaky.
 
 ### Task 6: Update architecture note + close
 
-- [ ] In [`architecture/worker-trading.md`](../architecture/worker-trading.md),
+- [ ] In [`architecture/worker-trading.md`](architecture/worker-trading.md),
   in the "Measured CPU profile" section, append a "Post-0004"
-  table with the new top-N. State whether the four hotspots
+  table with the new top-N. State whether the targeted hotspots
   fell below the 5 % threshold.
 - [ ] If the GIL ceiling is *still* the next limit (i.e. CPU is
   now genuinely saturated by many small frames with no single
-  dominant one), promote one of Options 1–3 to a follow-up
-  plan. Otherwise, the document closes the door on
-  GIL-removal as the next step.
-- [ ] `git mv docs/plans/backlog/0004-optimize-worker-trading-cpu-hotspots.md
+  dominant one), promote one of Options 1–3 (free-threaded
+  Python, ProcessPool, plane split) to a follow-up plan.
+  Otherwise, the document closes the door on GIL-removal as the
+  next step.
+- [ ] `git mv docs/plans/0004-optimize-worker-trading-cpu-hotspots.md
   docs/plans/completed/`.
-- [ ] Update [`plan-control-index.md`](../plan-control-index.md):
+- [ ] Update [`plan-control-index.md`](plan-control-index.md):
   link target to `completed/0004-...md`.
 - [ ] Mark completed
 
@@ -188,11 +204,11 @@ needed). The hotspots are stable code, not flaky.
 
 - **GIL removal / Python 3.13 free-threaded build / ProcessPool /
   plane split.** Those are Options 1–3 in
-  [`architecture/worker-trading.md`](../architecture/worker-trading.md)
+  [`architecture/worker-trading.md`](architecture/worker-trading.md)
   and remain *candidates* if 0004 leaves residual GIL pressure.
-- **Reducing the input volume of markets.** That's a different
-  plan (upstream category filter). The two are complementary —
-  this plan trims the per-item cost; the other trims the item
+- **Reducing the input volume of markets.** That was plan 0005
+  (upstream tag filter), now landed. The two are complementary —
+  this plan trims the per-item cost; that one trimmed the item
   count.
 - **Caching strategy decisions** beyond the simple TTL-cache for
   `get_oracle_history`. If a more sophisticated cache layer is

@@ -264,6 +264,66 @@ Source data:
   be re-derived with `py-spy record --format raw` per plan 0003
   Task 3.
 
+### After plan 0005 (2026-05-07, tag-whitelist active)
+
+A second 60 s `py-spy` capture was taken with the new tag-based
+ingest filter active (`market_filter_tags=['crypto', 'sports',
+'politics']`, cutting the catalog from ~19 966 to ~14 604 markets
+per cycle, ~27 % volume reduction). Same active trader as the
+baseline (`Sandbox - Traders Copy Trade`, fast latency class),
+6 866 CPU-active samples captured.
+
+Top self-time hotspots (CPU-active sampling, post-filter):
+
+| Rank | Hotspot | File:line | % CPU |
+|---|---|---|---:|
+| 1 | `get_oracle_history` (lines 217+220+231+232+233 combined) | [`reference_runtime.py:217-238`](../../../backend/services/reference_runtime.py) | **~36 %** |
+| 2 | `copy.deepcopy` chain (line-118 leaf + helpers) | [`copy.py`](https://docs.python.org/3/library/copy.html) (Python stdlib) called from [`market_runtime.py:1533, 1560`](../../../backend/services/market_runtime.py) | **~10.8 %** |
+| 3 | `_oracle_move_from_history` (lines 298+300+301) | [`reference_runtime.py:298-301`](../../../backend/services/reference_runtime.py) | **~6.6 %** |
+| 4 | `_rebuild_crypto_rows_from_cache` | [`market_runtime.py:1765`](../../../backend/services/market_runtime.py) | **~2.9 %** |
+| 5 | `pydantic.model_validate` (call site = recorder ingestion) | pydantic stdlib | **~3.6 %** |
+| 6 | `json.raw_decode` + `json.dump` (stdlib pure-Python json) | stdlib | **~3.1 %** |
+
+Comparison vs. 2026-05-07 baseline:
+
+| Hotspot | Baseline | Post-filter | Δ |
+|---|---:|---:|---|
+| `copy.deepcopy` (sum) | ~15 % | ~10.8 % | **−28 %** |
+| `_compute_stability` | ~5 % | <1 % (out of top-25) | **−80 %** |
+| `_rebuild_realtime_graph` | ~3 % | <1 % | dropped |
+| `get_oracle_history` (sum) | ~14 % | **~36 %** | up in *share* (held in absolute, so its share rose because other paths shrank) |
+| `_oracle_move_from_history` | ~2.5 % | ~6.6 % | same dynamic — share rose because the denominator shrank |
+
+**Why `get_oracle_history` rose in share.** The tag filter
+prunes the *Polymarket* catalog (Polymarket markets and events
+are filtered by tag union), but the crypto-fast-binary lane in
+`market_runtime.py` reads its reference series directly from the
+**Binance** WS feeds + Chainlink oracle history, neither of
+which are gated by the catalog. So the two `reference_runtime`
+hotspots are essentially constant in absolute terms; the
+fraction of total CPU rose because the catalog-driven hotspots
+(`_compute_stability`, `_rebuild_realtime_graph`,
+half of `deepcopy`) shrank.
+
+**Decision.** Two hotspots remain ≥ 10 % of CPU after the tag
+filter (`get_oracle_history` ~36 %, `copy.deepcopy` ~10.8 %), so
+the local-fix plan
+[`backlog/0004-optimize-worker-trading-cpu-hotspots.md`](../backlog/0004-optimize-worker-trading-cpu-hotspots.md)
+is **pulled back into the active queue** (see
+[`plan-control-index.md`](../plan-control-index.md)). `_compute_stability`
+already dropped under 1 % so its scope can be reduced or removed
+from that plan; `get_oracle_history` TTL caching and one-pass
+`deepcopy` remain.
+
+Source data (post-filter):
+
+- Flamegraph: [`worker-trading-profile-2026-05-07-post-filter.svg`](worker-trading-profile-2026-05-07-post-filter.svg)
+- Raw stacks: regenerable with the same `py-spy record --format
+  raw --duration 60 --rate 100 --pid <worker-pid>` command per
+  plan 0003 Task 3 (the temporary `cap_add: [SYS_PTRACE]` was
+  re-applied for the capture and reverted immediately after —
+  see plan 0005 Task 8 for the exact sequence).
+
 ## Why a bigger box helped only halfway
 
 The 2026-05-07 resource bump (4→8 vCPU, 7.6→15 GiB RAM) gave
@@ -456,14 +516,25 @@ that's not the current state — real CPU-active work is ~10 % of
 one core, dominated by three algorithmic hotspots. The revised
 ordering:
 
-1. **Reduce input volume first** — apply a category whitelist at
-   the Polymarket ingest layer (separate plan, see
-   [`plan-control-index.md`](../plan-control-index.md)). This
-   trims the same hotspots by shrinking what they operate on.
-2. **Local opportunistic fixes second** — the
-   [`backlog/0004-...`](../backlog/0004-optimize-worker-trading-cpu-hotspots.md)
-   plan, only if a re-profile after step 1 still shows the three
-   hotspots ≥ 10 % each.
+1. **Reduce input volume first — DONE.** Plan 0005
+   ([`completed/0005-tag-based-market-filter-at-ingest.md`](../completed/0005-tag-based-market-filter-at-ingest.md))
+   added an OR-logic tag whitelist at the Polymarket ingest
+   layer (`scanner._apply_market_tag_whitelist`); the
+   post-filter profile is in
+   ["After plan 0005" above](#after-plan-0005-2026-05-07-tag-whitelist-active).
+   `_compute_stability` and `_rebuild_realtime_graph` dropped
+   from the top-25 entirely; `copy.deepcopy` shrank ~28 %; the
+   crypto-fast-binary reference path
+   (`get_oracle_history`/`_oracle_move_from_history`) was
+   not addressable from the catalog filter and remains the
+   dominant hotspot.
+2. **Local opportunistic fixes second — ACTIVE.** Plan 0004
+   ([`0004-optimize-worker-trading-cpu-hotspots.md`](../0004-optimize-worker-trading-cpu-hotspots.md))
+   was promoted from backlog after the post-filter re-profile.
+   Targets: TTL cache for `get_oracle_history`, halve the
+   crypto-payload `deepcopy`, swap stdlib `json` for `orjson`
+   on the dispatch path. `_compute_stability` is descoped
+   because it already dropped under 1 %.
 3. **Architectural options (1–4 above) third** — only if a
    re-profile after step 2 shows genuinely GIL-bound behaviour.
    At that point Option 1 (3.13 free-threaded) remains the

@@ -120,6 +120,10 @@ runtime switch each worker reads to gate plane-specific behaviour
    loads Python class strategies stored in the DB and dispatches them
    on relevant events (`market_data_refresh`, `news_update`,
    `data_source_update`). Strategies emit `Opportunity` rows.
+   The market universe fed into this stage is gated by a tag-based
+   ingest filter (`scanner._apply_market_tag_whitelist`) configured
+   from `Settings → Scanner`; see
+   [`market-filter.md`](market-filter.md) for the funnel.
 3. **Opportunities → UI** — opportunities go through `shared_state`
    and surface in the React **Opportunities** tab. The WebSocket
    `opportunities` channel pushes incremental updates so the UI

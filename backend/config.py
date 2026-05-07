@@ -150,6 +150,13 @@ class Settings(BaseSettings):
     # volume > 0 qualifies.  Raise to e.g. 100.0 to drop micro-volume
     # noise that's tradable on paper but never actually trades.
     MARKET_UNIVERSE_MIN_VOLUME: float = 0.0
+    # Tag aggregator hook — every ingest cycle records distinct tags
+    # observed on raw markets/events into ``market_tags_seen`` so the
+    # operator-facing tag chooser in ``Settings → Scanner`` has data
+    # to render.  Disable at runtime if upserts ever become a hot
+    # loop bottleneck; it's cheap today (≤ few hundred unique tags
+    # per cycle, single ON CONFLICT statement).
+    MARKET_TAG_AGGREGATOR_ENABLED: bool = True
 
     # Opportunity Quality Filters (hard rejection thresholds)
     MIN_LIQUIDITY_HARD: float = 1000.0  # Reject opportunities below this liquidity ($)

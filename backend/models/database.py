@@ -1222,6 +1222,26 @@ class ScannerSettings(Base):
     updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
 
 
+class MarketTagSeen(Base):
+    """Distinct tags observed on Polymarket / Kalshi markets and events.
+
+    Populated by ``services.market_tag_aggregator.record_tags_from_markets``
+    on every ingest cycle, before any filter is applied. Feeds the
+    operator-facing tag chooser in ``Settings → Scanner``.
+    """
+
+    __tablename__ = "market_tags_seen"
+
+    tag = Column(String, primary_key=True)
+    first_seen = Column(DateTime, nullable=False, default=_utcnow)
+    last_seen = Column(DateTime, nullable=False, default=_utcnow, onupdate=_utcnow)
+    occurrences = Column(BigInteger, nullable=False, default=1)
+
+    __table_args__ = (
+        Index("idx_market_tags_seen_last_seen", "last_seen"),
+    )
+
+
 # ==================== APP SETTINGS ====================
 
 
@@ -1320,6 +1340,12 @@ class AppSettings(Base):
     scanner_max_opportunities_per_strategy = Column(Integer, default=120)
     scanner_skipped_signal_reactivation_cooldown_seconds = Column(Integer, default=180)
     scanner_strict_ws_max_age_ms = Column(Integer, default=30000)
+
+    # Market Tag Filter (whitelist applied at ingest before catalog write).
+    # Empty / null list = filter inactive (no markets dropped on tag).
+    # Stored already-normalised: lowercased, trimmed, deduped.
+    market_filter_tags = Column(JSON, nullable=True)
+    market_filter_updated_at = Column(DateTime, nullable=True)
 
     # Discovery Engine Settings
     discovery_max_discovered_wallets = Column(Integer, default=20_000)

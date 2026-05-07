@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from utils.utcnow import utcnow
+from utils.utcnow import as_utc_naive, utcnow
 from typing import Any, Optional
 
 from models.database import AppSettings
@@ -348,6 +348,7 @@ def scanner_payload(settings: AppSettings) -> dict[str, Any]:
             getattr(settings, "scanner_strict_ws_max_age_ms", None),
             30000,
         ),
+        "market_filter_tags": list(getattr(settings, "market_filter_tags", None) or []),
     }
 
 
@@ -822,6 +823,22 @@ def apply_update_request(settings: AppSettings, request: Any) -> dict[str, bool]
             getattr(scan, "skipped_signal_reactivation_cooldown_seconds", 180)
         )
         settings.scanner_strict_ws_max_age_ms = int(getattr(scan, "strict_ws_max_age_ms", 30000))
+        raw_filter_tags = getattr(scan, "market_filter_tags", None)
+        previous_tags = list(getattr(settings, "market_filter_tags", None) or [])
+        normalised_tags: list[str] = []
+        seen: set[str] = set()
+        if isinstance(raw_filter_tags, list):
+            for item in raw_filter_tags:
+                if not isinstance(item, str):
+                    continue
+                cleaned = item.strip().lower()
+                if not cleaned or cleaned in seen:
+                    continue
+                seen.add(cleaned)
+                normalised_tags.append(cleaned)
+        settings.market_filter_tags = normalised_tags
+        if previous_tags != normalised_tags:
+            settings.market_filter_updated_at = as_utc_naive(utcnow())
 
     if live_execution:
         trade = live_execution

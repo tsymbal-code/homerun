@@ -50,8 +50,8 @@ notes.
 | 0001 | [Add NVIDIA NIM as LLM provider](completed/0001-add-nvidia-nim-provider.md) | I        | —             |
 | 0002 | [Tune Postgres for the 7 GB host](completed/0002-tune-postgres-for-7gb-host.md) | R        | —             |
 | 0003 | [Profile worker-trading hotspots](completed/0003-profile-worker-trading-hotspots.md) | R        | —             |
-| 0004 | [Optimize worker-trading CPU hotspots](backlog/0004-optimize-worker-trading-cpu-hotspots.md) **(BACKLOG)** | R        | 0003          |
-| 0005 | [Tag-based market filter at ingest](0005-tag-based-market-filter-at-ingest.md) | B        | —             |
+| 0004 | [Optimize worker-trading CPU hotspots](0004-optimize-worker-trading-cpu-hotspots.md) | R        | 0003, 0005    |
+| 0005 | [Tag-based market filter at ingest](completed/0005-tag-based-market-filter-at-ingest.md) | B        | —             |
 
 When adding a row: keep this table sorted by ID ascending. Don't
 re-number plans — gaps in IDs are normal and expected (deleted or
@@ -98,34 +98,38 @@ Only notes that aren't obvious from the title. All plans must follow
   next step. Temporarily added `CAP_SYS_PTRACE` to the
   worker-trading container; reverted on close. No schema, no
   business code.
-- **Plan 0004 — Optimize worker-trading CPU hotspots
-  (BACKLOG).** Local opportunistic optimisations targeting the
-  three hotspots from plan 0003: half the deepcopy in
+- **Plan 0004 — Optimize worker-trading CPU hotspots.** Local
+  opportunistic optimisations targeting the three hotspots from
+  plan 0003: half the deepcopy in
   `market_runtime._queue_opportunity_dispatch`, TTL-cache
   `reference_runtime.get_oracle_history`, vectorise
   `market_monitor._compute_stability`, plus replace stdlib
-  `json` with `orjson` on the dispatch path. Parked because plan
-  0005 (upstream tag filter) is expected to reduce the same
-  hotspots by shrinking the input volume. Activate this plan
-  only if the re-profile in plan 0005 Task 8 still shows ≥ 10 %
-  self-time in any of these three frames.
+  `json` with `orjson` on the dispatch path. Originally parked
+  pending plan 0005's upstream tag filter; promoted back into
+  the active queue on 2026-05-07 after plan 0005 Task 8's
+  re-profile showed `get_oracle_history` (~36 %) and
+  `copy.deepcopy` (~10.8 %) still ≥ 10 % CPU. Task 3
+  (`_compute_stability` vectorisation) is descoped because that
+  hotspot already dropped under 1 % post-filter; Tasks 1, 2, 4,
+  5, 6 remain.
 - **Plan 0005 — Tag-based market filter at ingest.** Adds an
   OR-logic whitelist filter applied inside
-  `scanner._is_market_tradable`/`_filter_tradable_markets`,
-  configurable from `Settings → Scanner` UI. Markets without
-  intersecting tags are dropped before they reach
-  `market_catalog`, the scanner cache, and the opportunity
-  dispatch loop. A separate aggregator hook (runs **before** the
-  filter) extracts tags from the raw Polymarket stream and
-  upserts them into a new `market_tags_seen` table; the UI
-  populates its multi-select from the rows
+  `scanner._apply_market_tag_whitelist` (called from every
+  `_filter_tradable_markets` site), configurable from
+  `Settings → Scanner` UI. Markets whose `(market.tags ∪
+  event.tags)` doesn't intersect the whitelist are dropped
+  before they reach `market_catalog`, the scanner cache, or the
+  opportunity dispatch loop. A separate aggregator hook (runs
+  **before** the filter) extracts tags from the raw Polymarket
+  stream and upserts them into a new `market_tags_seen` table;
+  the UI populates its multi-select from the rows
   `last_seen > now() - 24h`. Empty filter ⇒ no filtering
   (backward-compatible). New table + two nullable
   `app_settings` columns; no other contract changes. Secondary
-  category: U (Settings tab section). Closes the door on
-  worker-trading CPU concerns once plan 0005 Task 8 confirms the
-  hotspots dropped — otherwise pulls plan 0004 back into the
-  active queue.
+  category: U (Settings tab section). Re-profile after this
+  plan's Task 8 confirmed plan 0004's hotspots are still
+  dominant, so plan 0004 was promoted back into the active
+  queue on 2026-05-07.
 
 ## Ordering decision tree (for agents picking the next plan)
 

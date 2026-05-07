@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from enum import Enum
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from typing import Any, Literal, Optional
 
 from sqlalchemy import delete, func, select
@@ -225,6 +225,36 @@ class ScannerSettingsModel(BaseModel):
         le=30000,
         description="Maximum websocket price age allowed for scanner strict WS execution paths",
     )
+    market_filter_tags: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Whitelist of Polymarket/Kalshi tags. The ingest layer drops "
+            "any market whose (market.tags ∪ event.tags) intersection with "
+            "this list is empty (OR-logic, case-insensitive). Empty list = "
+            "no filter applied."
+        ),
+    )
+
+    @field_validator("market_filter_tags", mode="before")
+    @classmethod
+    def _normalize_market_filter_tags(cls, value: object) -> list[str]:
+        if value is None:
+            return []
+        if not isinstance(value, list):
+            return []
+        seen: set[str] = set()
+        result: list[str] = []
+        for item in value:
+            if not isinstance(item, str):
+                continue
+            cleaned = item.strip().lower()
+            if not cleaned or cleaned in seen:
+                continue
+            seen.add(cleaned)
+            result.append(cleaned)
+        return result
+
+
 class LiveExecutionSettings(BaseModel):
     """Live execution safety configuration"""
 
@@ -2598,6 +2628,54 @@ async def get_scanner_settings():
 async def update_scanner_settings(request: ScannerSettingsModel):
     """Update scanner settings only"""
     return await update_settings(UpdateSettingsRequest(scanner=request))
+
+
+@router.get("/market-filter/available-tags")
+async def get_market_filter_available_tags():
+    """Tags observed on raw Polymarket / Kalshi markets in the last 24 h.
+
+    Powers the chip-style picker in ``Settings → Scanner → Market Tag
+    Filter``. Ordered by occurrences (most common first), then by most
+    recent ``last_seen``. Capped at 1000 rows defensively; the actual
+    table stays small (a few hundred unique tags) under the
+    7-day prune cadence.
+    """
+    from sqlalchemy import text
+
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            text(
+                """
+                SELECT tag, last_seen, occurrences
+                FROM market_tags_seen
+                WHERE last_seen > NOW() - INTERVAL '24 hours'
+                ORDER BY occurrences DESC, last_seen DESC
+                LIMIT 1000
+                """
+            )
+        )
+        rows = result.all()
+
+    def _iso_utc(value) -> str | None:
+        if value is None:
+            return None
+        if isinstance(value, datetime):
+            if value.tzinfo is None:
+                value = value.replace(tzinfo=timezone.utc)
+            else:
+                value = value.astimezone(timezone.utc)
+            return value.isoformat().replace("+00:00", "Z")
+        return None
+
+    tags = [
+        {
+            "name": str(row[0]),
+            "last_seen": _iso_utc(row[1]),
+            "occurrences": int(row[2] or 0),
+        }
+        for row in rows
+    ]
+    return {"tags": tags, "total": len(tags)}
 
 
 @router.get("/live-execution")

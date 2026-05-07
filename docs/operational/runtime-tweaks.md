@@ -684,3 +684,66 @@ ssh polyhome-1 "cd /home/polyhome/homerun && docker compose exec -T postgres \
   establish GIL contention.
 - **No rollback** — this entry corrects framing; nothing to
   revert.
+
+### 2026-05-07 ~16:00 UTC — Plan 0005: tag-based market filter at ingest live
+
+- **Surface**: backend (`scanner._apply_market_tag_whitelist`,
+  `services/market_tag_aggregator`), DB (`market_tags_seen`
+  table + two `app_settings` columns), API
+  (`PUT /settings/scanner` accepts `market_filter_tags`,
+  `GET /settings/market-filter/available-tags`), frontend
+  (`Settings → Scanner → Market Tag Filter`)
+- **Applied via**: plan 0005
+  ([`docs/plans/completed/0005-tag-based-market-filter-at-ingest.md`](../plans/completed/0005-tag-based-market-filter-at-ingest.md)),
+  alembic revision `202605070002_market_tag_filter`,
+  redeploy through `./deploy/sync_remote.sh`
+- **Why**: the 2026-05-07 14:00 UTC profile showed the
+  worker-trading hotspots are catalog-driven, so shrinking the
+  ingest universe is the highest-leverage CPU lever before any
+  per-hotspot fix. The filter is OR-logic, case-insensitive,
+  applied across `(market.tags ∪ event.tags)` before
+  `_filter_tradable_markets`, and gated by an operator-managed
+  whitelist saved in `app_settings.market_filter_tags`. Empty
+  list ⇒ pass-through (today's behaviour).
+- **Aggregator**: every refresh cycle the raw Polymarket markets
+  + events are scanned for tags and upserted into a new
+  `market_tags_seen` table (PK `tag`, plus `first_seen`,
+  `last_seen`, `occurrences`). The Settings UI populates its
+  picker from rows with `last_seen > now() - 24h`. Aggregator
+  is gated by `MARKET_TAG_AGGREGATOR_ENABLED` (default `True`)
+  for kill-switch safety.
+- **Initial filter value**: empty (`[]`). The plan's smoke test
+  exercised `['crypto']`, `['crypto', 'sports']`, and
+  `['crypto', 'sports', 'politics']` to confirm worker logs
+  show `Catalog tag-whitelist filter: X → Y markets`,
+  but the deployed steady state is filter-inactive. Operator
+  picks the production value out of band once the table has
+  enough representative data (24 h of `last_seen` rows).
+- **Post-filter re-profile (2026-05-07 16:05 UTC)**: with
+  `whitelist=['crypto', 'sports', 'politics']` the catalog cut
+  was 19 966 → 14 604 markets (~27 %). `_compute_stability`
+  dropped from ~5 % to <1 % CPU; `copy.deepcopy` chain shrank
+  from ~15 % to ~10.8 %; `_rebuild_realtime_graph` dropped off
+  the top-25. `get_oracle_history` (combined) stayed flat in
+  absolute terms and rose in *share* (~14 % → ~36 %) because
+  the catalog-driven hotspots shrank around it; the crypto
+  fast-binary lane reads from Binance + Chainlink, neither of
+  which the tag filter touches. Plan 0004 was promoted from
+  backlog to active to cover those residual non-catalog
+  hotspots (TTL cache for oracle history, deepcopy halving,
+  `orjson` on the dispatch path).
+- **How to disable / change**: `Settings → Scanner → Market
+  Tag Filter`, save with the new chip set (or empty list to
+  disable). Or via API:
+  ```bash
+  ssh polyhome-1 'curl -fsS http://127.0.0.1:8888/api/settings/scanner' \
+    | python3 -c "import sys,json;d=json.load(sys.stdin);d[\"market_filter_tags\"]=[\"crypto\"];print(json.dumps(d))" \
+    | ssh polyhome-1 'curl -fsS -X PUT -H "Content-Type: application/json" --data @- http://127.0.0.1:8888/api/settings/scanner'
+  ```
+- **Rollback**: setting `market_filter_tags = []` returns the
+  pipeline to today's behaviour (no filtering). The aggregator
+  table can be left in place — it costs ~1 KB/tag and the
+  upsert is idempotent. Toggle
+  `config.MARKET_TAG_AGGREGATOR_ENABLED = False` if a future
+  bug ever requires stopping the writes without redeploying
+  the schema.
