@@ -53,6 +53,8 @@ notes.
 | 0004 | [Optimize worker-trading CPU hotspots](backlog/0004-optimize-worker-trading-cpu-hotspots.md) | R        | 0003, 0005, 0006 |
 | 0005 | [Tag-based market filter at ingest](completed/0005-tag-based-market-filter-at-ingest.md) | B        | —             |
 | 0006 | [Crypto fast-binary lane toggle](completed/0006-crypto-fast-binary-lane-toggle.md) | B        | —             |
+| 0008 | [Investigate `source='traders'` routing on normal-tier](completed/0008-investigate-traders-source-routing-on-normal.md) | D        | —             |
+| 0009 | [Fix `source='traders'` deferred-state gate so normal-tier traders consume copy-trade signals](0009-fix-traders-source-on-normal.md) | B        | 0008          |
 
 When adding a row: keep this table sorted by ID ascending. Don't
 re-number plans — gaps in IDs are normal and expected (deleted or
@@ -154,6 +156,52 @@ Only notes that aren't obvious from the title. All plans must follow
   collapsed from ~42 % to < 2 % CPU with the lane off, and
   `copy.deepcopy` collapsed alongside, so plan 0004 was
   re-archived. Secondary category: U.
+- **Plan 0008 — Investigate `source='traders'` routing on
+  normal-tier.** Investigation-only (D — Documentation/
+  diagnostic). Symptom observed 2026-05-07: with the Polygon
+  RPC fixed and `traders_copy_trade` signal stream restored,
+  `Sandbox - Traders Copy Trade` on `latency_class=normal`
+  receives **zero** decisions, while other normal-tier
+  traders consume signals normally in the same window. The
+  architectural pieces (`session_engine.py:195-214` traders
+  policy, `_is_fast_tier_trader` filter, source-config
+  routing) all *appear* to support normal-tier consumption,
+  but in practice the orchestrator never starts a cycle for
+  the trader. Plan 0008 traces the publish + consume paths
+  end-to-end with file:line precision, identifies the gate
+  by elimination across six hypotheses, and writes
+  [`architecture/copy-trade-pipeline.md`](architecture/copy-trade-pipeline.md)
+  so future agents do not have to repeat the investigation.
+  **Conclusion: bug — latent regression in
+  `signal_bus._strategy_runtime_metadata`** (the `else` branch
+  forces `traders` source into `execution_activation =
+  "ws_post_arm_tick"`, which deletes the signal's
+  `runtime_sequence` and hides it from both fast and normal-tier
+  consumers). **No code changes in this plan**; the fix lands
+  in plan 0009. Numbering note: ID 0007 was reserved earlier in
+  the session for a potential `simulation_accounts` accounting
+  bridge plan and not yet written; gaps in IDs are normal per the
+  README rules.
+- **Plan 0009 — Fix `source='traders'` deferred-state gate.**
+  Backend feature (B — minimal but production-affecting). Direct
+  follow-up to plan 0008. Adds the explicit `elif source_key ==
+  "traders":` branch to
+  [`backend/services/signal_bus.py:493-524`](../../backend/services/signal_bus.py)
+  (`_strategy_runtime_metadata`) so `traders` signals get
+  `execution_activation = "immediate"` (the same activation
+  `crypto` uses), bypassing the deferred-state branch in
+  `intent_runtime.publish_opportunities`. Also tightens the
+  silent `else: ws_post_arm_tick` fallback so unknown future
+  sources do not silently regress the same way. New unit tests
+  cover both the metadata function and the publish-side
+  invariant (snapshot has non-NULL `runtime_sequence`). On close,
+  updates [`copy-trade-pipeline.md`](architecture/copy-trade-pipeline.md)
+  and [`trader-pipeline.md`](architecture/trader-pipeline.md) to
+  reflect the post-fix flow, and retires the
+  `latency_class=fast` operator workaround in
+  [`runtime-tweaks.md`](../operational/runtime-tweaks.md).
+  Prerequisite: plan 0008's investigation must be filed in
+  `completed/` so the fix has the canonical reference.
 
 ## Ordering decision tree (for agents picking the next plan)
 

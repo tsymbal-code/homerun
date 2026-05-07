@@ -1,0 +1,183 @@
+Plan 0008 — baseline snapshot (2026-05-07 19:14 UTC)
+=====================================================
+
+Captured on `polyhome-1`, all timestamps UTC unless otherwise noted.
+This snapshot fixes the reference point that downstream tasks of plan
+0008 cite. Generated with the queries listed below; raw output
+embedded verbatim.
+
+Server clock at capture
+-----------------------
+2026-05-07 19:14:59.582741 UTC
+
+Stack health
+------------
+docker compose ps:
+- homerun-backend          Up 15 minutes (healthy)
+- homerun-frontend         Up 15 minutes
+- homerun-postgres         Up 15 minutes (healthy)
+- homerun-redis            Up 15 minutes (healthy)
+- homerun-worker-discovery Up 15 minutes
+- homerun-worker-news      Up 15 minutes
+- homerun-worker-trading   Up 15 minutes
+
+i.e. the stack was redeployed at ~18:59 UTC; everything observed
+post-restart is "fresh" relative to that boundary.
+
+Signal stream is wet
+--------------------
+SELECT count(*) FROM trade_signals
+ WHERE strategy_type='traders_copy_trade'
+   AND created_at > now() - interval '5 minutes';
+=> 174
+
+Wallet WS monitor logs every ~15 s "Updated source-scoped tracked
+wallets" with `total_tracked=39` for source `traders_copy_trade`,
+i.e. publish side is healthy.
+
+The blocker that prevents fresh repro of the symptom RIGHT NOW
+--------------------------------------------------------------
+SELECT * FROM trader_orchestrator_control;
+=> id=default, is_enabled=FALSE, is_paused=TRUE, mode=shadow,
+   updated_at=2026-05-07 18:58:53.802212
+
+Operator paused the orchestrator at 18:58:53, ~1 minute before
+the redeploy. All `latency_class=normal` traders therefore have
+zero post-restart cycles. We rely on pre-restart (last hour
+before 18:59) data to confirm the symptom; the historical
+window is sufficient because the orchestrator was still running
+through it.
+
+Symptom-confirmation table (decisions per trader, last-hour
+window pre-restart)
+-----------------------------------------------------------
+SELECT t.name, t.latency_class,
+       count(d.id) FILTER (WHERE d.created_at > now() - interval '15 minutes') AS d_15m,
+       count(d.id) FILTER (WHERE d.created_at > now() - interval '30 minutes') AS d_30m,
+       count(d.id) FILTER (WHERE d.created_at > now() - interval '60 minutes') AS d_60m,
+       max(d.created_at) AS last_decision
+FROM traders t
+LEFT JOIN trader_decisions d ON d.trader_id = t.id
+WHERE t.is_enabled AND NOT t.is_paused
+GROUP BY t.id, t.name, t.latency_class
+ORDER BY t.latency_class, t.name;
+
+             name             | latency_class | d_15m | d_30m | d_60m |       last_decision
+------------------------------+---------------+-------+-------+-------+----------------------------
+ Sandbox - Basic Arbitrage    | normal        |     0 |     0 |     0 | (never)
+ Sandbox - Certainty Shock    | normal        |     0 |    14 |    58 | 2026-05-07 18:48:12.864375
+ Sandbox - Market Making      | normal        |     0 |    32 |    76 | 2026-05-07 18:58:08.992514
+ Sandbox - NegRisk            | normal        |     0 |     0 |     0 | 2026-05-06 19:36:17.575670
+ Sandbox - Tail-End           | normal        |     0 |    99 |   293 | 2026-05-07 18:58:09.071719
+ Sandbox - Traders Confluence | normal        |     0 |     0 |     0 | (never)
+ Sandbox - Traders Copy Trade | normal        |     0 |     0 |     0 | 2026-05-07 18:01:05.915194
+
+Note: d_15m is uniformly 0 because the orchestrator was paused at
+18:58:53 (and the stack restarted ~6 s later), so no cycles in the
+last 15 min for anyone.
+
+Trader source classification
+----------------------------
+Per `traders.source_configs_json[0].source_key`:
+
+  source_key='scanner':  Basic Arbitrage, Certainty Shock,
+                         Market Making, NegRisk, Tail-End
+  source_key='traders':  Traders Confluence, Traders Copy Trade
+
+Cross-tabulating with the decision counts above:
+
+  All ACTIVE normal-tier traders have source='scanner'.
+  All TWO source='traders' normal-tier traders have zero decisions
+  in the entire 60-min window (Confluence: never, Copy Trade: last
+  decision 18:01 — likely a residual fast-tier handoff, see below).
+
+Ergo the symptom is **specific to source='traders' on
+latency_class=normal**. The two `source='scanner'` traders that are
+also silent (Basic Arb, NegRisk) are silent for unrelated reasons
+(strict params not matching current opportunities — last decision
+NegRisk was yesterday, Basic Arb has zero decisions ever). Their
+silence does not contaminate the conclusion.
+
+Copy Trade: orders timeline (24 h)
+----------------------------------
+SELECT date_trunc('hour', created_at) AS hour, count(*)
+FROM trader_orders
+WHERE trader_id='61dcbeb2b9bc42bd9e9635a09ae5e0c3'
+  AND created_at > now() - interval '24 hours'
+GROUP BY hour ORDER BY hour;
+
+        hour         | orders
+---------------------+--------
+ 2026-05-07 11:00:00 |      1
+ 2026-05-07 14:00:00 |     38
+ 2026-05-07 17:00:00 |     63
+
+Last order: 2026-05-07 17:51:17.441032 (status=cancelled, mode=shadow).
+
+Copy Trade: latency_class history
+---------------------------------
+SELECT created_at, operator, reason,
+       (trader_before_json->>'latency_class') AS before_class,
+       (trader_after_json->>'latency_class')  AS after_class
+FROM trader_config_revisions
+WHERE trader_id='61dcbeb2b9bc42bd9e9635a09ae5e0c3'
+ORDER BY created_at DESC LIMIT 10;
+
+         created_at         | operator |    reason     | before_class | after_class
+----------------------------+----------+---------------+--------------+-------------
+ 2026-05-07 18:18:30.383553 |          | trader_update | fast         | normal
+ 2026-05-07 11:41:05.954942 |          | trader_update | fast         | fast
+ 2026-05-07 11:28:14.21284  |          | trader_update | fast         | fast
+ 2026-05-07 10:00:15.222497 |          | trader_update | normal       | fast
+ 2026-05-06 16:46:47.520834 |          | trader_create | (created)    | normal
+
+Reading the timeline:
+  10:00:15 — operator switched fast (was newly-set after creation
+             yesterday at normal which produced nothing)
+  10:00 → 18:18 — trader on FAST. Orders flow:
+     11:00 hour:  1 order
+     14:00 hour: 38 orders
+     17:00 hour: 63 orders
+     last order: 17:51:17
+  18:18:30 — operator switched BACK to normal. Symptom: zero orders,
+             zero decisions thereafter.
+  18:58:53 — operator paused orchestrator entirely (current state).
+
+The 18:18 → 18:58 window (40 min) is the cleanest proof: same
+trader, same parameters, same signal stream, same orchestrator
+process — only `latency_class` flipped, and Copy Trade went from
+~63 orders/hr to zero.
+
+Always-on tasks observed in the worker-trading event-loop dump
+--------------------------------------------------------------
+From the post-restart `event_loop_watchdog` dumps in the logs
+(useful as a sanity check that the publish side really runs):
+
+  traders_copy_trade_signal_service.py:_processor_loop:163 x8
+  traders_copy_trade_signal_service.py:_replay_loop:186      x1
+
+Eight processor workers + one replay loop, matching architecture
+notes. No `trader_orchestrator_worker.py` task in the dump because
+it's currently paused (is_enabled=false, is_paused=true).
+
+Wallet WS subscription health (the upstream of the publish side)
+----------------------------------------------------------------
+Recurring INFO log every ~15 s:
+  wallet_ws_monitor :: set_wallets_for_source ::
+    source=traders_copy_trade, total_tracked=39, source_wallets=39
+
+So the leader-wallet feed is connected and 39 leader wallets are
+under tracking.
+
+Implication for downstream tasks
+--------------------------------
+- The investigation premise (Copy Trade silent on normal-tier
+  while peers consume) is confirmed by the historical window
+  18:18:30 → 18:58:53 — an interval where everything else was
+  active and only the source='traders' bot was silent.
+- We cannot perform fresh live repro right now because the
+  orchestrator is paused. Tasks 2-5 are code-reading exercises
+  that do not depend on live reproduction; they can proceed
+  immediately on this baseline.
+- If a code finding requires live confirmation in Task 5, we
+  ask the operator to re-enable the orchestrator at that point.

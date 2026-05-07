@@ -53,7 +53,7 @@ It does **not** own:
 | [backend/services/trader_orchestrator/risk_manager.py](../../../backend/services/trader_orchestrator/risk_manager.py) | Pre-flight gates, per-trader risk envelope, kill-switch checks. |
 | [backend/services/trader_orchestrator/position_lifecycle.py](../../../backend/services/trader_orchestrator/position_lifecycle.py) | Drives `should_exit`, scale-outs, resolution-hold, near-resolution windows. |
 | [backend/services/traders_firehose_pipeline.py](../../../backend/services/traders_firehose_pipeline.py) | The `traders/*` source family — wallet-event firehose, qualified-source filter, deduplication. |
-| [backend/services/traders_copy_trade_signal_service.py](../../../backend/services/traders_copy_trade_signal_service.py) | Live wallet-WS event consumer for copy-trade. **Does not read `trade_signals`** — purely in-memory event-bus. |
+| [backend/services/traders_copy_trade_signal_service.py](../../../backend/services/traders_copy_trade_signal_service.py) | Live wallet-WS event consumer for copy-trade. Bridges every accepted leader trade into a `trade_signals` row via `bridge_opportunities_to_signals` (`source='traders'`, `signal_type='copy_trade'`). See the [copy-trade pipeline note](copy-trade-pipeline.md) for the full publish/consume path. |
 | [backend/services/wallet_ws_monitor.py](../../../backend/services/wallet_ws_monitor.py) | Polymarket user-channel WS subscription per source-scope. |
 | [backend/services/simulation/execution_simulator.py](../../../backend/services/simulation/execution_simulator.py) + [services/fill_simulator/](../../../backend/services/fill_simulator/) | Cox-PH fill model. The "did this limit price actually execute" oracle in shadow mode. |
 | [backend/services/live_execution_service.py](../../../backend/services/live_execution_service.py) | Live submit path (Polymarket CLOB / Kalshi). |
@@ -383,8 +383,10 @@ Search hints:
   cycle's summary line. `signals=0` for a bot whose source has
   signals = scope mismatch.
 - `traders_copy_trade_signal_service:_processor_loop` — the live
-  copy-trade subprocess. Active here means it's listening to wallet
-  WS events, not signals from the DB.
+  copy-trade processor (8 concurrent asyncio tasks inside
+  `worker-trading`). Active here means it's draining wallet-WS
+  events into `bridge_opportunities_to_signals` (which writes the
+  `trade_signals` row); see [copy-trade-pipeline.md](copy-trade-pipeline.md).
 
 ## Common end-state symptoms and their first-suspect
 
@@ -395,7 +397,7 @@ Search hints:
 | `selected > 0`, `orders=0`, mode=shadow | Step 7 → Cox-PH fill simulator | Loosen slippage / spread / `taker_market` |
 | All `decision=blocked` for one bot | Step 6 → specific gate | `trader_decision_checks` filter |
 | `last_run_at=null` for traders bot | Step 5 → firehose pre-filter | Inspect `firehose_*` params; check `quality_passed` distribution for the source |
-| Copy-trade bot idle | Stage 1 (signals not generated) | `traders_copy_trade` reads in-memory wallet WS, not `trade_signals`. Need active tracked-wallet trade ≤ `max_signal_age_seconds`. |
+| Copy-trade bot idle | Stage 1 (signals deferred at publish) | `traders_copy_trade` writes signals to `trade_signals` but they are born in `awaiting_post_arm_ws_tick` deferred state (`runtime_sequence=NULL`); on `latency_class=normal` they are invisible to the orchestrator. See [copy-trade-pipeline.md](copy-trade-pipeline.md) for the gate and the operator workaround. |
 | Bot enabled, signals flowing, zero consumption | `source_configs` mismatch with signal `source` / `strategy_type` | Compare bot's `source_configs[*].strategy_key` to `trade_signals.strategy_type` |
 
 ## Known footguns
@@ -407,12 +409,20 @@ Search hints:
   `traders_confluence`) will reject every signal until the filter
   completes. If `worker-news` is overloaded or the filter has a bug,
   signals stay `null` indefinitely — and the bot looks dead.
-- **Copy-trade does not consume `trade_signals`.** It listens to the
-  in-process `EventType.trader_activity` event bus, fed by
-  `wallet_ws_monitor` from the Polymarket user channel. Therefore
-  the diagnostic playbook stages 3–5 don't apply to copy-trade —
-  for that bot, "no signal" means "no live wallet trade in the last
-  `max_signal_age_seconds`."
+- **Copy-trade publishes via the in-process wallet-WS callback,
+  not via the cross-plane Redis bus.** `wallet_ws_monitor.add_callback`
+  fans every leader trade directly into
+  `traders_copy_trade_signal_service` running in the same trading
+  plane. That service then synthesises an opportunity, calls
+  `bridge_opportunities_to_signals`, and the bridge writes a
+  `trade_signals` row plus pushes a `runtime_signal_queue` batch
+  for the orchestrator and an `event_bus` wake for the fast-tier
+  runtime. So a "no signal in `trade_signals`" symptom for copy-trade
+  means upstream wallet-WS health (no live wallet trade in the last
+  `max_signal_age_seconds`, leader pool empty, scope filter excluded
+  the wallet, etc.). A "signal written but bot idle" symptom for
+  copy-trade is a different problem — see the deferred-state gate
+  documented in [copy-trade-pipeline.md](copy-trade-pipeline.md).
 - **`tracked_wallets.total_trades` is an analytics aggregate**,
   populated by wallet-discovery analysis. It's *not* a count of
   rows in `wallet_trades`. The local `wallet_trades` tape can be
@@ -497,6 +507,7 @@ Search hints:
 | Topic | File |
 |---|---|
 | What goes in `trade_signals` and how the scanner produces it | [docs/strategies/](../../strategies/) (per-strategy notes) |
+| Copy Trade end-to-end (`source='traders'`) and why normal-tier drops it | [copy-trade-pipeline.md](copy-trade-pipeline.md) |
 | Sandbox account model that backs shadow execution | [settings-and-secrets.md](settings-and-secrets.md) |
 | How to add a new strategy | [backend-architecture.md](backend-architecture.md) — Plug-in patterns section |
 | Why the trading plane is its own container | [system-overview.md](system-overview.md) |

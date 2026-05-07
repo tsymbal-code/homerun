@@ -277,6 +277,7 @@ Architecture notes:
 - [Testing](architecture/testing.md)
 - [LLM Provider Layer](architecture/llm-provider-layer.md)
 - [Trader Pipeline & Diagnostics](architecture/trader-pipeline.md)
+- [Copy-Trade Pipeline (`source='traders'`)](architecture/copy-trade-pipeline.md)
 - [Market Filter Pipeline](architecture/market-filter.md)
 - [worker-trading process model and CPU profile](architecture/worker-trading.md)
 

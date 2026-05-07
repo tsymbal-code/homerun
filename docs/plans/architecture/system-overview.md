@@ -220,3 +220,4 @@ worker plane split. They differ only in process supervision.
 | Schema, Alembic migrations, `AsyncSessionLocal` patterns | [Database & Migrations](database-and-migrations.md) |
 | AI & LLM end-to-end (what decisions, what's classical ML, how news-edge picks a market) | [AI & LLM](ai-and-llm.md) |
 | Adding/changing an LLM provider | [LLM Provider Layer](llm-provider-layer.md) |
+| Copy Trade end-to-end (`source='traders'`) — leader-wallet WS to consumer trader, with the deferred-state gate that drops normal-tier signals | [Copy-Trade Pipeline](copy-trade-pipeline.md) |
