@@ -34,6 +34,11 @@ rows, report against all of them.
 | `backend/services/ai/**` | `ai-and-llm.md`, `llm-provider-layer.md` |
 | `backend/services/news/**` | `ai-and-llm.md`, `worker-news.md` (if it exists) |
 | `backend/services/strategies/<snake>.py` | `trader-pipeline.md` AND `docs/strategies/<kebab>.md` (kebab-case slug, see "Strategy doc drift" below) |
+| `backend/services/insider_detector.py`, `anomaly_detector.py`, `wallet_intelligence.py` | `wallet-intelligence.md` |
+| `backend/services/execution_safety.py`, `execution_tiers.py`, `price_chaser.py`, `token_circuit_breaker.py`, `live_pressure.py`, `position_monitor.py`, `stuck_position_monitor.py`, `market_tradability.py`, `live_market_detector.py` | `execution-defense.md` |
+| `backend/services/crypto_service.py` (or crypto-lane glue in `market_runtime.py`) | `crypto-fast-binary-lane.md` |
+| `backend/services/market_regime.py`, `quality_filter.py`, `market_monitor.py`, `market_prioritizer.py`, `sport_classifier.py`, `category_buffers.py`, `depth_analyzer.py` | `market-quality-and-prioritization.md` |
+| `backend/services/execution_latency_metrics.py`, `latency_tracker.py` | `execution-and-fills.md` § Observability |
 | `backend/services/trader_orchestrator/**` | `trader-pipeline.md` |
 | `backend/services/strategy_reverse_engineer/**` | `strategy-reverse-engineer.md` (if it exists), `ai-and-llm.md` |
 | `backend/services/fill_simulator/**`, `backend/services/simulation/**`, `backend/services/live_execution_*.py` | `execution-and-fills.md` (if it exists), `trader-pipeline.md` |

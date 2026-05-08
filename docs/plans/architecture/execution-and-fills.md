@@ -218,14 +218,73 @@ section of `trader_orchestrator_worker.py` (lines 4740–4859).
 - `backend/tests/test_ctf_execution.py`
 - `backend/tests/test_execution_plan_contracts.py`
 
+## Observability
+
+Two dedicated modules instrument the entire submit path with
+microsecond-level timing and persist the samples for offline
+analysis:
+
+| File | Owns |
+|---|---|
+| [`backend/services/execution_latency_metrics.py`](../../../backend/services/execution_latency_metrics.py) (193) | the metric definitions and aggregation; `PipelineLatencyLog` model writer |
+| [`backend/services/latency_tracker.py`](../../../backend/services/latency_tracker.py) (243) | the per-stage `LatencyTracker` that samples and persists to the `latency_tracker` table |
+
+Stages instrumented (decision → fill):
+
+| Stage | Typical | Diagnostic threshold |
+|---|---|---|
+| signal → decision | < 100 ms | > 300 ms = strategy-side latency |
+| decision → submit | < 200 ms | > 1 000 ms = orchestrator stall (`ps_decision_writes` in [`trader-pipeline.md`](trader-pipeline.md)) |
+| submit → fill (live) | venue-bound | > 5 s = CLOB pressure or token circuit-breaker territory |
+| submit → fill (shadow Cox-PH) | < 50 ms | > 500 ms = retraining lag or model artefact issue |
+
+The `Trader cycle slow` WARN log
+(`trader_orchestrator_worker.py:7944`) emits a per-stage breakdown
+when any cycle exceeds half the timeout — that log is the
+operator-facing surface of this instrumentation. Aggregate
+queries:
+
+```sql
+-- p95 submit latency over the last hour
+select stage, percentile_cont(0.95) within group (order by duration_ms)
+  from latency_tracker
+  where sampled_at > now() - interval '1 hour'
+  group by stage;
+```
+
+Cox-PH retraining cadence (`HOMERUN_COX_TRAIN_INTERVAL_SECONDS`)
+is the natural denominator for the fill-side stage; if the
+trainer has been off, `submit → fill (shadow)` will drift up
+without a code change.
+
+## Related defence-layer modules
+
+The submission path is wrapped by a stack of defensive gates and
+post-submit monitors. They sit alongside this note's content but
+warrant their own reference:
+
+- **Pre-submit gates:** `market_tradability`, `live_market_detector`,
+  `execution_safety`, `execution_tiers`, `buy_pre_submit_gate`.
+- **Submit retries:** `price_chaser`.
+- **Post-submit, per-token:** `token_circuit_breaker`,
+  `live_pressure`.
+- **Background:** `position_monitor` (shadow TP/SL),
+  `stuck_position_monitor` (live blocked-exit alerts).
+
+Full coverage in [`execution-defense.md`](execution-defense.md).
+The provider-health gate documented above is the only one that
+lives natively in this note.
+
 ## Where to look next
 
 | Topic | File |
 |---|---|
 | Pipeline that produces `decision='selected'` | [`trader-pipeline.md`](trader-pipeline.md) |
+| Submission-side defence gates (9-module map) | [`execution-defense.md`](execution-defense.md) |
+| Pre-scanner market gating + depth analysis | [`market-quality-and-prioritization.md`](market-quality-and-prioritization.md) |
 | `worker-trading` process model that hosts most of this layer | [`worker-trading.md`](worker-trading.md) |
 | Where Cox-PH **training** runs | [`worker-news.md`](worker-news.md) |
 | `PriceCache` / `WalletStateCache` | [`websocket-and-events.md`](websocket-and-events.md) |
 | Sandbox account model (capital, slippage, max position size) | [`settings-and-secrets.md`](settings-and-secrets.md) |
 
-Last verified: 2026-05-08
+Last verified: 2026-05-08 (Observability + cross-link section appended in plan 0015; underlying code unchanged.)

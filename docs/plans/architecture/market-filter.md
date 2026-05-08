@@ -268,4 +268,12 @@ for the CPU-profile impact.
   duplicate its funnel) — a path that skips it would silently
   ignore the tag filter.
 
+## Where to look next
+
+| Topic | File |
+|---|---|
+| What happens after the tag whitelist (regime, quality, prioritiser, depth) | [market-quality-and-prioritization.md](market-quality-and-prioritization.md) |
+| The parallel pipeline this filter cannot reach (no `tags` field) | [crypto-fast-binary-lane.md](crypto-fast-binary-lane.md) |
+| Trader pipeline downstream of the filter | [trader-pipeline.md](trader-pipeline.md) |
+
 Last verified: <unverified>

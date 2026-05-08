@@ -577,5 +577,7 @@ group by 1, 2 order by 1 desc, usd desc;
 | News pipeline plane (where most of Track A + B above runs) | [`worker-news.md`](worker-news.md) |
 | Wallet-mimicry agent loop (deep dive of Strategy Reverse-Engineer) | [`strategy-reverse-engineer.md`](strategy-reverse-engineer.md) |
 | Live feeds, UI `/ws`, Redis pub/sub | [`websocket-and-events.md`](websocket-and-events.md) |
+| AutoResearch (per-trader / per-strategy LLM experiments) | [`backend/services/autoresearch_service.py`](../../../backend/services/autoresearch_service.py) — has its own routes at `/api/autoresearch/*`; no dedicated arch-note yet |
+| Cortex tool registry and skills | [`backend/services/ai/skills/`](../../../backend/services/ai/skills/), [`backend/services/ai/tools/`](../../../backend/services/ai/tools/) — referenced from this note's "Cortex" section |
 
 Last verified: 2026-05-08

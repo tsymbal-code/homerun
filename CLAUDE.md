@@ -143,6 +143,10 @@ ssh polyhome-1 'cd /home/polyhome/homerun && docker compose restart backend'
 | **Live feeds, UI `/ws`, Redis pub/sub, in-process event bus** | [`docs/plans/architecture/websocket-and-events.md`](docs/plans/architecture/websocket-and-events.md) |
 | **Cox-PH fill simulator, live execution, reconciliation, redeemer** | [`docs/plans/architecture/execution-and-fills.md`](docs/plans/architecture/execution-and-fills.md) |
 | **LLM-driven wallet-mimicry pipeline (separate from Cortex / Copilot)** | [`docs/plans/architecture/strategy-reverse-engineer.md`](docs/plans/architecture/strategy-reverse-engineer.md) |
+| **Wallet scoring + insider/anomaly detection (Discovery UI backbone)** | [`docs/plans/architecture/wallet-intelligence.md`](docs/plans/architecture/wallet-intelligence.md) |
+| **Submission-side defence layer (9-module map: safety, tiers, retries, breakers, monitors)** | [`docs/plans/architecture/execution-defense.md`](docs/plans/architecture/execution-defense.md) |
+| **Crypto fast-binary lane (parallel BTC/ETH/SOL/XRP pipeline + operator toggle)** | [`docs/plans/architecture/crypto-fast-binary-lane.md`](docs/plans/architecture/crypto-fast-binary-lane.md) |
+| **Pre-scanner market gating (regime / quality / monitor / prioritiser / depth / categories)** | [`docs/plans/architecture/market-quality-and-prioritization.md`](docs/plans/architecture/market-quality-and-prioritization.md) |
 | **Runtime knob-twists (DB-only, not in git): rollback recipes** | [`docs/operational/runtime-tweaks.md`](docs/operational/runtime-tweaks.md) |
 | Active plan queue and ordering | [`docs/plans/plan-control-index.md`](docs/plans/plan-control-index.md) |
 | UI walkthrough, sandbox/demo mode | [`docs/UI_AND_DEMO_MODE.md`](docs/UI_AND_DEMO_MODE.md) |

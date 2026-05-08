@@ -225,6 +225,10 @@ worker plane split. They differ only in process supervision.
 | Live feeds, UI `/ws`, Redis pub/sub, in-process event bus | [WebSockets and event channels](websocket-and-events.md) |
 | Cox-PH fill simulator, live execution, reconciliation, redeemer | [Execution and fills](execution-and-fills.md) |
 | LLM-driven wallet-mimicry pipeline | [Strategy reverse-engineer](strategy-reverse-engineer.md) |
+| Wallet scoring + insider/anomaly detection (Discovery UI backbone) | [Wallet intelligence](wallet-intelligence.md) |
+| Submission-side defence layer (9-module map between decision and fill) | [Execution defence](execution-defense.md) |
+| Crypto fast-binary lane (parallel pipeline for BTC/ETH/SOL/XRP) | [Crypto fast-binary lane](crypto-fast-binary-lane.md) |
+| Pre-scanner market gating (regime, quality, prioritiser, depth) | [Market quality and prioritisation](market-quality-and-prioritization.md) |
 | Copy Trade end-to-end (`source='traders'`) — leader-wallet WS to consumer trader, with the deferred-state gate that drops normal-tier signals | [Copy-Trade Pipeline](copy-trade-pipeline.md) |
 
 Last verified: <unverified>

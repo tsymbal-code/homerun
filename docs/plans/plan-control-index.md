@@ -60,6 +60,7 @@ notes.
 | 0012 | [Agent onboarding baseline — Cursor rules + Claude Code skills](completed/0012-agent-onboarding-baseline.md) | D        | —             |
 | 0013 | [Architecture documentation gap audit](completed/0013-architecture-doc-gap-audit.md) | D        | 0012          |
 | 0014 | [Documentation hygiene and quality gates for AI agents](completed/0014-doc-sync-discipline-and-quality-gates.md) | D        | 0012, 0013    |
+| 0015 | [Close remaining architecture-doc gaps](completed/0015-close-remaining-doc-gaps.md) | D        | 0013, 0014    |
 
 When adding a row: keep this table sorted by ID ascending. Don't
 re-number plans — gaps in IDs are normal and expected (deleted or
@@ -371,9 +372,18 @@ Only notes that aren't obvious from the title. All plans must follow
   [`websocket-and-events.md`](architecture/websocket-and-events.md)
   (four messaging layers in one map),
   [`execution-and-fills.md`](architecture/execution-and-fills.md)
-  (Cox-PH shadow + live submit), and
+  (Cox-PH shadow + live submit),
   [`strategy-reverse-engineer.md`](architecture/strategy-reverse-engineer.md)
-  (wallet-mimicry pipeline).
+  (wallet-mimicry pipeline), and the four notes added by plan
+  0015:
+  [`wallet-intelligence.md`](architecture/wallet-intelligence.md)
+  (insider + anomaly + intelligence stack),
+  [`execution-defense.md`](architecture/execution-defense.md)
+  (9-module submission-side defence layer),
+  [`crypto-fast-binary-lane.md`](architecture/crypto-fast-binary-lane.md)
+  (parallel crypto pipeline + operator toggle),
+  [`market-quality-and-prioritization.md`](architecture/market-quality-and-prioritization.md)
+  (pre-scanner gates).
   Every note ends with `Last verified: YYYY-MM-DD` (introduced by
   plan 0013); `/sync-docs` consumes it.
 - Agent scaffolding (Cursor rules, Claude Code commands, subagents):

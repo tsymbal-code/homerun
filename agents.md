@@ -123,6 +123,10 @@ that code, in the same commit.
 | `backend/alembic/versions/**`, `backend/models/database.py` | [`database-and-migrations.md`](docs/plans/architecture/database-and-migrations.md) (and [`settings-and-secrets.md`](docs/plans/architecture/settings-and-secrets.md) if the column is encrypted) |
 | `backend/api/routes_*.py` | [`backend-architecture.md`](docs/plans/architecture/backend-architecture.md) |
 | `frontend/src/**` | [`frontend-architecture.md`](docs/plans/architecture/frontend-architecture.md) (and [`websocket-and-events.md`](docs/plans/architecture/websocket-and-events.md) if WS) |
+| `services/insider_detector.py`, `anomaly_detector.py`, `wallet_intelligence.py` | [`wallet-intelligence.md`](docs/plans/architecture/wallet-intelligence.md) |
+| `services/execution_safety.py`, `execution_tiers.py`, `price_chaser.py`, `token_circuit_breaker.py`, `live_pressure.py`, `position_monitor.py`, `stuck_position_monitor.py`, `market_tradability.py`, `live_market_detector.py` | [`execution-defense.md`](docs/plans/architecture/execution-defense.md) |
+| `services/crypto_service.py` (and crypto-lane glue in `market_runtime.py`) | [`crypto-fast-binary-lane.md`](docs/plans/architecture/crypto-fast-binary-lane.md) |
+| `services/market_regime.py`, `quality_filter.py`, `market_monitor.py`, `market_prioritizer.py`, `sport_classifier.py`, `category_buffers.py`, `depth_analyzer.py` | [`market-quality-and-prioritization.md`](docs/plans/architecture/market-quality-and-prioritization.md) |
 | `docker-compose.yml`, `deploy/**` | [`system-overview.md`](docs/plans/architecture/system-overview.md), [`deploy/AGENTS.md`](deploy/AGENTS.md) |
 
 If the change is genuinely doc-irrelevant (a refactor with no

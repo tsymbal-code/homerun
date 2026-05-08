@@ -41,6 +41,11 @@ using the same mapping as `/sync-docs`:
 | `backend/services/strategy_reverse_engineer/**` | `docs/plans/architecture/strategy-reverse-engineer.md` |
 | `backend/services/fill_simulator/**`, `backend/services/simulation/**`, `backend/services/live_execution_*.py` | `docs/plans/architecture/execution-and-fills.md` |
 | `backend/services/ws_feeds.py`, `backend/services/polymarket_user_feed.py`, `backend/services/binance_feed.py`, `backend/api/websocket.py` | `docs/plans/architecture/websocket-and-events.md` |
+| `backend/services/insider_detector.py`, `anomaly_detector.py`, `wallet_intelligence.py` | `docs/plans/architecture/wallet-intelligence.md` |
+| `backend/services/execution_safety.py`, `execution_tiers.py`, `price_chaser.py`, `token_circuit_breaker.py`, `live_pressure.py`, `position_monitor.py`, `stuck_position_monitor.py`, `market_tradability.py`, `live_market_detector.py` | `docs/plans/architecture/execution-defense.md` |
+| `backend/services/crypto_service.py` | `docs/plans/architecture/crypto-fast-binary-lane.md` |
+| `backend/services/market_regime.py`, `quality_filter.py`, `market_monitor.py`, `market_prioritizer.py`, `sport_classifier.py`, `category_buffers.py`, `depth_analyzer.py` | `docs/plans/architecture/market-quality-and-prioritization.md` |
+| `backend/services/execution_latency_metrics.py`, `latency_tracker.py` | `docs/plans/architecture/execution-and-fills.md` § Observability |
 | `backend/workers/**` | the matching plane note (`worker-trading.md` / `worker-news.md` / `worker-discovery.md`) |
 | `backend/alembic/versions/**`, `backend/models/database.py` | `docs/plans/architecture/database-and-migrations.md` |
 | `backend/api/routes_*.py` | `docs/plans/architecture/backend-architecture.md` |

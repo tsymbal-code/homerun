@@ -203,6 +203,7 @@ HOMERUN_BACKTEST_POLL_INTERVAL_SECONDS         (env, default 3 s)
 |---|---|
 | Strategy reverse-engineer pipeline | [`strategy-reverse-engineer.md`](strategy-reverse-engineer.md) |
 | `traders/*` signal family + copy-trade | [`copy-trade-pipeline.md`](copy-trade-pipeline.md) |
+| Wallet scoring + risk-detection stack (insider, anomaly, intelligence) | [`wallet-intelligence.md`](wallet-intelligence.md) |
 | Trader pipeline that consumes the produced signals | [`trader-pipeline.md`](trader-pipeline.md) |
 | Three-plane runtime overview | [`system-overview.md`](system-overview.md) |
 | The other two worker planes | [`worker-trading.md`](worker-trading.md), [`worker-news.md`](worker-news.md) |
