@@ -43,6 +43,16 @@ Always-on baseline rules: [`homerun.mdc`](mdc:.cursor/rules/homerun.mdc).
   cache, retry, and websocket push merging.
 - Using `useEffect` for data fetching when react-query would do it.
 
+## Architecture-note sync (mandatory)
+
+When a change touches anything documented in
+[`frontend-architecture.md`](mdc:docs/plans/architecture/frontend-architecture.md)
+or [`websocket-and-events.md`](mdc:docs/plans/architecture/websocket-and-events.md)
+— atom shape, WebSocket message type, hook contract, react-query
+key — update the matching note in the same commit and bump its
+`Last verified: YYYY-MM-DD` line to today (UTC). Bumping without a
+real diff against code is forbidden.
+
 ## Where to look next
 
 - Atoms catalogue, derived atoms: [`frontend-architecture.md`](mdc:docs/plans/architecture/frontend-architecture.md)

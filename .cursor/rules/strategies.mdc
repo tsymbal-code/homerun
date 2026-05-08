@@ -36,6 +36,59 @@ Per-strategy operator notes: `docs/strategies/*.md` (Ukrainian by operator reque
   DB-driven, user-definable, and may be missing across deployments.
   Test the shared base machinery, not the concrete subclass.
 
+## Documentation sync (mandatory)
+
+Every strategy code module is paired with an operator-facing
+Ukrainian doc under `docs/strategies/`. The mapping is:
+
+```
+backend/services/strategies/<snake_case>.py  ↔  docs/strategies/<kebab-case>.md
+```
+
+(e.g. `news_edge.py` ↔ `news-edge.md`, `btc_eth_convergence.py` ↔
+`btc-eth-convergence.md`).
+
+When you change a strategy module, you **must** check the matching
+doc and update it in the same commit if any of these surfaces
+change:
+
+- `*_DEFAULT_CONFIG` — every numeric default in the doc's
+  "Налаштування за замовчуванням" table.
+- `strategy_type`, `slug`, `source_key`, class name, `name`,
+  `description` — the "Контракт" block.
+- `Subscriptions` set, `detect`/`detect_async`, `evaluate`,
+  `should_exit` semantics — the "Логіка детекції" / "Логіка
+  виходу" sections.
+- New / removed config fields — the doc's settings table.
+
+Operator has confirmed **full edit permissions** on
+`docs/strategies/`. You may write and amend these files directly.
+Match the existing voice (Ukrainian prose) and the section
+skeleton used by sibling docs:
+
+```
+## Сутність
+## Контракт
+## Логіка детекції
+## Логіка виходу
+## Налаштування за замовчуванням
+## Коли НЕ працює
+## Посилання
+```
+
+If you are deleting a strategy, also delete its doc in the same
+commit. Orphan strategy docs are bugs.
+
+## Architecture-note sync
+
+When you change anything documented in
+[`trader-pipeline.md`](mdc:docs/plans/architecture/trader-pipeline.md)
+§ "Pipeline stages" or its "Code" / "Tables" sections — the
+strategy contract, the orchestrator interface, the gate names —
+update that note in the same commit and bump its
+`Last verified: YYYY-MM-DD` line to today (UTC). Bumping the date
+without a real diff against code is forbidden.
+
 ## LLM-touching strategies
 
 Most strategies are zero-LLM. The exceptions (`news_edge` and any

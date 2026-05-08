@@ -59,6 +59,7 @@ notes.
 | 0011 | [Defensive `expires_at` on skeleton `trade_signals` + retention sweep](completed/0011-skeleton-trade-signal-ttl-and-retention.md) | R        | 0010          |
 | 0012 | [Agent onboarding baseline — Cursor rules + Claude Code skills](completed/0012-agent-onboarding-baseline.md) | D        | —             |
 | 0013 | [Architecture documentation gap audit](completed/0013-architecture-doc-gap-audit.md) | D        | 0012          |
+| 0014 | [Documentation hygiene and quality gates for AI agents](completed/0014-doc-sync-discipline-and-quality-gates.md) | D        | 0012, 0013    |
 
 When adding a row: keep this table sorted by ID ascending. Don't
 re-number plans — gaps in IDs are normal and expected (deleted or
@@ -295,6 +296,19 @@ Only notes that aren't obvious from the title. All plans must follow
   on every existing note, and rewires `system-overview.md` /
   `CLAUDE.md` to route to the new notes. No runtime code
   changes.
+
+- **Plan 0014 — Documentation hygiene and quality gates for AI
+  agents.** Documentation / tooling (D). Direct follow-up to
+  plans 0012 and 0013. Closes the discipline gap that lets agents
+  change a strategy or a documented layer without updating the
+  paired doc. Adds: strategy-doc sync obligation in
+  `.cursor/rules/strategies.mdc` and `agents.md`, arch-note sync
+  reminder in every per-area Cursor rule, `/sync-docs` extension
+  to cover `docs/strategies/`, a new `/pre-commit-check` slash
+  command, a `PreToolUse` Bash hook that nudges (does not block)
+  on `git commit` without a `Plan:` trailer, and a single
+  "Documentation hygiene" section in `agents.md` that consolidates
+  all obligations. No runtime code changes.
 
 ## Ordering decision tree (for agents picking the next plan)
 

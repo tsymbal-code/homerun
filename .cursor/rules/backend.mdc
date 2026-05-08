@@ -44,6 +44,22 @@ Always-on baseline rules: [`homerun.mdc`](mdc:.cursor/rules/homerun.mdc).
 - Re-exporting old names "for backwards compatibility." Project policy is
   clean-cut replacement; delete the old.
 
+## Architecture-note sync (mandatory)
+
+When a change touches anything documented in
+[`backend-architecture.md`](mdc:docs/plans/architecture/backend-architecture.md)
+or its referenced layer notes (`database-and-migrations.md`,
+`settings-and-secrets.md`, `trader-pipeline.md`,
+`worker-trading.md`, `worker-news.md`, `worker-discovery.md`,
+`websocket-and-events.md`, `execution-and-fills.md`,
+`ai-and-llm.md`, `llm-provider-layer.md`,
+`strategy-reverse-engineer.md`) — meaning a public function
+signature, an ORM column, an `AppSettings` field, an API route, a
+JSON shape — update the matching note in the same commit and bump
+its `Last verified: YYYY-MM-DD` line to today's date (UTC).
+
+Do not bump `Last verified` without a real diff against code.
+
 ## Where to look next
 
 - Async + lifespan + worker startup: [`backend-architecture.md`](mdc:docs/plans/architecture/backend-architecture.md)

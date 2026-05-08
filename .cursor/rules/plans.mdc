@@ -45,6 +45,21 @@ Last task is always close-out:
 Plans in `docs/plans/completed/` are immutable historical records.
 Don't edit them after the move.
 
+## Paired docs (strategies)
+
+A plan that adds a new strategy under
+`backend/services/strategies/` always lands together with a new
+`docs/strategies/<kebab-case-slug>.md`. The plan's task list must
+include that artefact explicitly — both the code file and the
+Ukrainian operator doc — and the agent has full edit permissions
+to write the doc directly. Match the section skeleton in sibling
+docs (`basic.md`, `news-edge.md`, `weather-distribution.md`):
+Сутність / Контракт / Логіка детекції / Логіка виходу /
+Налаштування за замовчуванням / Коли НЕ працює / Посилання.
+
+A plan that **deletes** a strategy must also delete the matching
+doc in the same commit. Orphan docs are bugs.
+
 ## Architecture notes
 
 - Live in `docs/plans/architecture/`, contain **no tasks**.

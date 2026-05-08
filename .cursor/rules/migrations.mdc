@@ -56,6 +56,16 @@ def downgrade() -> None:
     pass
 ```
 
+## Architecture-note sync (mandatory)
+
+A migration almost always changes
+[`database-and-migrations.md`](mdc:docs/plans/architecture/database-and-migrations.md)
+and frequently changes
+[`settings-and-secrets.md`](mdc:docs/plans/architecture/settings-and-secrets.md)
+(when columns are encrypted secrets). Update the touched note in
+the same commit as the migration and bump its
+`Last verified: YYYY-MM-DD` line to today (UTC).
+
 ## Where to look next
 
 - Schema, conventions, retry patterns: [`database-and-migrations.md`](mdc:docs/plans/architecture/database-and-migrations.md)

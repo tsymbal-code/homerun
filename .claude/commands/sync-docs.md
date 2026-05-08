@@ -33,7 +33,7 @@ rows, report against all of them.
 |---|---|
 | `backend/services/ai/**` | `ai-and-llm.md`, `llm-provider-layer.md` |
 | `backend/services/news/**` | `ai-and-llm.md`, `worker-news.md` (if it exists) |
-| `backend/services/strategies/**` | `trader-pipeline.md` (per-strategy: `docs/strategies/<slug>.md`) |
+| `backend/services/strategies/<snake>.py` | `trader-pipeline.md` AND `docs/strategies/<kebab>.md` (kebab-case slug, see "Strategy doc drift" below) |
 | `backend/services/trader_orchestrator/**` | `trader-pipeline.md` |
 | `backend/services/strategy_reverse_engineer/**` | `strategy-reverse-engineer.md` (if it exists), `ai-and-llm.md` |
 | `backend/services/fill_simulator/**`, `backend/services/simulation/**`, `backend/services/live_execution_*.py` | `execution-and-fills.md` (if it exists), `trader-pipeline.md` |
@@ -57,6 +57,27 @@ For each owning note that appears in the mapped set:
   check whether the note already covers it. Mark gaps.
 - Look for an existing `Last verified: YYYY-MM-DD` line. If absent,
   flag it (the marker convention is plan 0013).
+
+## Phase 1b — Strategy doc drift (extension)
+
+For each touched `backend/services/strategies/<snake>.py` (skip
+helpers like `_firehose.py`, `crypto_strategy_utils.py`,
+`reversion_helpers.py`):
+
+1. Compute the matching `docs/strategies/<kebab>.md` filename by
+   replacing underscores with dashes.
+2. Read the module's `*_DEFAULT_CONFIG` dict, the class
+   attributes (`strategy_type`, `name`, `description`,
+   `Subscriptions`), and the `slug` / `source_key` declarations.
+3. Read the doc's `## Контракт` block and the
+   `## Налаштування за замовчуванням` table.
+4. Diff factually:
+   - Numeric defaults in the table vs `*_DEFAULT_CONFIG`.
+   - Class name, slug, source_key, subscriptions in the
+     "Контракт" block.
+5. Flag any mismatch as a discrepancy. Treat operator prose
+   (Сутність, Логіка детекції / виходу, Коли НЕ працює) as
+   authoritative — do not flag voice or wording differences.
 
 ## Phase 2 — Report
 
@@ -107,12 +128,26 @@ confirm zero remaining discrepancies, and print:
 Applied: N edits across M notes. Last verified bumped on K notes.
 ```
 
-## Footguns
+## Strategy doc edits (operator-confirmed)
 
-- **Don't conflate the per-strategy operator docs (`docs/strategies/`)
-  with architecture notes.** The operator notes are Ukrainian and
-  user-facing; do not auto-edit them. Only mention them in the report
-  when a strategy slug clearly drifted, and let the operator decide.
+Operator has granted full edit permissions on `docs/strategies/`.
+When applying fixes in Phase 3 to a strategy doc:
+
+- **Numeric defaults, class name, slug, source_key, subscriptions:**
+  amend directly to match the code. These are factual fields the
+  doc must mirror.
+- **Ukrainian prose (Сутність, Логіка детекції / виходу, Коли НЕ
+  працює):** preserve voice; only edit when the underlying
+  behaviour described is genuinely wrong, not when wording could
+  be tighter.
+- **Section skeleton:** never reorder or rename sections. The
+  canonical order is Сутність / Контракт / Логіка детекції /
+  Логіка виходу / Налаштування за замовчуванням / Коли НЕ працює
+  / Посилання.
+- **Voice:** keep Ukrainian. Class names, function names, code
+  identifiers stay as in the source.
+
+## Footguns
 - **`git log` against a shallow clone** can miss commits older than the
   fetch depth. If `git log -n $1` returns fewer than `$1` commits and
   `git rev-parse --is-shallow-repository` reports `true`, mention it

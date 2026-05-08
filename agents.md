@@ -81,7 +81,9 @@ codex.
 |---|---|
 | [`settings.json`](.claude/settings.json) | Permissions allowlist for read-only git/ssh-diagnostic commands; deny-list for the localhost / force-push / data-wipe footguns |
 | [`hooks/remind-ssh.sh`](.claude/hooks/remind-ssh.sh) | `UserPromptSubmit` hook — when the user prompt mentions `localhost`, `psql`, `docker compose up`, etc., injects the SSH-wrapper reminder before the agent starts work |
-| [`commands/sync-docs.md`](.claude/commands/sync-docs.md) | `/sync-docs [N]` — audits the last `N` commits against `docs/plans/architecture/*.md`, surfaces drift, refreshes `Last verified` markers on confirmation |
+| [`commands/sync-docs.md`](.claude/commands/sync-docs.md) | `/sync-docs [N]` — audits the last `N` commits against `docs/plans/architecture/*.md` AND `docs/strategies/*.md`, surfaces drift, refreshes `Last verified` markers on confirmation. May auto-edit strategy docs (operator-confirmed) |
+| [`commands/pre-commit-check.md`](.claude/commands/pre-commit-check.md) | `/pre-commit-check [draft message]` — staged-files + paired-doc coverage + `Plan:` trailer audit. Report-only; does not stage or commit |
+| [`hooks/check-plan-trailer.sh`](.claude/hooks/check-plan-trailer.sh) | `PreToolUse(Bash)` hook — warns if a `git commit` lacks a `Plan: <NNNN>` trailer. Opt-out: include the literal `[no-plan]` in the message. Warn-only, never blocks |
 | [`agents/plan-validator.md`](.claude/agents/plan-validator.md) | Read-only: validates one plan file against `docs/plans/README.md` (header, checkboxes, link integrity, index consistency) |
 | [`agents/arch-note-writer.md`](.claude/agents/arch-note-writer.md) | Writes / updates one architecture note from the Ralphex skeleton; refuses speculative content |
 | [`agents/commit-trailer-checker.md`](.claude/agents/commit-trailer-checker.md) | Verifies every commit in a SHA range carries a `Plan:` trailer; surfaces phantom plan IDs |
@@ -100,6 +102,79 @@ real diff against code; do not stamp it as a reflex. The full set of
 notes — five new ones added by plan 0013 — is indexed in
 [`docs/plans/architecture/system-overview.md`](docs/plans/architecture/system-overview.md)
 "Where to look next".
+
+---
+
+## Documentation hygiene
+
+This is the contract every code-changing commit follows. The Cursor
+rules and the slash commands above implement it; this section is the
+plain-English statement.
+
+### 1. Code change ⇒ matching doc update in the same commit
+
+Every commit that changes code must update the doc that documents
+that code, in the same commit.
+
+| Code touched | Doc that travels with it |
+|---|---|
+| `backend/services/strategies/<snake>.py` | `docs/strategies/<kebab>.md` (Ukrainian, full edit permission) **and** [`trader-pipeline.md`](docs/plans/architecture/trader-pipeline.md) if the contract changed |
+| `backend/services/<area>/**` | the matching layer note in `docs/plans/architecture/` (see the table at the top of every `.cursor/rules/*.mdc`) |
+| `backend/alembic/versions/**`, `backend/models/database.py` | [`database-and-migrations.md`](docs/plans/architecture/database-and-migrations.md) (and [`settings-and-secrets.md`](docs/plans/architecture/settings-and-secrets.md) if the column is encrypted) |
+| `backend/api/routes_*.py` | [`backend-architecture.md`](docs/plans/architecture/backend-architecture.md) |
+| `frontend/src/**` | [`frontend-architecture.md`](docs/plans/architecture/frontend-architecture.md) (and [`websocket-and-events.md`](docs/plans/architecture/websocket-and-events.md) if WS) |
+| `docker-compose.yml`, `deploy/**` | [`system-overview.md`](docs/plans/architecture/system-overview.md), [`deploy/AGENTS.md`](deploy/AGENTS.md) |
+
+If the change is genuinely doc-irrelevant (a refactor with no
+contract change, no behaviour change), say so explicitly in the
+commit body. Default assumption: doc update is needed.
+
+### 2. `Last verified` is bumped only after a real diff
+
+Architecture notes carry `Last verified: YYYY-MM-DD` (or
+`<unverified>`). When you actually diff the note against the code
+and confirm everything in `## Key files` / `## Contracts` still
+matches reality, bump the date to today (UTC). **Do not** bump it
+as a reflex when you only edited unrelated prose, and do not bump
+it when `<unverified>` simply scares you.
+
+### 3. Deletions are paired
+
+Deleting a strategy module ⇒ also delete `docs/strategies/<slug>.md`
+in the same commit. Deleting a layer ⇒ delete or rewrite its arch
+note. Orphan docs are bugs; they go stale silently and mislead the
+next agent.
+
+### 4. `Plan: <NNNN>` trailer for every plan-driven commit
+
+Per [`docs/plans/README.md`](docs/plans/README.md) § Commits and
+traceability:
+
+- Every commit produced while executing a plan carries a
+  `Plan: <NNNN>` git trailer on its own line in the message body.
+- The trailer carries the **ID only** (`0014`), never the slug.
+- Multi-plan commits get one trailer per plan, on separate lines.
+- `git log --grep='Plan: 0014'` is the canonical retrieval.
+- **Exempt list** (no trailer required): typo fix, dependency
+  bump from a script, emergency hotfix. Mark exempt commits with
+  the literal `[no-plan]` somewhere in the message — that is the
+  opt-out keyword the `PreToolUse` hook recognises.
+
+### 5. Pre-flight before non-trivial commits
+
+Run, in order:
+
+1. `/sync-docs 30` — surfaces architecture-note and strategy-doc
+   drift introduced by recent commits, including this one.
+2. Stage your changes (`git add`).
+3. `/pre-commit-check "<your draft message>"` — confirms paired
+   docs are co-staged, defaults match the doc tables, and the
+   `Plan:` trailer is present.
+4. Commit.
+
+For trivial edits (one-line fix, doc-only typo) the pre-flight is
+optional. The threshold is "would a reviewer ask for a doc update?"
+— if yes, run the pre-flight.
 
 ---
 

@@ -58,6 +58,19 @@ Authoritative references:
   reach LLM only via the news pipeline / opportunity_judge / verifier
   hooks documented in `ai-and-llm.md`.
 
+## Architecture-note sync (mandatory)
+
+When a change touches anything documented in
+[`ai-and-llm.md`](mdc:docs/plans/architecture/ai-and-llm.md),
+[`llm-provider-layer.md`](mdc:docs/plans/architecture/llm-provider-layer.md),
+[`worker-news.md`](mdc:docs/plans/architecture/worker-news.md), or
+[`strategy-reverse-engineer.md`](mdc:docs/plans/architecture/strategy-reverse-engineer.md)
+— public LLMManager signature, a new provider, a new feature flag
+on `AppSettings`, a new `LLMUsageLog.purpose` value, a new
+pipeline stage — update the matching note in the same commit and
+bump its `Last verified: YYYY-MM-DD` to today (UTC). Bumping
+without a real diff against code is forbidden.
+
 ## Where to look next
 
 - News pipeline data flow + winning-market identification: [`ai-and-llm.md`](mdc:docs/plans/architecture/ai-and-llm.md)

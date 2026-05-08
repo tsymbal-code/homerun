@@ -59,6 +59,17 @@
           }
         ]
       }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash .claude/hooks/check-plan-trailer.sh"
+          }
+        ]
+      }
     ]
   }
 }
