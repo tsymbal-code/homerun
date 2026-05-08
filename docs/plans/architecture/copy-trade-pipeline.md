@@ -376,7 +376,7 @@ already in scanner subscription. So the gate was
 source-key+`execution_activation`-driven, not source-key
 alone.
 
-## Post-fix flow (Plan 0009)
+## Post-fix flow (Plans 0009 + 0010)
 
 **File:** `backend/services/signal_bus.py:493-548`,
 `_strategy_runtime_metadata`:
@@ -436,6 +436,90 @@ is gone. Any future `source_key` that is not in
 WARNING with the unknown source key. This prevents the next
 silent-regression failure mode.
 
+### Publish/projection durability (post Plan 0010)
+
+Plan 0009's gate fix unmasked a pre-existing FK race in
+`intent_runtime.publish_opportunities`. With the gate gone,
+every wallet-trade copy publish landed in the runtime cache
+end-to-end and the orchestrator immediately tried to write a
+`trader_decisions` row. In production this fired
+`trader_decisions_signal_id_fkey` violations on virtually
+every decision — 151 failed `trader_signal_consumption` rows
+in the first 15 min and zero persisted `trader_decisions`.
+
+**Root cause.** `publish_opportunities` minted a fresh
+`uuid.uuid4().hex` for any dedupe_key not already in the
+in-memory cache (intent_runtime.py:2174). After every
+worker-trading restart the cache is empty, but
+`trade_signals` still carries rows from the previous process
+(traders TTL is 15 min and the wallet WS replays the same
+trades on reconnect). The fresh in-memory id then collided
+with the existing `(source='traders', dedupe_key=K)` row
+under `uq_trade_signals_source_dedupe`:
+
+- `signal_bus.upsert_trade_signal` (signal_bus.py:1334-1342)
+  found the existing row by `(source, dedupe_key)` and
+  updated it in place — **keeping the OLD id**. The fresh id
+  was never written to `trade_signals`.
+- The orchestrator's
+  `_ensure_runtime_signal_persisted`
+  (`trader_orchestrator_worker.py:744`) ran
+  `INSERT ... ON CONFLICT DO NOTHING` for the fresh id;
+  Postgres saw the same `(source, dedupe_key)` already
+  occupied by the OLD id and silently no-op'd. The fresh id
+  remained absent from `trade_signals`.
+- `create_trader_decision_checks(session, ...)` flushed the
+  pending `INSERT INTO trader_decisions (signal_id=fresh_id, ...)`
+  → `trader_decisions_signal_id_fkey` violation; the whole
+  per-signal transaction rolled back; the recovery path's
+  `record_signal_consumption` then fired its own FK on
+  `trader_signal_consumption.decision_id_fkey`.
+
+**Fix.** `publish_opportunities` now prefetches the canonical
+`(source, dedupe_key) → id` mapping from `trade_signals`
+**before** acquiring `self._lock`, and the new-id branch
+adopts the canonical id when one exists:
+
+```python
+# pre-lock prefetch
+prefetch_dedupe_keys = [
+    dedupe_key
+    for opp in opportunities
+    for (mid, *_unused) in [build_signal_contract_from_opportunity(opp)]
+    if mid
+    for dedupe_key in [make_dedupe_key(opp.stable_id, opp.strategy, mid)]
+    if dedupe_key not in self._signal_ids_by_dedupe_key
+]
+prefetched_ids: dict[str, str] = {}
+if prefetch_dedupe_keys:
+    async with AsyncSessionLocal() as session:
+        rows = await session.execute(
+            select(TradeSignal.id, TradeSignal.dedupe_key).where(
+                TradeSignal.source == source,
+                TradeSignal.dedupe_key.in_(prefetch_dedupe_keys),
+            )
+        )
+        prefetched_ids = {dk: sid for sid, dk in rows.all()}
+
+# inside the lock, replacing `signal_id = uuid.uuid4().hex`
+signal_id = prefetched_ids.get(dedupe_key) or uuid.uuid4().hex
+```
+
+The in-memory cache is now authoritative-equal-to-DB by
+construction: every consumer (orchestrator, fast_trader_runtime,
+UI) gets the canonical id, `_ensure_runtime_signal_persisted`'s
+ON CONFLICT DO NOTHING never has a `(source, dedupe_key)`
+conflict to swallow, and the FK race is closed at its
+publish-side root rather than per-consumer.
+
+**Cost.** One `SELECT id, dedupe_key FROM trade_signals
+WHERE source = $1 AND dedupe_key = ANY($2)` per
+`publish_opportunities` call, only over the cache-missing
+dedupe_keys. Scanner steady-state hits the cache for 99%+
+of dedupe_keys (the prefetch is a no-op); traders publishes
+a handful at a time. The projection loop is unchanged — it
+remains the single owner of the actual `trade_signals` write.
+
 ## Operational guidance
 
 1. **Run `traders` bots on `latency_class=normal` if the
@@ -489,14 +573,31 @@ audited activation policy, with a warn-and-fall-through
 default of `immediate` for any future source that ships
 without a registered policy.
 
+Plan 0010 then closed the publish-side FK race that the
+runtime-sequence gate had masked: `publish_opportunities`
+prefetches the canonical `(source, dedupe_key) → id` mapping
+from `trade_signals` before allocating ids, so the in-memory
+cache is authoritative-equal-to-DB by construction and the
+orchestrator's `_ensure_runtime_signal_persisted` never has
+a unique-constraint conflict to silently swallow.
+
 The deferred-state branches in `publish_opportunities`
 (lines 2129-2141 and 2186-2195) remain as defensive code
 but are not reachable from any current source key.
 
 ## Open questions
 
-None. The gate is fixed; the post-fix invariant is
-monitored by the DB query in **Operational guidance**.
+None. Plan 0009 closed the runtime-sequence gate; Plan 0010
+closed the FK race that gate had been masking. Two
+post-fix invariants apply:
+
+1. `without_seq = 0` for `traders_*` rows in the DB query
+   from **Operational guidance** (Plan 0009).
+2. Zero `trader_decisions_signal_id_fkey` violations for
+   `traders_copy_trade` over a 30-minute soak under
+   steady-state load (Plan 0010, validated by the four
+   post-deploy checks listed in plan 0010's
+   `## Validation Commands`).
 
 ## See also
 
@@ -504,5 +605,6 @@ monitored by the DB query in **Operational guidance**.
 - [worker-trading.md](worker-trading.md) — process model for the trading plane, fast vs normal tiers.
 - [system-overview.md](system-overview.md) — runtime topology.
 - [`docs/plans/completed/0008-investigate-traders-source-routing-on-normal.md`](../completed/0008-investigate-traders-source-routing-on-normal.md) — the investigation plan that produced this note.
-- [`docs/plans/completed/0009-fix-traders-source-on-normal.md`](../completed/0009-fix-traders-source-on-normal.md) — the fix plan; once Plan 0009 closes, this is the canonical record of the change.
+- [`docs/plans/completed/0009-fix-traders-source-on-normal.md`](../completed/0009-fix-traders-source-on-normal.md) — runtime-sequence gate fix.
+- [`docs/plans/completed/0010-fix-traders-publish-fk-race.md`](../completed/0010-fix-traders-publish-fk-race.md) — publish-side FK race fix (publish-time id adoption from `trade_signals`).
 - [`docs/plans/architecture/_appendix/0008-baseline-2026-05-07.txt`](_appendix/0008-baseline-2026-05-07.txt) — baseline data captured during investigation.

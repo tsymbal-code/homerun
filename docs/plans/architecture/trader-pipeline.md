@@ -397,7 +397,7 @@ Search hints:
 | `selected > 0`, `orders=0`, mode=shadow | Step 7 → Cox-PH fill simulator | Loosen slippage / spread / `taker_market` |
 | All `decision=blocked` for one bot | Step 6 → specific gate | `trader_decision_checks` filter |
 | `last_run_at=null` for traders bot | Step 5 → firehose pre-filter | Inspect `firehose_*` params; check `quality_passed` distribution for the source |
-| Copy-trade bot idle | Standard Stage 1 / Stage 5 flow | `traders_copy_trade` requires a recent leader trade in the wallet-WS feed (Stage 1, `max_signal_age_seconds`). Once a signal is written it follows the same pipeline as every other source — check the firehose pre-filter (Stage 5) and `trader_decision_checks` (Step 6) like any other bot. See [copy-trade-pipeline.md](copy-trade-pipeline.md) for the source-specific publish topology (post-Plan-0009). |
+| Copy-trade bot idle | Standard Stage 1 / Stage 5 flow | `traders_copy_trade` requires a recent leader trade in the wallet-WS feed (Stage 1, `max_signal_age_seconds`). Once a signal is written it follows the same pipeline as every other source — check the firehose pre-filter (Stage 5) and `trader_decision_checks` (Step 6) like any other bot. See [copy-trade-pipeline.md](copy-trade-pipeline.md) for the source-specific publish topology (post-Plan-0009 + 0010, including publish-time `(source, dedupe_key) → id` adoption from `trade_signals`). |
 | Bot enabled, signals flowing, zero consumption | `source_configs` mismatch with signal `source` / `strategy_type` | Compare bot's `source_configs[*].strategy_key` to `trade_signals.strategy_type` |
 
 ## Known footguns

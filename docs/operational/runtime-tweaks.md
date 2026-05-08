@@ -1020,6 +1020,131 @@ current "signals reach orchestrator, decisions can't persist".
 
 ### Status
 
-OPEN — fix tracked in plan 0010. Close this entry when plan 0010
-ships and the verification checks in that plan's
-`## Validation Commands` pass on `polyhome-1`.
+CLOSED — fix shipped on `polyhome-1` at 2026-05-08 ~06:20 UTC
+(plan 0010). Post-deploy verification reported `0` FK violations
+in the seven minutes after orchestrator unpause, with 95
+`trader_decisions` rows for `traders_copy_trade` (76 skipped + 19
+blocked) and `99 trader_signal_consumption` rows, every one of
+which has a non-null `decision_id` (`78 skipped + 21 blocked`).
+See the `2026-05-08 ~06:20 UTC` entry below for full numbers.
+
+---
+
+## 2026-05-08 ~06:20 UTC — Plan 0010: traders publish-side FK race fixed
+
+- **Surface**: code (`backend/services/intent_runtime.py`,
+  `publish_opportunities` skeleton-INSERT pass) +
+  `trader_orchestrator_control` (post-deploy unpause and
+  `selected_account_id` rebind to sandbox).
+- **Applied via**: plan 0010
+  ([`docs/plans/0010-fix-traders-publish-fk-race.md`](../plans/0010-fix-traders-publish-fk-race.md)),
+  redeploy via `BUILD_IMAGES=0 ./deploy/sync_remote.sh` (GHCR pull,
+  no rebuild needed — fix is pure-Python in
+  `backend/services/intent_runtime.py`), followed by
+  `POST /api/trader-orchestrator/start` to flip
+  `is_enabled=false, is_paused=true → is_enabled=true,
+  is_paused=false` and rebind `selected_account_id` to the sandbox
+  account `08fb2d1e-3bb1-4cd5-bd22-db3efbe4085e`.
+- **Why**: with plan 0009 lifting the
+  `_strategy_runtime_metadata` gate on the `traders` source, every
+  `traders_copy_trade` signal landed in the runtime cache with a
+  non-NULL `runtime_sequence`, and the orchestrator immediately
+  tried to write `trader_decisions(signal_id=X)`. But for genuinely
+  new `(source, dedupe_key)` pairs, the projection loop's UPSERT
+  into `trade_signals` had not yet committed when the orchestrator
+  consumed the signal microseconds later — the publish path only
+  populated the in-memory cache and pinged consumers via
+  `publish_signal_batch`. Net effect was 100 % FK violations on
+  every Copy Trade decision attempt (151 placeholder
+  `consumption.outcome='failed'` rows / 15 min in the post-deploy
+  baseline, see the previous journal entry). Plan 0010 fixes the
+  publish path to **synchronously commit a skeleton `trade_signals`
+  row** (with `status='pending'` and the same `id` it stores in
+  the cache) for every new dedupe key, *before* `publish_opportunities`
+  returns. The asynchronous projection loop's later UPSERT then
+  fills in the rich payload via `UPDATE` on the same row. The
+  publish-time prefetch from plan 0010's earlier draft also
+  remains, covering post-restart cache-staleness for known dedupe
+  keys.
+- **Expected effect**: no FK violations in `worker-trading` logs;
+  `Sandbox - Traders Copy Trade` produces real `trader_decisions`
+  rows with `decision in ('selected', 'skipped', 'blocked')` (not
+  the placeholder `failed`); `trader_signal_consumption` rows
+  carry an actual outcome and a non-null `decision_id`.
+- **Verification commands** (run 7 min after orchestrator unpause):
+
+  ```bash
+  # 1) FK violations since deploy
+  ssh polyhome-1 "cd /home/polyhome/homerun && \
+    docker compose logs --since 7m worker-trading 2>&1 \
+    | grep -cE 'trader_decisions_signal_id_fkey|ForeignKeyViolation'"
+
+  # 2) trader_decisions volume + decision distribution
+  ssh polyhome-1 "cd /home/polyhome/homerun && docker compose exec -T postgres \
+    psql -U homerun -d homerun -c \"select strategy_key, decision, count(*) \
+    from trader_decisions where created_at > '2026-05-08 06:19:45' \
+    group by 1,2 order by 1,2\""
+
+  # 3) trader_signal_consumption — every row has a real decision_id + outcome
+  ssh polyhome-1 "cd /home/polyhome/homerun && docker compose exec -T postgres \
+    psql -U homerun -d homerun -c \"select coalesce(outcome,'(null)') as outcome, \
+    case when decision_id is null then 'no-decision' else 'has-decision' end \
+    as decision_link, count(*) from trader_signal_consumption \
+    where consumed_at > '2026-05-08 06:19:45' group by 1,2 order by 3 desc\""
+
+  # 4) trade_signals freshness for traders source
+  ssh polyhome-1 "cd /home/polyhome/homerun && docker compose exec -T postgres \
+    psql -U homerun -d homerun -c \"select status, count(*) from trade_signals \
+    where source='traders' and created_at > '2026-05-08 06:19:45' \
+    group by 1 order by 2 desc\""
+  ```
+
+### Post-deploy snapshot (06:19:45..06:27:10 UTC)
+
+| Validation check | Result |
+|---|---:|
+| FK violations in `worker-trading` logs | **0** |
+| `trader_decisions` for `traders_copy_trade` | 95 (76 skipped, 19 blocked) |
+| `trader_decisions` for `negrisk` | 19 (skipped) |
+| `trader_decisions` for `market_making` | 11 (blocked) |
+| `trader_signal_consumption` rows with `has-decision` | **99 / 99** (78 skipped, 21 blocked) |
+| `trader_signal_consumption` with `(null)` decision | **0** |
+| `trade_signals (source=traders)` rows since deploy | 137 (66 pending, 70 skipped, 1 expired) |
+
+Plan 0010's success criteria (zero FK violations,
+`Sandbox - Traders Copy Trade` recording `trader_decisions`,
+`trader_signal_consumption` rows with real outcomes) are all
+satisfied. The skipped/blocked distribution is the expected
+strategy-gate filter output — the strategy is doing its job;
+the prior 100 % `failed` outcome was the FK race masking it.
+
+### Changes
+
+| Path | Before | After |
+|---|---:|---:|
+| `intent_runtime.publish_opportunities` (code) | populates in-memory cache + pings consumers; relies on async projection loop to commit `trade_signals` | additionally batches a `pg_insert(TradeSignal).values(...).on_conflict_do_nothing(index_elements=['source','dedupe_key'])` for every new dedupe key in a separate committed session, **before** `publish_opportunities` returns |
+| `trader_orchestrator_control.is_enabled` | false (paused before redeploy) | true |
+| `trader_orchestrator_control.is_paused` | true | false |
+| `trader_orchestrator_control.settings.selected_account_id` | null | `08fb2d1e-3bb1-4cd5-bd22-db3efbe4085e` |
+
+### Rollback
+
+If the publish-time skeleton-INSERT ever causes `trade_signals`
+write contention or a regression of its own, the rollback is a
+**code revert** of `backend/services/intent_runtime.py` (drop the
+"Skeleton-INSERT pass" block and the `pg_insert` import); there is
+no runtime knob to turn this off. Reverting reintroduces the FK
+race for `traders` source. Anyone considering this revert should
+also re-pause `Sandbox - Traders Copy Trade` to avoid the
+placeholder `consumption.outcome='failed'` storm in
+`trader_signal_consumption` (151 rows / 15 min on the pre-fix
+build).
+
+The orchestrator unpause is the standard post-redeploy startup
+sequence — see the `2026-05-07 ~07:00 UTC` entry above for the
+canonical recipe. No special rollback is needed.
+
+### Status
+
+CLOSED — fix shipped on `polyhome-1`. Closes the OPEN item from
+the `2026-05-08 ~05:00 UTC` entry above.

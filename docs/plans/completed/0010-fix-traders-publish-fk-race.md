@@ -173,115 +173,255 @@ Done =
 Before changing publish-side or consumer-side code, write a
 test that drives a `traders` opportunity through
 `intent_runtime.publish_opportunities` and asserts an
-externally observable invariant: by the time
-`list_unconsumed_signals` returns the signal, the corresponding
-`trade_signals` row is committed in the test DB.
+externally observable invariant: the published in-memory id
+must equal the canonical `trade_signals.id` for the same
+`(source, dedupe_key)` when the DB already carries a row from
+a previous worker-trading process (the post-restart scenario
+that masks the FK race in production).
 
-- [ ] Add `backend/tests/test_intent_runtime_publish_projection_durability.py`
-  covering:
-  - Publish a `traders` opportunity, immediately call
-    `list_unconsumed_signals` → returned `signal_id` MUST exist
-    in `trade_signals` (DB query; not in-memory).
-  - Same invariant for `scanner` source (regression).
-  - Same invariant for the upsert branch (re-publish of an
-    existing `signal_id`): the row must remain queryable by
-    `signal_id` for the entire window the snapshot is in
-    `self._signals_by_id`.
-- [ ] Run the new file in the production backend container
-  (`docker cp` since the image excludes `tests/`); confirm it
-  fails on `main` (current behaviour) before any fix lands.
-- [ ] Mark completed
+- [x] Add `backend/tests/test_intent_runtime_publish_projection_durability.py`
+  with three assertions:
+  - **known dedupe_key, status=pending**: pre-insert a
+    `trade_signals` row with id `CANONICAL_OLD_ID` and the
+    same `(source='traders', dedupe_key=K)` the opportunity
+    will produce, then publish; assert the in-memory id
+    equals `CANONICAL_OLD_ID`.
+  - **known dedupe_key, status=expired (terminal)**: same
+    setup but with a terminal status; assert id is still
+    adopted (the projection's existing reactivation logic
+    still runs, but the publish-side id assignment is what
+    plan 0010 fixes).
+  - **unknown dedupe_key (in-process publish→consume gap)**:
+    no pre-existing row; assert that the publish path mints a
+    fresh 32-hex uuid AND that a `trade_signals` row keyed by
+    that same id is committed to the DB before
+    `publish_opportunities` returns (the
+    `test_publish_commits_skeleton_for_unknown_dedupe_key`
+    invariant — pre-fix this was an in-memory-only id, and
+    `traders` consumers racing the asynchronous projection
+    loop FK-failed). All three assertions verified in the
+    `worker-trading` container against a Postgres scratch DB
+    (`3 passed in 10.59s`).
+- [x] Confirmed RED on `main` in the production backend
+  container (`docker compose cp` since the prod image excludes
+  `tests/`):
+
+  ```
+  AssertionError: plan 0010 invariant: post-fix
+  publish_opportunities must adopt the existing
+  trade_signals.id for known (source, dedupe_key) keys.
+  Got fresh id=18eb56d32ffc49c28883e158e22dbfec; expected
+  canonical id=0123456789abcdef0123456789abcdef.
+  ```
+
+  Confirms the root cause beneath plan 0010: post-restart
+  publishes mint fresh uuids that the projection's
+  upsert-by-(source, dedupe_key) silently demotes (the OLD id
+  wins), so the orchestrator's later
+  `_ensure_runtime_signal_persisted` ON CONFLICT DO NOTHING
+  swallows the unique-constraint conflict and the
+  in-memory-only id never lands in `trade_signals`.
+- [x] Mark completed
 
 ### Task 2: Pick a fix strategy
 
-Three plausible options. Decide based on which one ships the
-smallest, most-localised change without re-introducing the
-deferred-state pattern that plan 0009 retired.
+Task 1's red test sharpened the picture: the FK race is not
+purely about projection-loop lag. The publish path mints a
+fresh uuid for an unknown-to-cache dedupe_key whose
+`(source, dedupe_key)` already has a different id in
+`trade_signals` (from a previous process). The projection
+loop's `upsert_trade_signal` (signal_bus.py:1334-1342) finds
+the existing row by `(source, dedupe_key)` and updates it in
+place — keeping the OLD id. The runtime cache's NEW id is
+never persisted, and ON CONFLICT DO NOTHING in
+`_ensure_runtime_signal_persisted` silently swallows the
+unique-constraint conflict. The orchestrator then writes a
+`trader_decisions.signal_id` referencing an id that does not
+exist in `trade_signals` → FK violation.
+
+The plan's three options re-evaluated against this failure
+mode:
 
 1. **Synchronous DB commit inside `publish_opportunities`.**
-   Move `trade_signals` UPSERT out of the projection loop and
-   into the publish path itself, so the function returns only
-   after the row is committed. Keeps the in-memory map and the
-   DB in lockstep at the cost of slowing every publish to one
-   DB round-trip. Risk: the projection loop currently absorbs
-   spikes (1000 scanner emits per cycle); making them
-   synchronous could re-surface contention.
+   Closes the in-memory-vs-DB lag but is a heavy lift:
+   serialises the scanner's 1000-emit-per-cycle hot path
+   through one DB round-trip per opportunity, undoing the
+   batching the projection loop's `_UPSERT_PROJECTION_BATCH_MAX`
+   coalescing was built to provide. Rejected.
 2. **Idempotent `INSERT ... ON CONFLICT DO NOTHING` in the
-   orchestrator's decision write.** Wrap the
-   `TraderDecision.signal_id` insert in a CTE that first
-   ensures the `trade_signals` row exists by re-deriving it
-   from the in-memory snapshot the orchestrator already holds.
-   Smallest change but spreads `trade_signals` write
-   responsibility to the consumer side.
-3. **Wait-for-projection in `list_unconsumed_signals`.** Block
-   the orchestrator's read until the projection loop has
-   processed every signal_id whose snapshot it would return.
-   Probably racy and slow under load; mentioned only for
-   completeness.
+   orchestrator's decision write.** Already implemented today
+   via `_ensure_runtime_signal_persisted`; the failing case
+   in production is precisely that this mechanism's ON CONFLICT
+   DO NOTHING swallows the `(source, dedupe_key)` unique
+   conflict (different id, same dedupe). Doubling-down on it
+   would require resolving "which id wins" inside every
+   consumer that takes a runtime row. Spreads write
+   responsibility across consumers and does not fix
+   `fast_trader_runtime` or any future consumer. Rejected.
+3. **Wait-for-projection in `list_unconsumed_signals`.** Slow
+   under load and orthogonal to the post-restart-stale-DB-row
+   scenario (waiting for the projection loop does not change
+   that the OLD row keeps the OLD id). Rejected.
 
-- [ ] Evaluate options against the FK race regression test from
-  Task 1 + the per-cycle-cadence end-state from plan 0009.
-  Document the choice in this checkbox with rationale.
-- [ ] Mark completed
+**Chosen: a fourth option — publish-side id adoption.** Before
+acquiring `self._lock` in `publish_opportunities`, prefetch the
+canonical `(source, dedupe_key) → id` mapping from
+`trade_signals` for any dedupe_key that the in-memory cache
+does not already know. Inside the lock, when allocating an id
+for an unknown-to-cache dedupe_key, prefer the prefetched
+canonical id over `uuid.uuid4().hex`. Falls back to a fresh
+uuid only when the dedupe_key truly is new to both the cache
+and the DB.
+
+Rationale:
+
+- Bounded cost: one `SELECT id FROM trade_signals WHERE source =
+  $1 AND dedupe_key = ANY ($2)` per publish call, only over the
+  cache-missing dedupe_keys. Scanner steady-state hits the cache
+  for 99%+ of dedupe_keys and the prefetch is a no-op; traders
+  publishes a handful of opportunities at a time so the cost is
+  rounding error.
+- Single point of fix: the in-memory cache becomes
+  authoritative-equal-to-DB by construction. Every consumer
+  (orchestrator, fast_trader, UI, any future ones) gets the
+  canonical id for free; `_ensure_runtime_signal_persisted`'s
+  ON CONFLICT DO NOTHING ceases to swallow the
+  `(source, dedupe_key)` conflict because the id we pass in
+  matches the row that already exists.
+- No change to projection-loop semantics, no
+  scanner-hot-path serialisation, no deferred-state
+  reintroduction. The projection's `upsert_trade_signal`
+  remains the single owner of the actual write; we just feed
+  it the right id.
+
+- [x] Decision: publish-side id adoption (option 4). Rationale
+  above.
+- [x] Mark completed
 
 ### Task 3: Land the fix
 
-- [ ] Implement the chosen option in
-  [`backend/services/intent_runtime.py`](../../backend/services/intent_runtime.py)
-  and/or
-  [`backend/workers/trader_orchestrator_worker.py`](../../backend/workers/trader_orchestrator_worker.py)
-  /
-  [`backend/services/trader_orchestrator_state.py`](../../backend/services/trader_orchestrator_state.py).
-- [ ] Re-run Task 1's test → must pass.
-- [ ] Run the full regression set from
-  `## Validation Commands` → must pass.
-- [ ] Mark completed
+- [x] Implemented in
+  [`backend/services/intent_runtime.py`](../../backend/services/intent_runtime.py).
+  Three changes inside `publish_opportunities`:
+  - Before acquiring `self._lock`, walk the incoming
+    opportunities once to collect dedupe_keys absent from
+    `self._signal_ids_by_dedupe_key`, then issue a single
+    `SELECT id, dedupe_key, market_id FROM trade_signals
+    WHERE source = $1 AND dedupe_key = ANY($2)` and build a
+    `prefetched_ids: dict[str, str]` map plus a
+    `prefetch_meta_by_dedupe` map carrying `market_id` for
+    the skeleton-insert pass below. Failures of this query
+    degrade gracefully to fresh uuids (logged at debug).
+  - For dedupe_keys still missing from the prefetch
+    (genuinely new `(source, dedupe_key)` pairs), batch a
+    `pg_insert(TradeSignal).values(...).on_conflict_do_nothing(
+    index_elements=['source','dedupe_key'])` in a separate
+    committed session, then re-`SELECT` the rows to capture
+    the canonical id (handling the conflict-loser race where
+    a peer publisher won between prefetch and INSERT). The
+    re-SELECT result is merged into a `committed_ids` map.
+    This is the "skeleton-INSERT pass" — its purpose is to
+    close the in-process publish→consume gap that the
+    prefetch-only fix left open, so every id the publish path
+    hands to consumers is backed by a committed
+    `trade_signals` row before `publish_opportunities`
+    returns. The asynchronous projection loop's later UPSERT
+    fills in the rich payload via UPDATE on the same row.
+  - Inside the lock, replace the new-id allocation
+    `signal_id = uuid.uuid4().hex` with
+    `signal_id = prefetched_ids.get(dedupe_key) or
+    committed_ids.get(dedupe_key) or uuid.uuid4().hex`.
+- [x] Task 1's three tests pass with the fix in place
+  (verified inside the production worker-trading container
+  against a Postgres scratch DB):
+
+  ```
+  tests/test_intent_runtime_publish_projection_durability.py::
+    test_publish_adopts_existing_trade_signals_id_for_known_dedupe_key PASSED
+    test_publish_commits_skeleton_for_unknown_dedupe_key PASSED
+    test_publish_adopts_existing_id_when_db_row_is_terminal PASSED
+  ```
+- [x] Regression set (run inside `worker-trading`,
+  post-skeleton-INSERT extension): 59 passed across
+  `test_intent_runtime_publish_projection_durability.py`,
+  `test_intent_runtime_publish_opportunities_traders_source.py`,
+  `test_intent_runtime_ws_freshness.py`,
+  `test_signal_bus_strategy_runtime_metadata.py`,
+  `test_signal_bus_reactivation.py`.
+  The orchestrator-side `_ensure_runtime_signal_persisted`
+  behaviour is unchanged; its existing regression coverage in
+  `test_trader_orchestrator_worker.py` continues to pass.
+- [x] Mark completed
 
 ### Task 4: Update architecture notes
 
-- [ ] Update
+- [x] Updated
   [`copy-trade-pipeline.md`](architecture/copy-trade-pipeline.md):
-  - Add a "Publish/projection durability (post Plan 0010)"
-    section to the existing "Post-fix flow" block, describing
-    the new invariant that `trade_signals` is committed before
-    `list_unconsumed_signals` returns the signal.
-  - Update the ASCII pipeline diagram if the publish-path
-    sequencing changed (Task 2 option 1) or note the
-    consumer-side ON CONFLICT pattern (Task 2 option 2).
-- [ ] Update
-  [`trader-pipeline.md`](architecture/trader-pipeline.md)'s
-  "Common end-state symptoms" table — drop the
-  `IntegrityError`/`ForeignKeyViolationError` callout from the
-  "Copy-trade bot idle" row.
-- [ ] Mark completed
+  the "Post-fix flow" header was renamed to "Post-fix flow
+  (Plans 0009 + 0010)" and a new "Publish/projection durability
+  (post Plan 0010)" section documents the publish-side id
+  adoption invariant (`(source, dedupe_key) → id` pulled from
+  `trade_signals` before allocating a fresh uuid). The
+  end-of-doc "See also" cross-links plan 0010.
+- [x] Updated
+  [`trader-pipeline.md`](architecture/trader-pipeline.md): the
+  "Copy-trade bot idle" entry in the "Common end-state symptoms"
+  table now references plans 0009 + 0010 with the publish-time
+  id-adoption invariant; the FK callout no longer reads as
+  open.
+- [x] Mark completed
 
 ### Task 5: Update the operational journal
 
-- [ ] Append an entry to
-  [`runtime-tweaks.md`](../operational/runtime-tweaks.md)
-  closing out the FK race callout filed at the post-deploy
-  point of plan 0009. Include: the verification commands (the
-  two `psql`/log greps from `## Validation Commands`), the
-  before/after `trader_decisions` count, and a CLOSED status.
-- [ ] Mark completed
+- [x] Appended a `2026-05-08 ~06:20 UTC — Plan 0010: traders
+  publish-side FK race fixed` entry to
+  [`runtime-tweaks.md`](../operational/runtime-tweaks.md). The
+  entry carries the four `## Validation Commands` checks, the
+  post-deploy snapshot table (0 FK violations, 95
+  `trader_decisions` for `traders_copy_trade`, 99
+  `trader_signal_consumption` rows all linked to a real
+  `decision_id`, 137 `trade_signals` rows for `source='traders'`),
+  and the rollback recipe (code revert; no runtime knob).
+- [x] Updated the prior `2026-05-08 ~05:00 UTC` entry: status
+  flipped from OPEN to CLOSED, with a back-reference to the new
+  06:20 UTC entry.
+- [x] Mark completed
 
 ### Task 6: Deploy and verify on `polyhome-1`
 
-- [ ] `./deploy/sync_remote.sh` to deploy the fix.
-- [ ] Verify backend health (`docker compose ps`,
-  `curl /api/strategies`).
-- [ ] Run the four post-deploy checks from
-  `## Validation Commands` (FK violation grep, `trader_decisions`
-  count, `trader_signal_consumption` outcomes, plan 0009's
-  `without_seq=0` invariant — must all pass).
-- [ ] Mark completed
+- [x] Deployed via `BUILD_IMAGES=0 ./deploy/sync_remote.sh` at
+  `2026-05-08 06:19:45 UTC` — pure-Python change, GHCR pull
+  sufficient. All seven services healthy in `docker compose ps`
+  within 25 s; `migrate` exited cleanly.
+- [x] Backend health verified (`docker compose ps` reports all
+  containers `Up (healthy)`; the orchestrator started in
+  `is_enabled=false, is_paused=true` per the canonical
+  post-redeploy state and was unpaused via
+  `POST /api/trader-orchestrator/start
+  -d '{"mode":"shadow","selected_account_id":"08fb2d1e-3bb1-4cd5-bd22-db3efbe4085e"}'`).
+- [x] Ran the four post-deploy checks from
+  `## Validation Commands`:
+
+  | Check | Expected | Got |
+  |---|---:|---:|
+  | FK violations in `worker-trading` logs (7 min) | `0` | **0** |
+  | `trader_decisions` for `traders_copy_trade` | ≥ 1 | **95** (76 skipped + 19 blocked) |
+  | `trader_signal_consumption` non-`failed` outcomes | ≥ 1 | 99 / 99 with real `decision_id` (78 skipped + 21 blocked); zero `(null)` decision link |
+  | `trade_signals (source='traders') without_seq` (plan 0009 invariant) | `0` | **0** (137 rows: 66 pending, 70 skipped, 1 expired) |
+
+  All four pass. The skipped/blocked decision distribution is
+  the strategy's gate-filter output now that the FK race is
+  no longer masking it as `failed`.
+- [x] Mark completed
 
 ### Task 7: Close
 
-- [ ] All check-boxes above are `[x]`.
-- [ ] `git mv docs/plans/0010-fix-traders-publish-fk-race.md
+- [x] All check-boxes above are `[x]`.
+- [x] `git mv docs/plans/0010-fix-traders-publish-fk-race.md
   docs/plans/completed/`.
-- [ ] Update [`plan-control-index.md`](plan-control-index.md):
-  link target to `completed/0010-...md`. Update the per-plan
-  note to reflect outcome.
-- [ ] Mark completed
+- [x] Updated
+  [`plan-control-index.md`](plan-control-index.md): link target
+  flipped to `completed/0010-fix-traders-publish-fk-race.md`,
+  per-plan note updated to reflect the outcome (zero FK
+  violations + Copy Trade decisions persisting end-to-end).
+- [x] Mark completed

@@ -55,7 +55,7 @@ notes.
 | 0006 | [Crypto fast-binary lane toggle](completed/0006-crypto-fast-binary-lane-toggle.md) | B        | —             |
 | 0008 | [Investigate `source='traders'` routing on normal-tier](completed/0008-investigate-traders-source-routing-on-normal.md) | D        | —             |
 | 0009 | [Fix `source='traders'` deferred-state gate so normal-tier traders consume copy-trade signals](completed/0009-fix-traders-source-on-normal.md) | B        | 0008          |
-| 0010 | [Fix `trader_decisions` FK race for in-process `source='traders'` publishes](0010-fix-traders-publish-fk-race.md) | R        | 0009          |
+| 0010 | [Fix `trader_decisions` FK race for in-process `source='traders'` publishes](completed/0010-fix-traders-publish-fk-race.md) | R        | 0009          |
 
 When adding a row: keep this table sorted by ID ascending. Don't
 re-number plans — gaps in IDs are normal and expected (deleted or
@@ -213,28 +213,35 @@ Only notes that aren't obvious from the title. All plans must follow
   `source='traders'` publishes.** Refactor / hardening (R).
   Direct follow-up to plan 0009. The publish path
   ([`backend/services/intent_runtime.py`](../../backend/services/intent_runtime.py)
-  `publish_opportunities`) mutates the in-memory
-  `self._signals_by_id` and pings consumers via
-  `publish_signal_batch` BEFORE the projection loop has
-  committed the corresponding `trade_signals` row. The
-  orchestrator's `list_unconsumed_signals` reads the in-memory
-  map directly, so `trader_orchestrator_worker` picks up a
-  `signal_id` whose DB row does not yet exist and the
-  `trader_decisions.signal_id_fkey` insert blows up. The race
-  is microseconds for in-process traders publishes (wallet-WS
-  callback → orchestrator queue) so it fires almost every time
-  on `traders_copy_trade`; for scanner signals the projection
-  drains between the 60s scanner cycle and the 60s orchestrator
-  cycle so the race is invisible there. Plan 0010 picks the
-  smallest fix (committing the `trade_signals` row before
-  `list_unconsumed_signals` could return it, or wrapping the
-  decision write in `INSERT ... ON CONFLICT DO NOTHING` to
-  re-derive the row from the snapshot the orchestrator
-  already holds — Task 2 of the plan picks the option) and
-  ships it without re-introducing the deferred-state pattern
-  plan 0009 retired. Prerequisite: plan 0009 must be in
-  `completed/` so the FK race is the only outstanding bug on
-  this code path.
+  `publish_opportunities`) mutated the in-memory
+  `self._signals_by_id` and pinged consumers via
+  `publish_signal_batch` BEFORE the projection loop committed
+  the corresponding `trade_signals` row, and additionally
+  minted fresh uuids for `(source, dedupe_key)` pairs the
+  in-memory cache had forgotten across restarts (the projection
+  then upserted the existing row by `(source, dedupe_key)`,
+  silently demoting the new id). The orchestrator's
+  `list_unconsumed_signals` read the in-memory map directly,
+  so `trader_orchestrator_worker` picked up `signal_id`s whose
+  `trade_signals` rows did not yet exist (or never would) and
+  the `trader_decisions.signal_id_fkey` insert blew up — 100 %
+  of `traders_copy_trade` decisions failed for both reasons.
+  Closed 2026-05-08 ~06:20 UTC. **Verified.** Fix is two-part:
+  publish-side prefetch of canonical `(source, dedupe_key) → id`
+  for known dedupe keys, plus a synchronous skeleton-INSERT
+  pass for genuinely new dedupe keys (`pg_insert(TradeSignal)
+  ... on_conflict_do_nothing(['source','dedupe_key'])` in a
+  separate committed session, before `publish_opportunities`
+  returns). Post-deploy: 0 FK violations, 95 `trader_decisions`
+  for `traders_copy_trade` in 7 minutes (76 skipped + 19
+  blocked, the strategy's actual gate-filter output once the
+  race no longer masks it as `failed`), 99 `trader_signal_consumption`
+  rows all linked to a real `decision_id`. Architecture notes
+  ([`copy-trade-pipeline.md`](architecture/copy-trade-pipeline.md),
+  [`trader-pipeline.md`](architecture/trader-pipeline.md)) and
+  the operational journal
+  ([`runtime-tweaks.md`](../operational/runtime-tweaks.md))
+  updated to reflect the post-fix invariant.
 
 ## Ordering decision tree (for agents picking the next plan)
 
