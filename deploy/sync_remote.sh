@@ -11,9 +11,13 @@ set -euo pipefail
 #   SSH_HOST=other-host REMOTE_PATH=/srv/homerun ./deploy/sync_remote.sh
 #   DEPLOY_AFTER_SYNC=0 ./deploy/sync_remote.sh   # sync only, no restart
 #
+# .env handling: .env IS synced — the local .env is the canonical
+# source of truth for production secrets in this deployment. Edit
+# the local .env, then run this script; the server's .env is
+# overwritten by design. Backups (.env.bak.*) are excluded so a
+# stray local backup cannot stomp the server.
+#
 # Critical exclusions (do NOT remove):
-#   - .env / .env.* — the server keeps its own production secrets.
-#     On a fresh server: scp .env.example → .env, edit, only then sync.
 #   - data/ — postgres bind mount, ML caches, runtime artifacts.
 #     Pushing a local data/ over rsync --delete would corrupt the
 #     server's database state.
