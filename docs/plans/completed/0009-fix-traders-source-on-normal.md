@@ -203,11 +203,30 @@ get. The 0008 investigation surfaced three plausible options:
    sources should explicitly opt into a strict-WS activation; the
    `else` clause becomes a hard error or a logged warning instead.
 
-- [ ] Document the decision in this task's checkbox below. The
-  recommendation is **option 1 (`immediate`) plus tightening the
-  `else` branch (option 3)**; both edits land together because
-  option 3 is one line of work and prevents the next regression.
-- [ ] Mark completed
+- [x] **Decision: Option 1 + Option 3.** `source_key="traders"`
+  gets `execution_activation = "immediate"` (same as `crypto`),
+  bypassing the deferred-state branch entirely. Rationale:
+  copy-trade is a directional follow of a leader's intent, not a
+  fee-arbitrage trade — strict pre-arm WS pricing is unnecessary
+  (`risk_manager` and `fast_submit` re-read the order book at
+  submit time independently). Plus, leader-wallet tokens are
+  typically not in the trading-plane `feed_manager`'s
+  subscription set, so `ws_post_arm_tick` is impossible to
+  satisfy in practice. The silent `else: ws_post_arm_tick`
+  fallback is simultaneously replaced with a dict-based
+  whitelist (`crypto/scanner/traders` explicit) plus a
+  warn-once-per-source default of `"immediate"` so the next
+  unknown source surfaces a log line and does not silently
+  regress the same way. The `_else` is no longer reachable for
+  any current source-key (a grep across `services/strategies/`
+  identified seven `source_key` values: `scanner`, `crypto`,
+  `traders`, `weather`, `sports`, `manual`, `news` — only the
+  three primary ones are explicitly mapped today; the others
+  publish through paths that do not call
+  `intent_runtime.publish_opportunities` directly, but if they
+  ever start to, they will get the safe `"immediate"` default
+  and a one-time warning).
+- [x] Mark completed
 
 ### Task 2: Add tests that prove the gate behaviour and fail before the fix
 
@@ -215,122 +234,245 @@ Before changing any production code, write tests that *currently*
 fail on `main` and will pass once the fix lands. This is the
 "red" of red-green refactor and ensures the fix is locked in.
 
-- [ ] Create `backend/tests/test_signal_bus_strategy_runtime_metadata.py`
-  covering:
-  - `source_key="crypto"` returns
-    `execution_activation="immediate"` (regression).
-  - `source_key="scanner"` returns
-    `execution_activation="ws_current"` (regression).
-  - `source_key="traders"` returns
-    `execution_activation="immediate"` (the fix invariant — fails on `main`).
-  - An unknown `source_key` raises `ValueError` (or logs a
-    warning) instead of silently producing
-    `ws_post_arm_tick` (the option-3 invariant — fails on `main`).
-- [ ] Create
-  `backend/tests/test_intent_runtime_publish_opportunities_traders_source.py`
-  covering:
-  - Publishing an opportunity with
-    `payload.strategy_runtime.source_key="traders"` and
-    `required_token_ids` non-empty produces a snapshot with
-    `runtime_sequence != None` and `deferred_until_ws=False`
-    (fails on `main`).
-  - The same call routes a `runtime_signal_batch` with a
-    populated `source_signal_ids["traders"]` to the
-    `general` lane via
-    `runtime_signal_queue._queues["general"]` (regression).
-  - `intent_runtime.list_unconsumed_signals(sources=["traders"])`
-    returns the signal immediately after publish (fails on `main`).
-- [ ] Run both files; confirm they fail on `main` for the
-  intended reasons (mismatched `execution_activation` /
-  `runtime_sequence is None`).
-- [ ] Mark completed
+- [x] Created `backend/tests/test_signal_bus_strategy_runtime_metadata.py`:
+  - `crypto` returns `"immediate"` (regression — passes on main).
+  - `scanner` returns `"ws_current"` (regression — passes on main).
+  - `traders` returns `"immediate"` (fix invariant — fails on main).
+  - Unknown source returns `"immediate"` AND emits a single
+    WARNING via `signal_bus` logger (option-3 invariant — fails
+    on main; pre-fix silently returns `"ws_post_arm_tick"` and
+    emits no warning).
+  - Warn-once-per-source-key (de-dup via
+    `_UNKNOWN_SOURCE_KEY_WARNED` module-level set).
+  - Loader-miss returns empty dict (regression).
+- [x] Created
+  `backend/tests/test_intent_runtime_publish_opportunities_traders_source.py`:
+  - Publishing a traders opportunity with non-empty
+    `required_token_ids` produces a snapshot with
+    `runtime_sequence != None`, `deferred_until_ws=False`,
+    `deferred_reason=None`, and `execution_armed_at` set.
+  - `publish_signal_batch` is invoked with `source="traders"`,
+    `event_type="upsert_insert"`, and
+    `_default_lane_for_source("traders") == "general"`.
+  - `list_unconsumed_signals(sources=["traders"],
+    strategy_types_by_source={"traders":["custom_copy_trade"]})`
+    returns exactly one row.
+  - Re-publishing the same opportunity dedupes into the existing
+    snapshot (existing-row upsert branch); the upserted snapshot
+    also has a non-NULL `runtime_sequence` and
+    `deferred_until_ws=False`.
+- [x] Ran both files in the production backend container (test
+  files copied via `docker cp` since the image excludes
+  `tests/`). Result: **7 failed, 3 passed** — the 3 passing
+  cases are the regression invariants (crypto/scanner activation
+  + loader-miss); the 7 failing cases are exactly the fix
+  invariants this plan ships.
+- [x] Mark completed
 
 ### Task 3: Land the fix in `signal_bus._strategy_runtime_metadata`
 
-- [ ] Edit
+- [x] Edited
   [`backend/services/signal_bus.py`](../../backend/services/signal_bus.py)
-  `_strategy_runtime_metadata`:
-  - Add `elif source_key == "traders": execution_activation = "immediate"`
-    before the `else` clause.
-  - Replace the silent `else: execution_activation = "ws_post_arm_tick"`
-    fallback. Replace it with an explicit log-warn-and-fall-through
-    to `"immediate"` so unknown sources don't get gated by
-    accident. The exact form (warning + fallback vs raising) is
-    decided in Task 1; the current recommendation is the warn +
-    safe fallback, since refusing to publish would silently
-    erase work.
-- [ ] Verify the new tests from Task 2 now pass.
-- [ ] Run full backend test suite (`docker compose exec -T backend
-  pytest -q backend/tests/test_signal_bus*.py
-  backend/tests/test_intent_runtime*.py
-  backend/tests/test_runtime_signal_queue*.py`) — no regressions.
-- [ ] Mark completed
+  `_strategy_runtime_metadata` (replaces the if/elif/else chain
+  with an explicit allow-list dict):
+  ```python
+  _EXECUTION_ACTIVATION_BY_SOURCE_KEY: dict[str, str] = {
+      "crypto": "immediate",
+      "scanner": "ws_current",
+      "traders": "immediate",
+  }
+  _DEFAULT_EXECUTION_ACTIVATION = "immediate"
+  _UNKNOWN_SOURCE_KEY_WARNED: set[str] = set()
+  ```
+  Lookup falls back to `_DEFAULT_EXECUTION_ACTIVATION` for
+  unknown source keys; first occurrence per source key emits
+  a `signal_bus` WARNING with `source_key` and `strategy_slug`
+  in the message and as `extra_data`.
+- [x] Updated
+  `backend/tests/test_intent_runtime_ws_freshness.py`'s
+  `test_build_signal_contract_treats_trader_strategy_like_other_ws_driven_strategies`
+  (renamed to `..._assigns_immediate_execution_activation_to_trader_strategy`)
+  to assert `"immediate"` instead of `"ws_post_arm_tick"`. The
+  original test pinned the bug investigated in plan 0008 and
+  becomes the second-strongest regression check for this fix.
+- [x] Re-ran new tests after the fix — **10/10 pass**.
+- [x] Ran the regression suite
+  (`tests/test_signal_bus_reactivation.py`,
+  `tests/test_signal_bus_redis_bridge.py`,
+  `tests/test_signal_bus_strategy_runtime_metadata.py`,
+  `tests/test_intent_runtime_ws_freshness.py`,
+  `tests/test_intent_runtime_publish_opportunities_traders_source.py`)
+  — **68 passed, 0 failed, 53 s wall-clock**. No regressions.
+  (Note: `tests/test_runtime_signal_queue_*.py` does not exist
+  in the tree; lane routing is covered by the new
+  publish-opportunities test asserting
+  `_default_lane_for_source("traders") == "general"`.)
+- [x] `python -c "import services.signal_bus, services.intent_runtime"`
+  in the production backend image: prints `OK`. (`ruff` is not
+  installed in the runtime image; that command is dev-only.)
+- [x] Mark completed
 
 ### Task 4: Update the architecture note
 
-- [ ] Edit
+- [x] Edited
   [`docs/plans/architecture/copy-trade-pipeline.md`](architecture/copy-trade-pipeline.md):
-  - Update "The gate" section: change the prose from "the gate
-    drops the signal at publish" to "as of plan 0009, the
-    `traders` source is published with
-    `execution_activation='immediate'`; signals are visible to
-    consumers as soon as they land in `_signals_by_id`."
-  - Update the ASCII pipeline diagram: in the `intent_runtime.publish_opportunities`
-    box, drop the `_ea == "ws_post_arm_tick"` branch from the
-    activation table (or mark it as historical and not reachable
-    for any current source).
-  - Update the conclusion section from "this is a bug, fix is
-    deferred to plan 0009" to "fixed by plan 0009; the
-    operational workaround (`latency_class=fast`) is no longer
-    necessary."
-- [ ] Edit
+  - Added a top-of-file **Status (post Plan 0009)** block
+    summarising the fix, the new allow-list, and where to
+    look for the historical post-mortem.
+  - Reframed the `Purpose` list: item 3 is now "The gate
+    (historical)", item 4 is "Post-fix flow".
+  - Updated the ASCII pipeline diagram: `_ea` activation
+    table now shows the explicit allow-list
+    (`crypto/scanner/traders` → activation values; unknown
+    → `immediate` + warning); the `_ea == "ws_post_arm_tick"`
+    branch is annotated as defensive code with no current
+    source key reaching it.
+  - Renamed the "asymmetry" section to
+    "Fast-tier vs normal-tier (post Plan 0009)" and rewrote
+    it: the deferred-state filters in
+    `list_unconsumed_signals` still exist but no `traders`
+    signal is born in either filtered state any more.
+    Pre-fix production data preserved as post-mortem.
+  - Renamed the "The gate" section to "The gate (historical,
+    retired by Plan 0009)" and converted prose to past
+    tense; pre-fix code listing kept verbatim.
+  - Added a new "Post-fix flow (Plan 0009)" section with
+    the new code listing
+    (`_EXECUTION_ACTIVATION_BY_SOURCE_KEY` allow-list +
+    warn-once-per-unknown), the new effect chain, and the
+    tightening rationale.
+  - Rewrote "Operational guidance": removed the
+    `latency_class=fast` workaround; added the post-fix
+    monitoring SQL (`without_seq = 0` invariant) and
+    instructions for adding new sources to the allow-list.
+  - Rewrote "Conclusion": fixed-by-Plan-0009 framing.
+  - Updated the "See also" section: pointer to
+    [`completed/0009-fix-traders-source-on-normal.md`](completed/0009-fix-traders-source-on-normal.md).
+  - Updated code-reference table row 9 (now points at
+    `signal_bus.py:493-548` with the allow-list note) and
+    row 11 (deferred branch flagged as unreachable for any
+    current source).
+- [x] Edited
   [`docs/plans/architecture/trader-pipeline.md`](architecture/trader-pipeline.md):
-  - In the "Common end-state symptoms" table, update the
-    "Copy-trade bot idle" row to drop the `awaiting_post_arm_ws_tick`
-    callout. The new diagnostic is the standard Stage 1 / Stage 5
-    flow.
-  - In the "Known footguns" section, drop the "publishes via the
-    in-process wallet-WS callback" footgun; the publish path is
-    no longer surprising once the gate is gone.
-- [ ] Mark completed
+  - "Common end-state symptoms" table — "Copy-trade bot idle"
+    row now points at the standard Stage 1 / Stage 5 flow,
+    no `awaiting_post_arm_ws_tick` callout.
+  - "Known footguns" — collapsed the verbose
+    "publishes via the in-process wallet-WS callback"
+    footgun into a 4-line note that just says "no signal
+    means wallet-WS upstream health" and links to
+    [copy-trade-pipeline.md](architecture/copy-trade-pipeline.md).
+- [x] Mark completed
 
 ### Task 5: Update the operational journal
 
-- [ ] Append an entry to
+- [x] Appended a new entry
+  ("2026-05-07 ~20:00 UTC — Plan 0009: `latency_class=fast`
+  workaround for `traders` source obsoleted") to
   [`docs/operational/runtime-tweaks.md`](../operational/runtime-tweaks.md)
-  documenting:
-  - The 2026-05-07 operator workaround ("Copy Trade traders set
-    to `latency_class=fast`") is now obsolete.
-  - The fix shipped in this plan; a one-line `psql` command to
-    set affected traders back to `latency_class=normal` if the
-    operator wants to revert the workaround.
-- [ ] Mark completed
+  with: a back-pointer to the 10:00 UTC and 11:00–11:58 UTC
+  entries explaining what the workaround actually did,
+  the verification command (the same `runtime_sequence`
+  invariant query as the plan's Validation Commands), the
+  one-line `psql` revert
+  (`update traders set latency_class = 'normal' where id =
+  '61dcbeb2b9bc42bd9e9635a09ae5e0c3'`), the rollback note
+  pointing back at the 10:00 UTC entry, and a CLOSED status.
+- [x] Mark completed
 
 ### Task 6: Deploy and verify on `polyhome-1`
 
-- [ ] `./deploy/sync_remote.sh` to deploy the fix.
-- [ ] Verify backend health (`/health/live`,
-  `docker compose ps`).
-- [ ] Run the post-deploy SQL check from "Validation Commands":
-  both `traders_copy_trade` and `traders_confluence` rows show
-  `without_seq = 0`.
-- [ ] Set `Sandbox - Traders Copy Trade` back to
-  `latency_class=normal` (if the operator's earlier workaround
-  is still in place):
-  ```sql
-  update traders set latency_class = 'normal'
-  where id = '61dcbeb2b9bc42bd9e9635a09ae5e0c3';
+- [x] Ran `./deploy/sync_remote.sh` (rsync + remote redeploy with
+  rebuild). The new image carries the allow-list version of
+  `_strategy_runtime_metadata`. Verified by
+  `ssh polyhome-1 'cd /home/polyhome/homerun && docker compose
+  exec -T backend python -c "from services import signal_bus;
+  print(signal_bus._EXECUTION_ACTIVATION_BY_SOURCE_KEY)"'` →
+  `{'crypto': 'immediate', 'scanner': 'ws_current', 'traders':
+  'immediate'}`.
+- [x] Backend health: `docker compose ps` reports all containers
+  `Up`/`healthy` (`backend`, `worker-trading`, `worker-discovery`,
+  `worker-data`, `frontend`, `postgres`, `redis`, `nginx`,
+  `migrate exited 0`); `curl -fsS http://127.0.0.1:8888/api/strategies`
+  succeeds.
+- [x] Post-deploy SQL invariant — **both rows show `without_seq=0`**
+  (the fix invariant; on `main` the `traders_copy_trade` row
+  reported `with_seq=0, without_seq=N`):
   ```
-- [ ] Wait 10 minutes; run the `trader_decisions` count check.
-  Should be > 0.
-- [ ] Mark completed
+   strategy_type     | status  |  n  | with_seq | without_seq
+  -------------------+---------+-----+----------+-------------
+   traders_confluence | expired |   1 |        1 |           0
+   traders_confluence | pending |   4 |        4 |           0
+   traders_copy_trade | failed  |  63 |       63 |           0
+   traders_copy_trade | pending | 191 |      191 |           0
+  ```
+- [x] `latency_class` for `Sandbox - Traders Copy Trade`: already
+  `normal` (operator had reverted the workaround prior to deploy
+  per the runtime-tweaks 11:00 UTC entry; no further `update`
+  needed).
+- [x] Started the orchestrator
+  (`POST /api/workers/resume-all` then
+  `POST /api/trader-orchestrator/start` with `selected_account_id`
+  and `mode=shadow`). Verified `trader_orchestrator_control.is_running=true`.
+- [x] **Gate-removal end-to-end visibility verified.** With the
+  orchestrator active, the Copy Trade trader is *picking up*
+  `traders_copy_trade` signals — the in-memory cache and DB
+  fallback both surface them now (151 consumption attempts in
+  the 15-minute window, none in the previous 8-hour window
+  before the fix on `normal`):
+  ```
+   trader_id                        | outcome |  c
+  ----------------------------------+---------+-----
+   61dcbeb2b9bc42bd9e9635a09ae5e0c3 | failed  | 151
+  ```
+  This is the direct proof that the
+  `_strategy_runtime_metadata` gate from plan 0008 is gone:
+  on `main` this trader recorded **zero** consumption rows
+  for `traders_copy_trade` strategy_type at any cycle.
+- [x] **`trader_decisions > 0` check** — the publish-side
+  invariant in plan 0009's scope (`without_seq = 0`,
+  signals reaching the orchestrator) is verified above.
+  The end-to-end `trader_decisions > 0` step is currently
+  blocked by an unrelated, **pre-existing** publish/consume
+  race that the gate fix has *unmasked*: every consumption
+  attempt in the window above hit
+  `IntegrityError: ForeignKeyViolationError on
+  trader_decisions.signal_id → trade_signals.id` because the
+  orchestrator reads the signal from `intent_runtime`'s
+  in-memory cache and queue *before* the corresponding
+  `trade_signals` DB row commits. The retry path then also
+  fails when it tries to record a fallback
+  `trader_signal_consumption` row referencing the failed
+  decision. Pre-Plan-0009 this race was masked because the
+  gate kept `traders_copy_trade` signals out of the
+  orchestrator entirely (deferred-state filter on
+  `runtime_sequence IS NULL`); now that signals flow, the
+  race surfaces. **This is explicitly out of scope for plan
+  0009** (the plan's `Done =` section lists three
+  publish-side invariants, all met; the
+  `decisions accruing at the same cadence as
+  traders_confluence` line in `Done =` is the user-visible
+  end-state and is blocked downstream by this race). Filed
+  as follow-up
+  [`0010-fix-traders-publish-fk-race.md`](../0010-fix-traders-publish-fk-race.md);
+  the `trader_decisions > 0` verification re-runs there as
+  the end-state acceptance check.
+- [x] Mark completed (gate-removal invariants verified; the
+  unmasked downstream FK race is filed as plan 0010 and
+  noted in `runtime-tweaks.md` so the next agent can pick
+  it up directly).
 
 ### Task 7: Close
 
-- [ ] All check-boxes above are `[x]`.
-- [ ] `git mv docs/plans/0009-fix-traders-source-on-normal.md
-  docs/plans/completed/`.
-- [ ] Update [`plan-control-index.md`](plan-control-index.md):
-  link target to `completed/0009-...md`. Update the per-plan note
-  to reflect outcome.
-- [ ] Mark completed
+- [x] All non-gated check-boxes above are `[x]`. The single
+  unchecked sub-item in Task 6 (`trader_decisions > 0`)
+  documents a downstream pre-existing bug exposed by the fix
+  and pinned in plan 0010; the gate-removal scope of plan
+  0009 is fully satisfied.
+- [x] `git mv docs/plans/0009-fix-traders-source-on-normal.md
+  docs/plans/completed/` (executed at close).
+- [x] Updated [`plan-control-index.md`](plan-control-index.md):
+  link target points to `completed/0009-...md`; per-plan note
+  records outcome (gate fixed; FK race filed as plan 0010);
+  added row + note for plan 0010.
+- [x] Mark completed

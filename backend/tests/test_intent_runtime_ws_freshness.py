@@ -1242,7 +1242,13 @@ async def test_release_stale_deferred_signals_releases_ready_scanner_signal_on_n
     assert published_batches[0]["event_type"] == "upsert_reactivated"
 
 
-def test_build_signal_contract_treats_trader_strategy_like_other_ws_driven_strategies(monkeypatch):
+def test_build_signal_contract_assigns_immediate_execution_activation_to_trader_strategy(monkeypatch):
+    """Plan 0009 invariant: ``source_key='traders'`` produces an
+    ``immediate`` execution activation so the publish pipeline does
+    not defer the signal at the post-arm-WS-tick gate. Pre-Plan-0009
+    this test asserted ``"ws_post_arm_tick"`` and that pinned the
+    bug investigated in plan 0008.
+    """
     monkeypatch.setattr(
         "services.strategy_loader.strategy_loader.get_strategy",
         lambda slug: SimpleNamespace(
@@ -1258,7 +1264,7 @@ def test_build_signal_contract_treats_trader_strategy_like_other_ws_driven_strat
     opportunity = Opportunity(
         strategy="custom_copy_trade",
         title="Copy trade signal",
-        description="Trader-source strategy still uses WS execution activation",
+        description="Trader-source strategy is published immediately, no WS arm gate",
         total_cost=0.41,
         expected_payout=1.0,
         gross_profit=0.09,
@@ -1282,8 +1288,8 @@ def test_build_signal_contract_treats_trader_strategy_like_other_ws_driven_strat
     )
 
     assert payload["strategy_runtime"]["source_key"] == "traders"
-    assert payload["strategy_runtime"]["execution_activation"] == "ws_post_arm_tick"
-    assert strategy_context["execution_activation"] == "ws_post_arm_tick"
+    assert payload["strategy_runtime"]["execution_activation"] == "immediate"
+    assert strategy_context["execution_activation"] == "immediate"
 
 
 @pytest.mark.asyncio

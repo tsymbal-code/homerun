@@ -490,6 +490,23 @@ def _uses_runtime_price_revalidation(payload: Any, strategy_context: Any) -> boo
     return activation in {"ws_current", "ws_post_arm_tick"}
 
 
+# Plan 0009: explicit allow-list of source keys that have a known,
+# audited execution-activation policy. Sources NOT in this map fall
+# back to the safe "immediate" default (with a one-time WARNING) so a
+# new source cannot silently inherit the strict-WS gate that broke
+# `source='traders'` between plans 0008 and 0009. To add a new source
+# key, register it here AND, if it needs strict-WS pricing, also
+# extend `_uses_runtime_price_revalidation` and `_PREWARM_SOURCES` in
+# `services/intent_runtime.py`.
+_EXECUTION_ACTIVATION_BY_SOURCE_KEY: dict[str, str] = {
+    "crypto": "immediate",
+    "scanner": "ws_current",
+    "traders": "immediate",
+}
+_DEFAULT_EXECUTION_ACTIVATION = "immediate"
+_UNKNOWN_SOURCE_KEY_WARNED: set[str] = set()
+
+
 def _strategy_runtime_metadata(opportunity: Opportunity) -> dict[str, Any]:
     strategy_slug = str(getattr(opportunity, "strategy", "") or "").strip().lower()
     if not strategy_slug:
@@ -510,12 +527,22 @@ def _strategy_runtime_metadata(opportunity: Opportunity) -> dict[str, Any]:
             if str(subscription or "").strip()
         }
     )
-    if source_key == "crypto":
-        execution_activation = "immediate"
-    elif source_key == "scanner":
-        execution_activation = "ws_current"
-    else:
-        execution_activation = "ws_post_arm_tick"
+    execution_activation = _EXECUTION_ACTIVATION_BY_SOURCE_KEY.get(source_key)
+    if execution_activation is None:
+        if source_key and source_key not in _UNKNOWN_SOURCE_KEY_WARNED:
+            _UNKNOWN_SOURCE_KEY_WARNED.add(source_key)
+            logger.warning(
+                "Unknown strategy source_key %r (strategy=%r); defaulting "
+                "execution_activation to %r. Register the source in "
+                "_EXECUTION_ACTIVATION_BY_SOURCE_KEY (services/signal_bus.py) "
+                "to silence this warning.",
+                source_key,
+                strategy_slug,
+                _DEFAULT_EXECUTION_ACTIVATION,
+                source_key=source_key,
+                strategy_slug=strategy_slug,
+            )
+        execution_activation = _DEFAULT_EXECUTION_ACTIVATION
     return {
         "strategy_slug": strategy_slug,
         "source_key": source_key,

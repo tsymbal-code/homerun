@@ -397,7 +397,7 @@ Search hints:
 | `selected > 0`, `orders=0`, mode=shadow | Step 7 → Cox-PH fill simulator | Loosen slippage / spread / `taker_market` |
 | All `decision=blocked` for one bot | Step 6 → specific gate | `trader_decision_checks` filter |
 | `last_run_at=null` for traders bot | Step 5 → firehose pre-filter | Inspect `firehose_*` params; check `quality_passed` distribution for the source |
-| Copy-trade bot idle | Stage 1 (signals deferred at publish) | `traders_copy_trade` writes signals to `trade_signals` but they are born in `awaiting_post_arm_ws_tick` deferred state (`runtime_sequence=NULL`); on `latency_class=normal` they are invisible to the orchestrator. See [copy-trade-pipeline.md](copy-trade-pipeline.md) for the gate and the operator workaround. |
+| Copy-trade bot idle | Standard Stage 1 / Stage 5 flow | `traders_copy_trade` requires a recent leader trade in the wallet-WS feed (Stage 1, `max_signal_age_seconds`). Once a signal is written it follows the same pipeline as every other source — check the firehose pre-filter (Stage 5) and `trader_decision_checks` (Step 6) like any other bot. See [copy-trade-pipeline.md](copy-trade-pipeline.md) for the source-specific publish topology (post-Plan-0009). |
 | Bot enabled, signals flowing, zero consumption | `source_configs` mismatch with signal `source` / `strategy_type` | Compare bot's `source_configs[*].strategy_key` to `trade_signals.strategy_type` |
 
 ## Known footguns
@@ -409,20 +409,14 @@ Search hints:
   `traders_confluence`) will reject every signal until the filter
   completes. If `worker-news` is overloaded or the filter has a bug,
   signals stay `null` indefinitely — and the bot looks dead.
-- **Copy-trade publishes via the in-process wallet-WS callback,
-  not via the cross-plane Redis bus.** `wallet_ws_monitor.add_callback`
-  fans every leader trade directly into
-  `traders_copy_trade_signal_service` running in the same trading
-  plane. That service then synthesises an opportunity, calls
-  `bridge_opportunities_to_signals`, and the bridge writes a
-  `trade_signals` row plus pushes a `runtime_signal_queue` batch
-  for the orchestrator and an `event_bus` wake for the fast-tier
-  runtime. So a "no signal in `trade_signals`" symptom for copy-trade
-  means upstream wallet-WS health (no live wallet trade in the last
-  `max_signal_age_seconds`, leader pool empty, scope filter excluded
-  the wallet, etc.). A "signal written but bot idle" symptom for
-  copy-trade is a different problem — see the deferred-state gate
-  documented in [copy-trade-pipeline.md](copy-trade-pipeline.md).
+- **Copy-trade reads the wallet-WS feed in-process,
+  not the cross-plane Redis bus.** A "no signal in
+  `trade_signals` for copy-trade" symptom means upstream
+  wallet-WS health (no live wallet trade in the last
+  `max_signal_age_seconds`, leader pool empty, scope filter
+  excluded the wallet, etc.) — not a signal-bus problem. The
+  end-to-end publish/consume topology is in
+  [copy-trade-pipeline.md](copy-trade-pipeline.md).
 - **`tracked_wallets.total_trades` is an analytics aggregate**,
   populated by wallet-discovery analysis. It's *not* a count of
   rows in `wallet_trades`. The local `wallet_trades` tape can be

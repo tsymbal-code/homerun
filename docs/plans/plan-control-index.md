@@ -54,7 +54,8 @@ notes.
 | 0005 | [Tag-based market filter at ingest](completed/0005-tag-based-market-filter-at-ingest.md) | B        | —             |
 | 0006 | [Crypto fast-binary lane toggle](completed/0006-crypto-fast-binary-lane-toggle.md) | B        | —             |
 | 0008 | [Investigate `source='traders'` routing on normal-tier](completed/0008-investigate-traders-source-routing-on-normal.md) | D        | —             |
-| 0009 | [Fix `source='traders'` deferred-state gate so normal-tier traders consume copy-trade signals](0009-fix-traders-source-on-normal.md) | B        | 0008          |
+| 0009 | [Fix `source='traders'` deferred-state gate so normal-tier traders consume copy-trade signals](completed/0009-fix-traders-source-on-normal.md) | B        | 0008          |
+| 0010 | [Fix `trader_decisions` FK race for in-process `source='traders'` publishes](0010-fix-traders-publish-fk-race.md) | R        | 0009          |
 
 When adding a row: keep this table sorted by ID ascending. Don't
 re-number plans — gaps in IDs are normal and expected (deleted or
@@ -184,24 +185,56 @@ Only notes that aren't obvious from the title. All plans must follow
   README rules.
 - **Plan 0009 — Fix `source='traders'` deferred-state gate.**
   Backend feature (B — minimal but production-affecting). Direct
-  follow-up to plan 0008. Adds the explicit `elif source_key ==
-  "traders":` branch to
-  [`backend/services/signal_bus.py:493-524`](../../backend/services/signal_bus.py)
-  (`_strategy_runtime_metadata`) so `traders` signals get
-  `execution_activation = "immediate"` (the same activation
-  `crypto` uses), bypassing the deferred-state branch in
-  `intent_runtime.publish_opportunities`. Also tightens the
-  silent `else: ws_post_arm_tick` fallback so unknown future
-  sources do not silently regress the same way. New unit tests
-  cover both the metadata function and the publish-side
-  invariant (snapshot has non-NULL `runtime_sequence`). On close,
-  updates [`copy-trade-pipeline.md`](architecture/copy-trade-pipeline.md)
-  and [`trader-pipeline.md`](architecture/trader-pipeline.md) to
-  reflect the post-fix flow, and retires the
-  `latency_class=fast` operator workaround in
+  follow-up to plan 0008. Replaced the if/elif/else chain in
+  [`backend/services/signal_bus.py`](../../backend/services/signal_bus.py)
+  `_strategy_runtime_metadata` with an explicit allow-list
+  (`crypto/scanner/traders` → activation values; unknown source
+  keys default to `"immediate"` plus a warn-once log). New unit
+  tests pin both the metadata function and the publish-side
+  invariant (snapshot has non-NULL `runtime_sequence`); the
+  existing `test_intent_runtime_ws_freshness.py` was updated to
+  reflect the new `traders → immediate` policy (was the
+  strongest second-line regression check). Closed
+  2026-05-08 ~05:00 UTC. **Verified.** Post-deploy
+  `without_seq = 0` for both `traders_copy_trade` and
+  `traders_confluence`; orchestrator now picks up Copy Trade
+  signals (151 consumption attempts in the first 15-minute
+  window vs. 0 before the fix). Architecture notes
+  ([`copy-trade-pipeline.md`](architecture/copy-trade-pipeline.md)
+  and [`trader-pipeline.md`](architecture/trader-pipeline.md))
+  rewritten for the post-fix state; the `latency_class=fast`
+  workaround is retired in
   [`runtime-tweaks.md`](../operational/runtime-tweaks.md).
-  Prerequisite: plan 0008's investigation must be filed in
-  `completed/` so the fix has the canonical reference.
+  **Note:** the gate fix exposed a pre-existing
+  publish/projection FK race that was previously masked
+  (`trader_decisions.signal_id → trade_signals.id` violations
+  for in-process traders publishes); that is filed as plan 0010.
+- **Plan 0010 — Fix `trader_decisions` FK race for in-process
+  `source='traders'` publishes.** Refactor / hardening (R).
+  Direct follow-up to plan 0009. The publish path
+  ([`backend/services/intent_runtime.py`](../../backend/services/intent_runtime.py)
+  `publish_opportunities`) mutates the in-memory
+  `self._signals_by_id` and pings consumers via
+  `publish_signal_batch` BEFORE the projection loop has
+  committed the corresponding `trade_signals` row. The
+  orchestrator's `list_unconsumed_signals` reads the in-memory
+  map directly, so `trader_orchestrator_worker` picks up a
+  `signal_id` whose DB row does not yet exist and the
+  `trader_decisions.signal_id_fkey` insert blows up. The race
+  is microseconds for in-process traders publishes (wallet-WS
+  callback → orchestrator queue) so it fires almost every time
+  on `traders_copy_trade`; for scanner signals the projection
+  drains between the 60s scanner cycle and the 60s orchestrator
+  cycle so the race is invisible there. Plan 0010 picks the
+  smallest fix (committing the `trade_signals` row before
+  `list_unconsumed_signals` could return it, or wrapping the
+  decision write in `INSERT ... ON CONFLICT DO NOTHING` to
+  re-derive the row from the snapshot the orchestrator
+  already holds — Task 2 of the plan picks the option) and
+  ships it without re-introducing the deferred-state pattern
+  plan 0009 retired. Prerequisite: plan 0009 must be in
+  `completed/` so the FK race is the only outstanding bug on
+  this code path.
 
 ## Ordering decision tree (for agents picking the next plan)
 

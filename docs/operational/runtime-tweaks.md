@@ -834,3 +834,192 @@ the code change itself. Operationally:
 - The `worker_control(name='crypto')` row stores the state
   across restarts. To wipe it, drop the row in psql; default is
   `is_enabled=true, is_paused=false`.
+
+---
+
+## 2026-05-07 ~20:00 UTC — Plan 0009: `latency_class=fast` workaround for `traders` source obsoleted
+
+- **Surface**: code (`backend/services/signal_bus.py`) + this
+  journal entry retiring the 10:00 UTC and 11:00–11:58 UTC
+  workarounds for the `Sandbox - Traders Copy Trade` bot
+  (id `61dcbeb2b9bc42bd9e9635a09ae5e0c3`).
+- **Applied via**: plan 0009
+  ([`docs/plans/completed/0009-fix-traders-source-on-normal.md`](../plans/completed/0009-fix-traders-source-on-normal.md)),
+  redeploy through `./deploy/sync_remote.sh`. No DB tweak is
+  required for the fix itself.
+- **Why**: the 2026-05-07 10:00 UTC entry above flipped every
+  sandbox bot to `latency_class=fast` to bootstrap the
+  shadow-fill pipeline (and downstream Cox-PH training data).
+  That tweak was correct *for that purpose* — `fast_submit`
+  writes `TraderOrder` rows in shadow mode, which the
+  `session_engine` path does not. **However**, for the
+  `traders` source it was *also* the only way around a
+  separate, latent bug: `signal_bus._strategy_runtime_metadata`
+  routed `source_key='traders'` through the
+  `else: execution_activation = "ws_post_arm_tick"` fallback,
+  which made `intent_runtime.publish_opportunities` mark
+  every traders-source signal as
+  `deferred_until_ws=True, runtime_sequence=NULL`. On
+  `latency_class=normal`, the orchestrator's
+  `list_unconsumed_signals` filter dropped 100 % of those.
+  Plan 0008 reproduced this with a 5-minute production
+  baseline (`445 / 445 traders_copy_trade pending signals
+  with runtime_sequence is null` while `traders_confluence`
+  showed `30 / 30` with non-NULL sequence). Plan 0009 fixed
+  it by replacing the if/elif/else chain with an explicit
+  allow-list (`crypto → immediate, scanner → ws_current,
+  traders → immediate`) plus a warn-and-fall-back-to-immediate
+  default for unknown source keys.
+- **Expected effect**: post-deploy, every `traders_copy_trade`
+  signal lands in the runtime cache with a non-NULL
+  `runtime_sequence` and `deferred_until_ws=False`. The
+  orchestrator picks them up on the next cycle (≤ 60 s on
+  `latency_class=normal`, sub-second on `fast`).
+  `Sandbox - Traders Copy Trade` no longer needs to stay on
+  `latency_class=fast` to produce decisions.
+- **Verification command** (post-deploy):
+  ```bash
+  ssh polyhome-1 'cd /home/polyhome/homerun && docker compose exec -T postgres \
+    psql -U homerun -d homerun -c "
+    select strategy_type, status, count(*) n,
+      sum((runtime_sequence is not null)::int) with_seq,
+      sum((runtime_sequence is null)::int)     without_seq
+    from trade_signals
+    where strategy_type in (''traders_copy_trade'',''traders_confluence'')
+      and created_at > now() - interval ''5 minutes''
+    group by strategy_type, status order by 1, 2;"'
+  ```
+  Both rows should report `without_seq = 0`. On the pre-fix
+  build the `traders_copy_trade` row reported `with_seq = 0,
+  without_seq = N` for every batch.
+
+### Changes
+
+| Path | Before | After |
+|---|---:|---:|
+| `signal_bus._strategy_runtime_metadata` (code) | if/elif/else; `else → "ws_post_arm_tick"` | allow-list dict + `_DEFAULT_EXECUTION_ACTIVATION = "immediate"` + warn-once-per-unknown-source |
+| `traders` activation | `"ws_post_arm_tick"` (silent default) | `"immediate"` (explicit) |
+| `unknown source` activation | `"ws_post_arm_tick"` (silent default) | `"immediate"` + `signal_bus` WARNING |
+
+The earlier 10:00 UTC entry's
+`latency_class=fast` flip remains *operationally useful* for
+the shadow-fill bootstrap purpose it was originally applied
+for (Cox-PH cold-start data). It is no longer *necessary* for
+`Sandbox - Traders Copy Trade` to consume signals at all. The
+operator can revert that bot's latency class if desired:
+
+```sql
+update traders set latency_class = 'normal'
+where id = '61dcbeb2b9bc42bd9e9635a09ae5e0c3';
+```
+
+(Or via UI: Bots → Sandbox - Traders Copy Trade → Latency
+class → Normal → Save.)
+
+If the operator keeps the bot on `fast`, that is also fine —
+the fix path is independent of latency class. Pre-fix, fast
+caught ~0.1 % of leader trades by accident (CLOB feed
+incidentally subscribed to a token the leader hit); post-fix,
+fast catches them sub-second and normal catches them on the
+next 60 s cycle.
+
+### Rollback
+
+If for some reason the fix needs to be backed out (e.g. an
+unrelated regression surfaces in the publish path), the
+operator workaround that produced visible Copy Trade activity
+on the pre-fix build is the same `latency_class=fast` flip
+documented in the 10:00 UTC entry above. Even with `fast`,
+expect the pre-fix ~0.1 % per-leader-trade hit rate; that's
+the empirical ceiling for the pre-fix pipeline. The proper
+rollback is a code revert of the `signal_bus.py` change, not
+a runtime tweak.
+
+### Status
+
+CLOSED — fix shipped, post-fix `without_seq = 0` invariant
+verified in plan 0009 Task 6.
+
+---
+
+## 2026-05-08 ~05:00 UTC — Plan 0009 post-deploy: FK race in `trader_decisions` unmasked, filed as plan 0010
+
+- **Surface**: observation only — no DB tweak, no code revert. Filed
+  as a follow-up plan rather than a journal-resolved tweak because
+  the fix lives in code.
+- **Applied via**: post-deploy verification of plan 0009 on
+  `polyhome-1`.
+- **Why**: with the
+  `signal_bus._strategy_runtime_metadata` gate gone (plan 0009),
+  every `traders_copy_trade` signal now lands in the runtime
+  cache with a non-NULL `runtime_sequence` and is visible to the
+  orchestrator. The orchestrator's first cycles after the deploy
+  surfaced a separate, **pre-existing** bug that the gate had
+  been masking: every decision write fails with
+  `ForeignKeyViolationError on trader_decisions.signal_id →
+  trade_signals.id`, and the retry path (writing a placeholder
+  `trader_signal_consumption` row) also fails on
+  `trader_signal_consumption.decision_id_fkey`. Net effect: the
+  orchestrator *sees* the signal and *attempts* a decision, but
+  cannot persist either the decision or the consumption record.
+  Cause is a publish/projection race: `intent_runtime.publish_opportunities`
+  mutates `self._signals_by_id` and pings consumers via
+  `publish_signal_batch` BEFORE the projection loop has committed
+  the corresponding `trade_signals` row. For scanner signals the
+  60s scanner cycle gives the projection plenty of time to drain
+  before the orchestrator's 60s cycle next ticks; for
+  `traders_copy_trade` the publish→consume gap is microseconds
+  (in-process wallet-WS callback → in-process orchestrator queue),
+  so the race fires almost every cycle. **This is a separate bug,
+  not a regression of plan 0009.**
+- **Verification (post-deploy snapshot, 2026-05-08T04:30..05:00Z)**:
+
+  ```text
+   strategy_type      | status  |  n  | with_seq | without_seq
+  --------------------+---------+-----+----------+-------------
+   traders_confluence | expired |   1 |        1 |           0
+   traders_confluence | pending |   4 |        4 |           0
+   traders_copy_trade | failed  |  63 |       63 |           0
+   traders_copy_trade | pending | 191 |      191 |           0
+  ```
+
+  → plan 0009's invariant (`without_seq = 0`) **holds**.
+
+  ```text
+   trader_id                        | outcome |  c
+  ----------------------------------+---------+-----
+   61dcbeb2b9bc42bd9e9635a09ae5e0c3 | failed  | 151
+  ```
+
+  → 151 consumption attempts in 15 minutes for the Copy Trade
+  trader (vs. 0 before plan 0009). Every one of them is the
+  placeholder `failed` outcome from the FK race retry path; the
+  underlying error in `worker-trading` logs is
+  `IntegrityError: ForeignKeyViolationError DETAIL: Key
+  (signal_id)=(<id>) is not present in table "trade_signals".`
+- **Filed as**: plan 0010 ([`docs/plans/0010-fix-traders-publish-fk-race.md`](../plans/0010-fix-traders-publish-fk-race.md)).
+  The plan picks one of two minimal fixes (commit
+  `trade_signals` synchronously before
+  `list_unconsumed_signals` could return the row, or wrap the
+  decision write in `INSERT ... ON CONFLICT DO NOTHING` to
+  re-derive the row from the snapshot the orchestrator already
+  holds) without re-introducing the deferred-state pattern plan
+  0009 retired.
+
+### Changes
+
+None — observation-only journal entry.
+
+### Rollback
+
+Not applicable. The plan-0009 fix is correct on its own; the FK
+race is a separate code defect tracked in plan 0010. Rolling back
+plan 0009 would re-mask the race but also re-disable Copy Trade
+on `latency_class=normal`, which is a worse end state than the
+current "signals reach orchestrator, decisions can't persist".
+
+### Status
+
+OPEN — fix tracked in plan 0010. Close this entry when plan 0010
+ships and the verification checks in that plan's
+`## Validation Commands` pass on `polyhome-1`.

@@ -1,15 +1,31 @@
 # Architecture: Copy-Trade Pipeline (`source='traders'`)
 
+> **Status (post Plan 0009).** The deferred-state gate that this
+> note was originally written to document is **fixed**. As of
+> plan 0009 (`completed/0009-fix-traders-source-on-normal.md`),
+> `_strategy_runtime_metadata` (`backend/services/signal_bus.py`)
+> uses an explicit allow-list — `crypto → immediate`, `scanner →
+> ws_current`, `traders → immediate` — and unknown source keys
+> fall back to `immediate` with a logged warning. The
+> `_ea == "ws_post_arm_tick"` deferred branch in
+> `intent_runtime.publish_opportunities` still exists as
+> defensive code but is **not reachable from any current source
+> key**; it would only fire if a future strategy explicitly
+> opted into `ws_post_arm_tick` activation. Read the **The gate
+> (historical)** section below for the original diagnosis and
+> the **Operational guidance** section for the post-fix flow.
+
 This note covers the end-to-end path of a `source='traders'`
 signal — specifically `strategy_type='traders_copy_trade'` —
 from "leader wallet trades on Polymarket" through to "consumer
-trader produces an order or doesn't." It exists because plan
-[0008](../0008-investigate-traders-source-routing-on-normal.md)
-identified that `traders_copy_trade` signals are silently
-dropped on normal-tier traders and only sporadically clear
-through on fast-tier — a routing asymmetry that was not
-captured in the more general
-[trader-pipeline.md](trader-pipeline.md) note.
+trader produces an order." It exists because plan
+[0008](../completed/0008-investigate-traders-source-routing-on-normal.md)
+identified (and plan
+[0009](../completed/0009-fix-traders-source-on-normal.md) fixed)
+a routing asymmetry that was not captured in the more general
+[trader-pipeline.md](trader-pipeline.md) note: pre-Plan-0009,
+`traders_copy_trade` signals were silently dropped on
+normal-tier traders and only sporadically reached fast-tier.
 
 See also: [trader-pipeline.md](trader-pipeline.md) for the
 generic signal-to-order flow, and [worker-trading.md](worker-trading.md)
@@ -25,15 +41,17 @@ This file documents:
    `trade_signals`.
 2. The **consumer surfaces** — what fast-tier and normal-tier
    each do to discover and act on a `traders` signal.
-3. **The gate** — the specific code path
+3. **The gate (historical)** — the specific code path
    (`_strategy_runtime_metadata` →
    `execution_activation = "ws_post_arm_tick"` →
-   `runtime_sequence = NULL` deferred state) that makes
-   `traders_copy_trade` signals invisible to consumers until a
-   fresh CLOB market-data quote arrives, which for most
-   leader-wallet markets never happens before the 15-min TTL.
-4. The **operational implication** and recommended fix
-   direction (left for a separate plan).
+   `runtime_sequence = NULL` deferred state) that, on
+   pre-Plan-0009 builds, made `traders_copy_trade` signals
+   invisible to consumers until a fresh CLOB market-data quote
+   arrived. Plan 0009 retired the `else` branch; the section
+   is preserved as the canonical post-mortem for the bug.
+4. **Post-fix flow** — what the current code does, and why
+   `traders_copy_trade` now behaves like `crypto` at publish
+   time (immediate visibility, no WS-quote precondition).
 
 It is **not** a duplicate of `trader-pipeline.md`. That file
 covers the "given a signal exists and a trader picks it up,
@@ -97,20 +115,25 @@ might never be picked up in the first place."
 |     1. Build incoming_snapshot dict (line 2044+)     |
 |     2. Compute _ea = payload.strategy_runtime        |
 |        .execution_activation                         |
-|        ┌─ For source="traders":  _ea =               |
-|        │  "ws_post_arm_tick"  (set by                |
-|        │  signal_bus._strategy_runtime_metadata      |
-|        │  :493-524, else branch line 518)            |
-|        └─ For source="scanner": _ea = "ws_current"   |
+|        Allow-list in signal_bus._strategy_runtime_   |
+|        metadata (post-Plan-0009):                    |
+|          crypto  → "immediate"                       |
+|          scanner → "ws_current"                      |
+|          traders → "immediate"  ← traders bypasses   |
+|                                    the deferred gate |
+|          unknown → "immediate" + WARNING (logged     |
+|                                  once per source)    |
 |                                                      |
 |     3. New-signal path (line 2173+)                  |
 |        OR existing-upsert path (line 2095+):         |
 |        if status=="filtered":         seq = None     |
 |        elif _ea=="ws_post_arm_tick" and              |
-|             required_token_ids:        ←  GATE       |
+|             required_token_ids:                      |
+|             # Defensive only.  No current source     |
+|             # key produces ws_post_arm_tick (Plan    |
+|             # 0009).  Branch retained for any        |
+|             # future strategy that opts in.          |
 |             snapshot["deferred_until_ws"] = True     |
-|             snapshot["deferred_reason"] =            |
-|                 "awaiting_post_arm_ws_tick"          |
 |             snapshot["runtime_sequence"] = None      |
 |        elif source in {"scanner"}                    |
 |              and required_token_ids                  |
@@ -166,18 +189,27 @@ might never be picked up in the first place."
                   | (intent_runtime.py:2395)|
                   |                         |
                   |   if deferred_until_ws: |
-                  |       continue   ←───── filters ALL traders signals
+                  |       continue          |
                   |   if row_sequence is    |
-                  |       None: continue ←─ filters again
+                  |       None: continue    |
+                  |                         |
+                  |   Post-Plan-0009: no    |
+                  |   traders signal hits   |
+                  |   either filter at      |
+                  |   publish time.         |
                   +-------------------------+
                              |
                              v
                   trader_decisions, trader_orders
 ```
 
-The gate is in the middle box. Every other path is symmetric
-between fast-tier and normal-tier (and even between `scanner`
-and `traders` source).
+The publish path is now symmetric between `crypto` and
+`traders` (both `immediate`), and between `scanner` (the
+strict-WS source) and the rest (no required quote at publish).
+The deferred-state filter inside `list_unconsumed_signals`
+remains in place to handle the `scanner` prewarm case and any
+future strategy that opts into `ws_post_arm_tick`; it just
+does not match any current `traders` signal.
 
 ## Code-reference table
 
@@ -191,9 +223,9 @@ and `traders` source).
 | 6 | Wallet event → opportunity | `backend/services/traders_copy_trade_signal_service.py:486` | `_process_wallet_trade_event` |
 | 7 | Strategy detect | `backend/services/strategies/traders_copy_trade.py:261, :440` | `TradersCopyTradeStrategy.detect_async` |
 | 8 | Bridge to runtime | `backend/services/strategy_signal_bridge.py:18` | `bridge_opportunities_to_signals` |
-| 9 | Strategy-runtime metadata | `backend/services/signal_bus.py:493-524` | `_strategy_runtime_metadata` ← **gate origin** |
+| 9 | Strategy-runtime metadata | `backend/services/signal_bus.py:493-548` | `_strategy_runtime_metadata` (allow-list `_EXECUTION_ACTIVATION_BY_SOURCE_KEY`; `traders → immediate` post-Plan-0009) |
 | 10 | Publish to runtime | `backend/services/intent_runtime.py:1987` | `IntentRuntime.publish_opportunities` |
-| 11 | Deferred branch (gate) | `backend/services/intent_runtime.py:2129-2141, :2186-2195` | `if _ea=="ws_post_arm_tick" and required_token_ids:` |
+| 11 | Deferred branch (now unreachable for `traders`) | `backend/services/intent_runtime.py:2129-2141, :2186-2195` | `if _ea=="ws_post_arm_tick" and required_token_ids:` — defensive code only, no current source key reaches it |
 | 12 | Reactivation by fresh WS quote | `backend/services/intent_runtime.py:1206, :1298` | `_on_ws_price_update` → `_reactivate_deferred_signals_for_token` |
 | 13 | Runtime queue publish | `backend/services/runtime_signal_queue.py:109` | `publish_signal_batch` |
 | 14 | Lane routing | `backend/services/runtime_signal_queue.py:61` | `_default_lane_for_source` (`crypto` → `crypto`, else → `general`) |
@@ -214,7 +246,7 @@ and `traders` source).
 | 29 | Session policy for traders source | `backend/services/trader_orchestrator/session_engine.py:195-214` | `is_traders` execution profile (REPRICE_LOOP, taker_limit, IOC) |
 | 30 | trade_signals table | (DB) | columns: `runtime_sequence`, `status`, `expires_at`, `payload_json` |
 
-## The asymmetry — fast-tier vs normal-tier
+## Fast-tier vs normal-tier (post Plan 0009)
 
 | Aspect | Normal-tier orchestrator | Fast-tier runtime |
 |---|---|---|
@@ -222,91 +254,75 @@ and `traders` source).
 | Reads from | `intent_runtime._signals_by_id` (in-process cache) → DB fallback | `intent_runtime._signals_by_id` → `signal_cache` (Redis) → DB fallback |
 | Wake mechanism | `runtime_signal_queue._queues["general"]` (asyncio.Queue) | `event_bus` subscribers on `trade_signal_emission`, `trade_signal_batch`, `signals_update` |
 | Cycle cadence | 60 s periodic + runtime-trigger wakeup | 250 ms polling fallback + event-driven wakeup |
-| Filter on consume | `if deferred_until_ws: continue; if runtime_sequence is None: continue` | Same — they share `list_unconsumed_signals` |
+| Filter on consume | `if deferred_until_ws: continue; if runtime_sequence is None: continue` (no longer matches traders signals at publish) | Same — they share `list_unconsumed_signals` |
 | Roster | All `latency_class != 'fast'` traders | All `latency_class = 'fast'` traders only |
 
-The asymmetry is NOT in either consumer path. Both consumers
-share the same `intent_runtime.list_unconsumed_signals` filter.
-The gate fires upstream of either consumer, in the publish
-path.
+Both tiers share `intent_runtime.list_unconsumed_signals`. The
+filters there still exist (deferred-by-WS for the `scanner`
+prewarm case, `runtime_sequence is None` for the strictly
+filtered-out cases), but **no `traders` signal is born in
+either filtered state any more** because
+`_strategy_runtime_metadata` returns `"immediate"` for
+`source_key='traders'`. So both tiers see every published
+`traders_copy_trade` signal as soon as the publish completes,
+modulo their normal cycle latency (sub-second on fast, up to
+60 s on normal).
 
-The reason fast-tier is observed to "consume some
-`traders_copy_trade` signals" while normal-tier observes zero
-is **purely statistical**:
+### Pre-Plan-0009 production observation (preserved as
+post-mortem)
 
-- Fast-tier wakes within 250ms of any of its three
-  subscribed event_bus topics. When
-  `_reactivate_deferred_signals_for_token` flips a signal out
-  of deferred state (via a fresh CLOB WS quote), a
-  `signals_update` event fires (`intent_runtime.py:2484`),
-  and fast-tier picks the signal up within milliseconds — well
-  inside the 15-min TTL.
-- Normal-tier orchestrator polls every 60s plus
-  runtime-trigger wakeup. The runtime-trigger fires when
-  `publish_signal_batch` is called (which it IS for traders,
-  on every publish), but the trigger's `signal_ids` list
-  contains the signal that's flagged as deferred — and
-  `_runtime_trigger_matches_trader` walks the per-snapshot
-  `runtime_sequence`/strategy_type filter, where the deferred
-  signal still has `runtime_sequence=None`. Even on the
-  reactivation path, the orchestrator's 60s cycle window
-  often closes before the next reactivation publish, leaving
-  the signal to expire silently.
+In production data captured 2026-05-07T19:30Z, the fast-tier
+window (10:00-18:18 UTC) produced **14 executed
+`traders_copy_trade` signals out of 13 941 published** —
+i.e. ~0.1%. The other 99.9% expired without any consumer ever
+seeing them. In the normal-tier window (18:18-18:58 UTC),
+**0 of 174** signals reached `executed`. The difference was
+one execution every ~30 minutes for fast vs. zero for normal,
+both numbers dominated by the same upstream deferred-state
+filter. Plan 0009's "after" baseline (Task 6) demonstrates
+the post-fix per-cycle cadence on normal-tier.
 
-In production data captured 2026-05-07, the fast-tier window
-(10:00-18:18 UTC) produced **14 executed `traders_copy_trade`
-signals out of 13 941 published** — i.e. ~0.1%. The other
-99.9% expired without any consumer ever seeing them. In the
-normal-tier window (18:18-18:58 UTC), 0 of 174 ever-5-minute
-batch of signals reached `executed`. The difference is one
-signal-execution every ~30 minutes for fast vs. zero for
-normal — both numbers are dominated by the same upstream
-deferred-state filter.
+## The gate (historical, retired by Plan 0009)
 
-## The gate
+> Pre-Plan-0009. Read this section as a post-mortem of the
+> bug that Plan 0008 investigated and Plan 0009 fixed. The
+> live publish path is described in **Post-fix flow** below.
 
 **File:** `backend/services/intent_runtime.py`
 **Lines:** 2129-2141 (existing-signal upsert path) and
 2186-2195 (new-signal path), both gated by `_ea ==
-"ws_post_arm_tick"`.
+"ws_post_arm_tick"`. The branches still exist but are no
+longer reached for any source key in the system.
 
-**Provenance of `_ea`:** Set in
-`backend/services/signal_bus.py:493-524`,
-`_strategy_runtime_metadata`:
+**Pre-Plan-0009 provenance of `_ea`** in
+`backend/services/signal_bus.py`, `_strategy_runtime_metadata`:
 
 ```python
-def _strategy_runtime_metadata(opportunity: Opportunity) -> dict[str, Any]:
-    ...
-    if source_key == "crypto":
-        execution_activation = "immediate"
-    elif source_key == "scanner":
-        execution_activation = "ws_current"
-    else:
-        execution_activation = "ws_post_arm_tick"   # ← traders falls here
-    return {
-        "strategy_slug": ...,
-        "source_key": source_key,
-        "subscriptions": ...,
-        "execution_activation": execution_activation,
-    }
+# pre-Plan-0009 — bug
+if source_key == "crypto":
+    execution_activation = "immediate"
+elif source_key == "scanner":
+    execution_activation = "ws_current"
+else:
+    execution_activation = "ws_post_arm_tick"   # ← traders fell here
 ```
 
 The `else` branch was written to enforce strict-WS pricing on
 arbitrary new sources. For `crypto` and `scanner` the
-trade-off is correct: `crypto` markets get an `immediate`
+trade-off was correct: `crypto` markets get an `immediate`
 flag (no WS-quote dependency), `scanner` markets are
 already in the scanner's hot-subscription set so a fresh
 WS quote is reliably available.
 
-**For `traders`, the policy is wrong.** Copy Trade follows
+For `traders`, the policy was wrong. Copy Trade follows
 leader wallets to whatever market the leader trades — which
 is NOT in the scanner's hot-subscription set most of the
-time. The signal is born deferred, requires a CLOB WS quote
-to clear, but the CLOB WS isn't subscribed to that token, so
-the deferred state never clears. The signal expires after
+time. The signal was born deferred, required a CLOB WS quote
+to clear, but the CLOB WS wasn't subscribed to that token, so
+the deferred state never cleared. The signal expired after
 15 minutes (default TTL) without any consumer ever seeing it.
 
-**Effect chain (lines refer to `intent_runtime.py`):**
+**Pre-fix effect chain (lines refer to `intent_runtime.py`):**
 
 1. Line 2186: `_ea == "ws_post_arm_tick"` AND
    `required_token_ids` is non-empty (extracted from
@@ -329,17 +345,17 @@ the deferred state never clears. The signal expires after
    `feed_manager.cache.add_on_update_callback` (line 650).
    The CLOB feed only pushes for tokens in the
    `feed_manager` subscription set.
-7. `traders_copy_trade_signal_service` does NOT subscribe
+7. `traders_copy_trade_signal_service` does not subscribe
    the leader-wallet token to the CLOB feed at publish time
    — it only ensures the user-channel WS is subscribed
    (`signal_bus.py:1278` calls
    `feed_manager.ensure_user_subscribed`, but that's the
    wallet user-channel, not the market-data CLOB channel).
-   So unless another component (scanner discovery) has
+   So unless another component (scanner discovery) had
    already pushed the token into the CLOB hot-subscription
-   set, no `_on_ws_price_update` will ever fire for it.
+   set, no `_on_ws_price_update` would ever fire for it.
 
-**Production proof** (DB query 2026-05-07T19:30Z):
+**Pre-fix production proof** (DB query 2026-05-07T19:30Z):
 
 ```
  strategy_type      | status  |  n  | with_seq | without_seq
@@ -348,110 +364,145 @@ the deferred state never clears. The signal expires after
  traders_copy_trade | pending | 445 |        0 |         445
 ```
 
-Every pending `traders_copy_trade` signal has
-`runtime_sequence = NULL`. None are visible to consumers.
+Every pending `traders_copy_trade` signal had
+`runtime_sequence = NULL`. None were visible to consumers.
 
-`traders_confluence` does NOT exhibit the same shape — its
+`traders_confluence` did not exhibit the same shape — its
 publishing entry is on the `discovery` plane via
 `tracked_traders_worker`, which (a) goes through a different
 publish path that does pass `runtime_sequence` to
 `upsert_trade_signal`, and (b) typically targets markets
-already in scanner subscription. So the gate is
+already in scanner subscription. So the gate was
 source-key+`execution_activation`-driven, not source-key
 alone.
 
-## Why the gate isn't an "intentional fast-only" design
+## Post-fix flow (Plan 0009)
 
-If the gate were intentional, we'd expect:
+**File:** `backend/services/signal_bus.py:493-548`,
+`_strategy_runtime_metadata`:
 
-- A code comment near the `else: execution_activation =
-  "ws_post_arm_tick"` line saying "fast-tier only by design"
-  or similar. There isn't one.
-- A symmetric handling on the consumer side: e.g.
-  fast-tier explicitly looking for `traders` signals
-  outside the deferred filter. There isn't.
-- A configuration knob to toggle the behaviour. There
-  isn't.
-- Fast-tier execution that bypasses the deferred state.
-  It doesn't — fast-tier hits the SAME
-  `intent_runtime.list_unconsumed_signals` filter and the
-  SAME `runtime_sequence is None` rejection.
+```python
+# post-Plan-0009 — bug fix
+_EXECUTION_ACTIVATION_BY_SOURCE_KEY: dict[str, str] = {
+    "crypto": "immediate",
+    "scanner": "ws_current",
+    "traders": "immediate",
+}
+_DEFAULT_EXECUTION_ACTIVATION = "immediate"
+_UNKNOWN_SOURCE_KEY_WARNED: set[str] = set()
 
-The 0.1% fast-tier success rate is consistent with
-incidental reactivation by tokens that happen to be in the
-scanner's subscription set when the leader trades. That's
-a fragile accident, not a design.
 
-The gate is therefore classified as a **latent design
-oversight**: the `else` clause in
-`_strategy_runtime_metadata` was added to enforce strict-WS
-pricing for arbitrary new sources, but it was never
-re-evaluated when `traders` source went into production.
+def _strategy_runtime_metadata(opportunity: Opportunity) -> dict[str, Any]:
+    ...
+    execution_activation = _EXECUTION_ACTIVATION_BY_SOURCE_KEY.get(source_key)
+    if execution_activation is None:
+        if source_key and source_key not in _UNKNOWN_SOURCE_KEY_WARNED:
+            _UNKNOWN_SOURCE_KEY_WARNED.add(source_key)
+            logger.warning(
+                "Unknown strategy source_key %r (strategy=%r); defaulting "
+                "execution_activation to %r. ...",
+                source_key, strategy_slug, _DEFAULT_EXECUTION_ACTIVATION,
+                source_key=source_key, strategy_slug=strategy_slug,
+            )
+        execution_activation = _DEFAULT_EXECUTION_ACTIVATION
+    ...
+```
 
-## Operational guidance (today)
+**Effect chain post-fix** (intent_runtime.py line numbers
+unchanged, behaviour different):
 
-Until a fix lands:
+1. `traders` opportunities arrive with
+   `payload.strategy_runtime.execution_activation = "immediate"`.
+2. Lines 2186-2195: the `_ea == "ws_post_arm_tick"` branch
+   does NOT match. Lines 2196-2210: the prewarm branch only
+   matches `source in _PREWARM_SOURCES = {"scanner"}`, so it
+   does NOT match either. The `else` clause at line 2212
+   allocates a real `runtime_sequence` and stamps
+   `execution_armed_at`. Same flow on the existing-row
+   reactivate branch (lines 2161-2163).
+3. `runtime_signal_queue.publish_signal_batch(source="traders",
+   event_type="upsert_insert", ...)` is called → routes to
+   the `general` lane. Both fast-tier and normal-tier wake.
+4. `list_unconsumed_signals` returns the signal: it is not
+   `deferred_until_ws`, and `runtime_sequence` is a positive
+   integer.
+5. The orchestrator picks the signal up on its next cycle
+   (≤ 60 s on `latency_class=normal`, sub-second on `fast`).
 
-1. **Use `latency_class = fast` for all `traders`-source
-   bots.** This won't fix the 99.9% drop rate, but it gets
-   the few signals that DO reactivate to execute promptly.
-   On `latency_class = normal`, even reactivated signals
-   often expire before the next 60s cycle.
-2. **Do not expect Copy Trade to follow more than ~0.1% of
-   leader trades** until a fix lands. Operationally treat
-   the source as "best-effort, sample only."
-3. **Monitor `trade_signals` deferred backlog**:
+**Tightening:** the silent `else: ws_post_arm_tick` fallback
+is gone. Any future `source_key` that is not in
+`_EXECUTION_ACTIVATION_BY_SOURCE_KEY` will (a) get the safe
+`immediate` default, and (b) emit a one-time `signal_bus`
+WARNING with the unknown source key. This prevents the next
+silent-regression failure mode.
+
+## Operational guidance
+
+1. **Run `traders` bots on `latency_class=normal` if the
+   operator prefers** — there is no longer any reason to
+   require `latency_class=fast` for copy-trade. (The
+   pre-Plan-0009 workaround was to set the bot to `fast`;
+   that workaround is now obsolete and should be reverted
+   if it's still in place.)
+2. **Monitor the post-fix invariant.** The DB query
    ```sql
-   select count(*)
+   select strategy_type, status, count(*) n,
+     sum((runtime_sequence is not null)::int) with_seq,
+     sum((runtime_sequence is null)::int)     without_seq
    from trade_signals
-   where source = 'traders'
-     and status = 'pending'
-     and runtime_sequence is null
-     and created_at > now() - interval '15 minutes';
+   where strategy_type in ('traders_copy_trade','traders_confluence')
+     and created_at > now() - interval '5 minutes'
+   group by strategy_type, status order by 1, 2;
    ```
-   If this number is consistently > 50, the gate is hot
-   and the operator should consider switching the bot off
-   to avoid filling the projection queue with dead-letter
-   signals.
+   should always show `without_seq = 0` for both rows. If
+   `traders_copy_trade` ever shows `without_seq > 0` again,
+   either someone reverted the fix or someone added a new
+   strategy to the `traders` source that explicitly sets
+   `execution_activation` and is producing the deferred
+   state — investigate before assuming the fix is intact.
+3. **Add new sources to the allow-list explicitly.** The
+   warn-once log line surfaces the next missing source key,
+   but it does not fail closed. If you see
+   `WARNING signal_bus: Unknown strategy source_key '...'`
+   in the backend logs, register the source in
+   `_EXECUTION_ACTIVATION_BY_SOURCE_KEY` (and, if it needs
+   strict-WS pricing, also in
+   `intent_runtime._uses_runtime_price_revalidation` /
+   `_PREWARM_SOURCES`).
 
 ## Conclusion
 
-The `traders_copy_trade` signal pipeline publishes signals
-into a runtime cache that flags them as
-`deferred_until_ws=True, runtime_sequence=NULL`. This makes
-them invisible to BOTH normal-tier orchestrator AND fast-tier
-runtime until a fresh CLOB market-data quote arrives on the
-signal's required token — which, for most leader-wallet
-markets, never happens within the 15-min TTL because the
-CLOB feed isn't subscribed to those tokens.
+The `traders_copy_trade` signal pipeline now publishes
+signals with `execution_activation='immediate'` and a
+non-NULL `runtime_sequence`, making them visible to both
+normal-tier orchestrator and fast-tier runtime as soon as
+they land in `_signals_by_id`. The pre-Plan-0009
+deferred-state branch (`else: execution_activation =
+"ws_post_arm_tick"` in `signal_bus._strategy_runtime_metadata`)
+was a latent regression: it dropped 99.9% of leader-wallet
+copy trades on the floor because the CLOB feed wasn't
+subscribed to leader-wallet tokens.
 
-The asymmetry observed in production (zero normal-tier
-decisions, ~14 fast-tier executed signals per day) is a
-statistical artifact of fast-tier's tighter wake cadence
-catching the rare reactivations within their narrow window.
-It is NOT an intentional latency-class affinity.
+Plan 0009 retired the `else` clause and replaced it with an
+explicit allow-list that maps every known source key to its
+audited activation policy, with a warn-and-fall-through
+default of `immediate` for any future source that ships
+without a registered policy.
 
-The gate is in
-`backend/services/signal_bus.py:_strategy_runtime_metadata`
-(`else: execution_activation = "ws_post_arm_tick"`) which
-forces every non-crypto, non-scanner source — `traders`
-included — through the deferred-by-default branch in
-`intent_runtime.publish_opportunities`. Removing or
-narrowing that fallback (e.g. `traders` should get
-`"immediate"`, like `crypto`, since it doesn't depend on a
-strict-WS quote for the leader's already-executed trade) is
-the right fix direction. Implementation belongs to a
-separate plan.
+The deferred-state branches in `publish_opportunities`
+(lines 2129-2141 and 2186-2195) remain as defensive code
+but are not reachable from any current source key.
 
 ## Open questions
 
-None. The gate is identified, behavior is reproduced from
-production data, fix direction is clear.
+None. The gate is fixed; the post-fix invariant is
+monitored by the DB query in **Operational guidance**.
 
 ## See also
 
 - [trader-pipeline.md](trader-pipeline.md) — generic signal-to-order pipeline, diagnostic playbook.
 - [worker-trading.md](worker-trading.md) — process model for the trading plane, fast vs normal tiers.
 - [system-overview.md](system-overview.md) — runtime topology.
-- [`docs/plans/0008-investigate-traders-source-routing-on-normal.md`](../0008-investigate-traders-source-routing-on-normal.md) — the investigation plan that produced this note (now in `completed/`).
+- [`docs/plans/completed/0008-investigate-traders-source-routing-on-normal.md`](../completed/0008-investigate-traders-source-routing-on-normal.md) — the investigation plan that produced this note.
+- [`docs/plans/completed/0009-fix-traders-source-on-normal.md`](../completed/0009-fix-traders-source-on-normal.md) — the fix plan; once Plan 0009 closes, this is the canonical record of the change.
 - [`docs/plans/architecture/_appendix/0008-baseline-2026-05-07.txt`](_appendix/0008-baseline-2026-05-07.txt) — baseline data captured during investigation.
