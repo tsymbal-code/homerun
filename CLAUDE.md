@@ -114,6 +114,18 @@ ssh polyhome-1 'cd /home/polyhome/homerun && docker compose restart backend'
 
 ## Where to find more
 
+### Agent scaffolding (read this first if you're a new chat)
+
+| Artefact | What it does |
+|---|---|
+| [`agents.md`](agents.md) § "Where AI agents start" | Index of every Cursor rule, Claude command, and subagent below |
+| [`.cursor/rules/`](.cursor/rules/) | Per-area Cursor auto-attach rules (`backend`, `frontend`, `migrations`, `plans`, `ai-llm`, `strategies`) plus the always-on `homerun.mdc` |
+| [`.claude/settings.json`](.claude/settings.json) | Permissions allowlist + the `UserPromptSubmit` reminder hook for localhost-vs-SSH |
+| [`.claude/commands/sync-docs.md`](.claude/commands/sync-docs.md) | `/sync-docs [N]` — audit last N commits against architecture notes, refresh `Last verified` |
+| [`.claude/agents/`](.claude/agents/) | Subagents: `plan-validator`, `arch-note-writer`, `commit-trailer-checker` |
+
+### Architecture and operational reference
+
 | Topic | File |
 |---|---|
 | Strategies (28 of them, one doc each) | [`docs/strategies/`](docs/strategies/) |

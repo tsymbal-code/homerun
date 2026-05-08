@@ -1,0 +1,62 @@
+---
+description: Alembic migration conventions — idempotent column adds, no destructive op.execute, downgrade is pass.
+globs: backend/alembic/versions/**/*.py
+alwaysApply: false
+---
+
+# Migration conventions
+
+Authoritative reference: [`database-and-migrations.md`](mdc:docs/plans/architecture/database-and-migrations.md).
+
+## Non-negotiables
+
+- **Filename:** `{YYYYMMDD}{NNNN}_{verb_subject}.py` — for example
+  `202605070001_add_nvidia_nim_columns.py`. The numeric prefix is the
+  revision id; `down_revision` points at the previous head.
+- **Always use `_column_names(table_name)` before `op.add_column`.** The
+  helper at the top of recent migrations returns the existing columns
+  so a re-run is a no-op. Never assume the column doesn't exist.
+- **`downgrade()` is `pass`.** Project policy: downgrades are not
+  supported. Don't write a half-baked one — write `pass` and a comment
+  pointing at policy.
+- **No destructive `op.execute(...)` without explicit operator
+  approval.** That includes `DELETE`, `UPDATE` of production columns,
+  `DROP COLUMN` on populated tables. If you need data migration, write
+  it as a separate plan task with backup recipe.
+- **Server defaults match Python defaults.** A `Boolean` column with
+  `default=True` in the ORM needs `server_default=sa.text("true")` in
+  the migration so existing rows backfill correctly.
+- **The migration head runs in the `migrate` one-shot service** on every
+  stack restart (see `docker-compose.yml`). A broken head means the
+  whole stack won't start.
+
+## Pattern (copy-pasteable skeleton)
+
+```python
+revision = "YYYYMMDDNNNN"
+down_revision = "<previous_head>"
+
+def _column_names(table_name: str) -> set[str]:
+    inspector = sa.inspect(op.get_bind())
+    if table_name not in set(inspector.get_table_names()):
+        return set()
+    return {col["name"] for col in inspector.get_columns(table_name)}
+
+def upgrade() -> None:
+    existing = _column_names("target_table")
+    columns = [
+        sa.Column("new_field", sa.String(), nullable=True,
+                  server_default=sa.text("'default'")),
+    ]
+    for col in columns:
+        if col.name not in existing:
+            op.add_column("target_table", col)
+
+def downgrade() -> None:
+    pass
+```
+
+## Where to look next
+
+- Schema, conventions, retry patterns: [`database-and-migrations.md`](mdc:docs/plans/architecture/database-and-migrations.md)
+- Backend session usage: [`backend.mdc`](mdc:.cursor/rules/backend.mdc)

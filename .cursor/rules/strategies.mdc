@@ -1,0 +1,60 @@
+---
+description: Strategy conventions — BaseStrategy contract, detect vs detect_async, ExitDecision, never test by slug.
+globs: backend/services/strategies/**/*.py
+alwaysApply: false
+---
+
+# Strategy conventions
+
+Authoritative reference: [`trader-pipeline.md`](mdc:docs/plans/architecture/trader-pipeline.md).
+Per-strategy operator notes: `docs/strategies/*.md` (Ukrainian by operator request).
+
+## Non-negotiables
+
+- **Extend `BaseStrategy` from `services/strategies/base.py`.** Required
+  class attributes: `strategy_type`, `name`, `description`. Required
+  method: `detect(events, markets, prices)` (sync, CPU-only) OR
+  `detect_async(...)` (async, I/O-bound). Pick one.
+- **Use `self.create_opportunity(...)` for ID generation.** Never
+  hand-construct `Opportunity` ids — `stable_id` and `id` semantics
+  are non-trivial. See `agents.md` § Opportunity IDs.
+- **Live prices over static.** Strategies receive a `prices` dict
+  mapping token IDs to live price objects. Always prefer
+  `prices[token_id]` over `market.yes_price` / `market.no_price` when
+  the token id is present.
+- **Decision dataclasses are fixed.** `StrategyDecision` and
+  `ExitDecision` shapes live in `services/strategies/base.py`. Do
+  not add fields without updating the orchestrator that consumes
+  them.
+- **`configure(config: dict)` maps user overrides onto `self._config`.**
+  Default config dict (e.g. `NEWS_EDGE_DEFAULT_CONFIG`) is the source
+  of truth for keys; the configure hook may reject unknown keys but
+  must not silently typo-correct them.
+- **Tests are infrastructure-level, never slug-tied.** Per
+  `agents.md` § What NOT to Do: NEVER write tests bound to a specific
+  strategy slug (`tail_end_carry`, etc.). Strategies are dynamic,
+  DB-driven, user-definable, and may be missing across deployments.
+  Test the shared base machinery, not the concrete subclass.
+
+## LLM-touching strategies
+
+Most strategies are zero-LLM. The exceptions (`news_edge` and any
+strategy that opts into `llm_verify_trades` at the orchestrator) load
+the [`ai-llm.mdc`](mdc:.cursor/rules/ai-llm.mdc) rule automatically
+when `services/ai/**` or `services/news/**` paths are also in the
+chat. Read it before adding LLM calls to a strategy.
+
+## Common footguns this rule exists to prevent
+
+- Reading `market.yes_price` while a fresh `prices[...]` is available
+  — strategy decides on stale data, looks fine in tests.
+- Rolling a custom `Opportunity.id` scheme — UI deduplication breaks.
+- Adding a `# TODO: implement edge calc later` and shipping. This is
+  a financial app — partial code causes silent losses
+  (see `agents.md` § Core Principles).
+
+## Where to look next
+
+- Pipeline from signal to order: [`trader-pipeline.md`](mdc:docs/plans/architecture/trader-pipeline.md)
+- Copy-trade specifics: [`copy-trade-pipeline.md`](mdc:docs/plans/architecture/copy-trade-pipeline.md)
+- LLM-related strategy work: [`ai-llm.mdc`](mdc:.cursor/rules/ai-llm.mdc)

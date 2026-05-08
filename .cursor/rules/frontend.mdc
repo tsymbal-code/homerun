@@ -1,0 +1,49 @@
+---
+description: Homerun frontend conventions — React 18, Jotai, react-query, shared WS singleton, TS interfaces in service files.
+globs: frontend/src/**/*.{ts,tsx}
+alwaysApply: false
+---
+
+# Frontend conventions
+
+Authoritative reference: [`frontend-architecture.md`](mdc:docs/plans/architecture/frontend-architecture.md).
+Always-on baseline rules: [`homerun.mdc`](mdc:.cursor/rules/homerun.mdc).
+
+## Non-negotiables
+
+- **State split:** Jotai atoms in `store/atoms.ts` for UI/global state
+  (theme, selections, modal visibility). Use `atomWithStorage` for
+  anything that must survive refresh, plain `atom` for ephemeral.
+  React Query (`@tanstack/react-query`) for **all** server data —
+  `useQuery({ queryKey, queryFn })` shape.
+- **One WebSocket connection per tab.** The shared singleton lives in
+  `hooks/useWebSocket.ts`. Multiple consumers subscribe to it. Do NOT
+  call `new WebSocket(...)` anywhere else.
+- **Always run `normalizeUtcTimestampsInPlace` on API responses.** It is
+  installed as an Axios response interceptor in
+  `services/api.ts` — keep that wiring intact when editing service
+  files.
+- **Default exports for components, named exports for utilities.**
+  Component file: `PascalCase.tsx`. Hook file: `useCamelCase.ts`.
+  Service file: `<area>Api.ts` with TypeScript interfaces co-located.
+- **shadcn/ui first.** Reach for `components/ui/*` before writing a
+  primitive. Use `cn()` from `lib/utils` for conditional Tailwind.
+  Lucide React for icons.
+- **No `any`.** Define a TS interface for every API response shape in
+  the same service file that fetches it.
+
+## Common footguns this rule exists to prevent
+
+- Spinning up a second WebSocket connection (e.g. inside a hook that
+  forgets the singleton). Symptoms: duplicate event handling, dropped
+  messages.
+- Skipping the timestamp normalizer when adding a new Axios instance.
+  Backend always returns UTC; the UI assumes that contract.
+- Storing server data in Jotai. Use react-query — it handles refetch,
+  cache, retry, and websocket push merging.
+- Using `useEffect` for data fetching when react-query would do it.
+
+## Where to look next
+
+- Atoms catalogue, derived atoms: [`frontend-architecture.md`](mdc:docs/plans/architecture/frontend-architecture.md)
+- WebSocket message types and channels: [`websocket-and-events.md`](mdc:docs/plans/architecture/websocket-and-events.md) (created by plan 0013)

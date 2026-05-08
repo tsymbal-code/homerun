@@ -1,0 +1,51 @@
+---
+description: Homerun backend conventions — async FastAPI, SQLAlchemy retry, Pydantic v2, structured logging.
+globs: backend/**/*.py
+alwaysApply: false
+---
+
+# Backend conventions
+
+Authoritative reference: [`backend-architecture.md`](mdc:docs/plans/architecture/backend-architecture.md).
+Always-on baseline rules: [`homerun.mdc`](mdc:.cursor/rules/homerun.mdc).
+
+## Non-negotiables
+
+- **Async everywhere on the I/O path.** Routes, services, workers — `async def`.
+  Sync helpers exist only for pure CPU work. Never `time.sleep` in async code,
+  use `asyncio.sleep`.
+- **DB sessions go through `AsyncSessionLocal` as a context manager.** Wrap
+  writes with the bounded retry-on-`OperationalError` pattern from
+  [`agents.md`](mdc:agents.md) § Database Operations. Do not hold a session
+  open across slow awaits — Postgres lock contention is real on this host.
+- **Pydantic v2 only.** Use `BaseModel`, `Field`, `model_validator`,
+  `field_validator`, `model_config`, `.model_dump()`. Never `@validator`,
+  `class Config`, or `.dict()` — those are v1 patterns.
+- **FastAPI routes return plain dicts.** Errors raise `HTTPException` with a
+  specific status code (400, 404, 409, 503). Chain with `from exc`. Use 503
+  for retryable DB lock/serialization errors with a retry hint.
+- **Structured logging via `utils.logger.get_logger(__name__)`.** Pass
+  context as kwargs (`logger.info("created", account_id=...)`). Never log
+  raw exceptions as strings — use `exc_info=e`. Do not log routine successes.
+- **UTC datetimes only.** `datetime.now(timezone.utc)` or `utcnow()` from
+  `utils/utcnow.py`. Never bare `datetime.utcnow()` — that returns naive.
+- **Settings are hot-reloaded.** The 180+ fields in `config.py` and the
+  `app_settings` row are re-read by workers each loop. Never cache settings
+  at import time.
+
+## Common footguns this rule exists to prevent
+
+- Adding `from datetime import datetime; datetime.utcnow()` somewhere — it
+  silently produces naive datetimes that the frontend cannot normalize.
+- Catching `OperationalError` with bare `except: pass` instead of the
+  bounded retry pattern.
+- Adding `try/except` around impossible states or internal-only calls.
+  This is a single-tenant app — only validate at true boundaries.
+- Re-exporting old names "for backwards compatibility." Project policy is
+  clean-cut replacement; delete the old.
+
+## Where to look next
+
+- Async + lifespan + worker startup: [`backend-architecture.md`](mdc:docs/plans/architecture/backend-architecture.md)
+- Schema and Alembic: [`database-and-migrations.md`](mdc:docs/plans/architecture/database-and-migrations.md)
+- LLM-touching code: [`ai-llm.mdc`](mdc:.cursor/rules/ai-llm.mdc) auto-loads on `services/ai/**` and `services/news/**`.

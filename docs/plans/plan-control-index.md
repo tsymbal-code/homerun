@@ -56,6 +56,9 @@ notes.
 | 0008 | [Investigate `source='traders'` routing on normal-tier](completed/0008-investigate-traders-source-routing-on-normal.md) | D        | —             |
 | 0009 | [Fix `source='traders'` deferred-state gate so normal-tier traders consume copy-trade signals](completed/0009-fix-traders-source-on-normal.md) | B        | 0008          |
 | 0010 | [Fix `trader_decisions` FK race for in-process `source='traders'` publishes](completed/0010-fix-traders-publish-fk-race.md) | R        | 0009          |
+| 0011 | [Defensive `expires_at` on skeleton `trade_signals` + retention sweep](completed/0011-skeleton-trade-signal-ttl-and-retention.md) | R        | 0010          |
+| 0012 | [Agent onboarding baseline — Cursor rules + Claude Code skills](completed/0012-agent-onboarding-baseline.md) | D        | —             |
+| 0013 | [Architecture documentation gap audit](0013-architecture-doc-gap-audit.md) | D        | 0012          |
 
 When adding a row: keep this table sorted by ID ascending. Don't
 re-number plans — gaps in IDs are normal and expected (deleted or
@@ -242,6 +245,56 @@ Only notes that aren't obvious from the title. All plans must follow
   the operational journal
   ([`runtime-tweaks.md`](../operational/runtime-tweaks.md))
   updated to reflect the post-fix invariant.
+- **Plan 0011 — Defensive `expires_at` on skeleton
+  `trade_signals` + retention sweep.** Refactor / hardening
+  (R). Direct follow-up to plan 0010, **completed**
+  2026-05-08. Plan 0010's skeleton-INSERT pass committed
+  `(source, dedupe_key)` rows with `expires_at = NULL`; if
+  `publish_opportunities` died between the skeleton commit
+  and the projection-loop UPSERT, the row sat in
+  `trade_signals` forever (`payload_json IS NULL`,
+  `runtime_sequence IS NULL`, invisible to the existing
+  pruner that keys on `expires_at < now()`).
+  Plan 0011 adds (a) a defensive
+  `expires_at = now + INTENT_RUNTIME_SKELETON_TTL_SECONDS`
+  (default 300 s) on every skeleton row, overwritten by the
+  projection loop's later UPSERT, and (b) a
+  worker-discovery sweep
+  (`services.skeleton_signal_retention.prune_stuck_skeletons`)
+  that DELETEs orphans older than 1 h every 15 min.
+  Post-deploy on `polyhome-1` (20-min soak): 0 FK violations,
+  331/331 new traders skeletons carry the defensive TTL,
+  Tier 1 invariant `without_seq=0` holds for both
+  `traders_copy_trade.expired` (125) and `.skipped` (139),
+  Tier 2 invariant `stuck_skeletons=0` holds, and a manually
+  injected orphan was reaped by the live loop within 14 min.
+  Operational guidance ([`copy-trade-pipeline.md`](architecture/copy-trade-pipeline.md))
+  now documents a two-tier monitoring scheme; the journal
+  ([`runtime-tweaks.md`](../operational/runtime-tweaks.md))
+  carries the deploy snapshot and rollback recipe.
+
+- **Plan 0012 — Agent onboarding baseline.** Documentation /
+  tooling (D). Installs the missing scaffolding that makes a
+  fresh AI session in either Cursor or Claude Code arrive
+  pre-loaded with the right context. Adds per-area auto-attach
+  rules under `.cursor/rules/` (backend, frontend, migrations,
+  plans, AI/LLM, strategies); a `.claude/settings.json` with a
+  curated permissions allowlist plus one reminder hook; a single
+  `/sync-docs` slash command that audits recent commits against
+  the architecture notes; three subagents (plan-validator,
+  arch-note-writer, commit-trailer-checker). Closes with a short
+  "Where AI agents start" section in the root `agents.md` that
+  serves as the canonical index. No runtime code changes.
+- **Plan 0013 — Architecture documentation gap audit.**
+  Documentation / tooling (D). Direct follow-up to plan 0012:
+  uses the `/sync-docs` command and the `Last verified` marker
+  introduced there. Fills five missing architecture notes
+  (`worker-news.md`, `worker-discovery.md`,
+  `websocket-and-events.md`, `execution-and-fills.md`,
+  `strategy-reverse-engineer.md`), backfills `Last verified`
+  on every existing note, and rewires `system-overview.md` /
+  `CLAUDE.md` to route to the new notes. No runtime code
+  changes.
 
 ## Ordering decision tree (for agents picking the next plan)
 
@@ -292,5 +345,15 @@ Only notes that aren't obvious from the title. All plans must follow
 - Plan format and lifecycle: [`README.md`](README.md)
 - Architecture notes that plans cite:
   [`architecture/`](architecture/) (start with
-  [`system-overview.md`](architecture/system-overview.md))
+  [`system-overview.md`](architecture/system-overview.md)). Notable
+  recent additions:
+  [`ai-and-llm.md`](architecture/ai-and-llm.md) (LLM-vs-classical-ML
+  map, news-edge "winning market" pipeline) and
+  [`copy-trade-pipeline.md`](architecture/copy-trade-pipeline.md)
+  (the `source='traders'` family).
+- Agent scaffolding (Cursor rules, Claude Code commands, subagents):
+  [`agents.md`](../../agents.md) § "Where AI agents start" — single
+  index. The `/sync-docs` command in
+  [`.claude/commands/sync-docs.md`](../../.claude/commands/sync-docs.md)
+  audits this directory's architecture notes against the code.
 - Completed plans archive: [`completed/`](completed/)

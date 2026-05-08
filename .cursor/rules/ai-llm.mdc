@@ -1,0 +1,64 @@
+---
+description: AI/LLM code conventions — budget gates, feature toggles, LLMUsageLog discipline, LLM-vs-non-LLM split.
+globs: backend/services/ai/**/*.py,backend/services/news/**/*.py,backend/services/strategy_reverse_engineer/**/*.py,backend/services/autoresearch_service.py
+alwaysApply: false
+---
+
+# AI/LLM conventions
+
+Authoritative references:
+[`ai-and-llm.md`](mdc:docs/plans/architecture/ai-and-llm.md) — end-to-end map of where LLM is used.
+[`llm-provider-layer.md`](mdc:docs/plans/architecture/llm-provider-layer.md) — transport layer (providers, routing, key save).
+
+## Non-negotiables
+
+- **All LLM calls go through `LLMManager`.** Get the singleton via
+  `from services.ai import get_llm_manager`. Never instantiate a
+  provider class (`OpenAIProvider`, `AnthropicProvider`, …) directly.
+- **Every call gates on the master switches.**
+  - `AppSettings.ai_enabled` (master kill switch).
+  - The relevant per-feature flag (`ai_resolution_analysis`,
+    `ai_opportunity_scoring`, `ai_news_sentiment`, `news_workflow_*`,
+    `cortex_enabled`, …). If your code has a new use-case, add a
+    feature flag — don't piggy-back on an unrelated one.
+- **Budget-aware code paths use `CycleBudget`.** The news pipeline's
+  `services/news/workflow_orchestrator.py:CycleBudget` enforces
+  per-cycle / per-hour / monthly caps. New batch consumers either use
+  it or implement an equivalent pre-call check against
+  `LLMUsageLog` running totals — never call into the LLM in an
+  unbounded loop.
+- **`LLMUsageLog.purpose` is mandatory.** Pass a stable purpose
+  string (`"opportunity_judge"`, `"resolution_analysis"`,
+  `"news_workflow:edge_estimation"`, `"cortex_agent"`, …). The AI
+  Activity tab and `/sync-docs` rely on it.
+- **Model selection.** Default = `AppSettings.ai_default_model`.
+  Premium = `ai_premium_model` (opt-in only — never escalate
+  silently). Per-purpose overrides via
+  `AppSettings.llm_model_assignments` (JSON map).
+- **`structured_output(...)` over free-form `chat(...)` for any
+  decision-driving call.** Define an explicit JSON schema; do not
+  parse free text.
+- **Track the LLM-vs-classical-ML split.** semantic matching
+  (FAISS + sentence-transformers), entity-overlap NER, Cox-PH fill
+  model, article clustering — these are NOT LLM. Don't replace them
+  with LLM calls "to be consistent."
+
+## Common footguns this rule exists to prevent
+
+- Hard-coding a model id (`"gpt-4o"`) inside a service. Use
+  `manager.default_model` or read `llm_model_assignments[purpose]`.
+- Silent fallback to default model when a per-purpose model is
+  configured but the provider is missing — log and surface the
+  misconfiguration instead.
+- Adding an LLM call inside a tight strategy loop without a budget
+  gate — exhausts `ai_max_monthly_spend` invisibly.
+- Using `LLMManager` outside `services/ai/`, `services/news/`,
+  `services/strategy_reverse_engineer/`, `services/autoresearch_service.py`,
+  or routes that proxy to them. Strategies in `services/strategies/`
+  reach LLM only via the news pipeline / opportunity_judge / verifier
+  hooks documented in `ai-and-llm.md`.
+
+## Where to look next
+
+- News pipeline data flow + winning-market identification: [`ai-and-llm.md`](mdc:docs/plans/architecture/ai-and-llm.md)
+- Adding a new provider: [`llm-provider-layer.md`](mdc:docs/plans/architecture/llm-provider-layer.md) § Extension points

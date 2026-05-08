@@ -1,0 +1,60 @@
+---
+description: Ralphex plan format — mandatory policy header, Tasks-only checkboxes, Plan trailer convention.
+globs: docs/plans/**/*.md
+alwaysApply: false
+---
+
+# Plan file conventions
+
+Authoritative reference: [`docs/plans/README.md`](mdc:docs/plans/README.md).
+Plans follow the [Ralphex](https://ralphex.com/docs/) skeleton.
+
+## Non-negotiables
+
+- **Mandatory Plan policy header.** Every plan starts with the verbatim
+  blockquote from `README.md` § Plan file format. Don't paraphrase.
+- **Filename:** `<NNNN>-<verb>-<subject>.md`. Pick the next free number
+  by listing `docs/plans/[0-9]*.md docs/plans/completed/[0-9]*.md
+  docs/plans/backlog/[0-9]*.md | tail`. Don't reuse retired numbers.
+- **Checkboxes only inside `### Task N:` sections.** Overview, Context,
+  Validation Commands stay checkbox-free. The last item of every task
+  is `- [ ] Mark completed`.
+- **`## Validation Commands` is machine-readable.** One shell command
+  per bullet, runnable end-to-end without further setup.
+- **Architecture-first.** If the plan touches a layer with no note in
+  `docs/plans/architecture/`, write the note first as a separate task
+  (or separate prerequisite plan) and link to it from
+  `## Context / References`.
+- **Every commit produced for the plan carries a `Plan: <NNNN>`
+  trailer.** Trailer is the **ID only**, not the slug. Multi-plan
+  commits get one trailer per plan, on separate lines.
+
+## Closure ritual
+
+Last task is always close-out:
+
+```markdown
+### Task N: Close-out
+- [ ] Run all Validation Commands locally; all pass.
+- [ ] `git log --grep='Plan: <NNNN>'` shows the full commit set.
+- [ ] `git mv docs/plans/<NNNN>-<slug>.md docs/plans/completed/`.
+- [ ] Update the row in `plan-control-index.md` to point at `completed/`.
+- [ ] Mark completed
+```
+
+Plans in `docs/plans/completed/` are immutable historical records.
+Don't edit them after the move.
+
+## Architecture notes
+
+- Live in `docs/plans/architecture/`, contain **no tasks**.
+- Each note ends with `Last verified: YYYY-MM-DD` (introduced in
+  plan 0013). Bump when a real diff against code is performed.
+- Recommended sections: Purpose / Key files / Contracts /
+  Dependencies (both directions) / Extension points.
+
+## Where to look next
+
+- Lifecycle, commit-trailer details: [`docs/plans/README.md`](mdc:docs/plans/README.md)
+- Ordering and prerequisites: [`docs/plans/plan-control-index.md`](mdc:docs/plans/plan-control-index.md)
+- `/sync-docs` command (audits notes vs code): [`.claude/commands/sync-docs.md`](mdc:.claude/commands/sync-docs.md)

@@ -53,6 +53,51 @@ or "why doesn't this work locally".
 
 ---
 
+## Where AI agents start
+
+This file is the codex. Two coordinated layers of scaffolding sit
+around it so a fresh Cursor or Claude Code session arrives pre-loaded
+with the right context for whatever it touches:
+
+### Cursor — `.cursor/rules/*.mdc`
+
+Auto-attached when matching files enter the chat. Open one of these
+files to get the area-specific contract without reading the full
+codex.
+
+| Rule | Loads when | Anchors |
+|---|---|---|
+| [`homerun.mdc`](.cursor/rules/homerun.mdc) | always | "project does not run on localhost", deploy flow, kill-switches |
+| [`backend.mdc`](.cursor/rules/backend.mdc) | `backend/**/*.py` | async I/O, `AsyncSessionLocal` retry, Pydantic v2, structured logging, UTC datetimes |
+| [`frontend.mdc`](.cursor/rules/frontend.mdc) | `frontend/src/**/*.{ts,tsx}` | Jotai vs react-query split, shared WS singleton, timestamp normaliser |
+| [`migrations.mdc`](.cursor/rules/migrations.mdc) | `backend/alembic/versions/**` | `_column_names` idempotency, `down_revision`, `pass`-only downgrade |
+| [`plans.mdc`](.cursor/rules/plans.mdc) | `docs/plans/**` | Ralphex skeleton, mandatory policy header, `Plan:` trailer |
+| [`ai-llm.mdc`](.cursor/rules/ai-llm.mdc) | `backend/services/ai/**`, `backend/services/news/**`, `services/strategy_reverse_engineer/**`, `autoresearch_service.py` | budget gates, feature toggles, `LLMUsageLog.purpose` discipline |
+| [`strategies.mdc`](.cursor/rules/strategies.mdc) | `backend/services/strategies/**` | `BaseStrategy` contract, `detect` vs `detect_async`, never test by slug |
+
+### Claude Code — `.claude/`
+
+| Artefact | What it does |
+|---|---|
+| [`settings.json`](.claude/settings.json) | Permissions allowlist for read-only git/ssh-diagnostic commands; deny-list for the localhost / force-push / data-wipe footguns |
+| [`hooks/remind-ssh.sh`](.claude/hooks/remind-ssh.sh) | `UserPromptSubmit` hook — when the user prompt mentions `localhost`, `psql`, `docker compose up`, etc., injects the SSH-wrapper reminder before the agent starts work |
+| [`commands/sync-docs.md`](.claude/commands/sync-docs.md) | `/sync-docs [N]` — audits the last `N` commits against `docs/plans/architecture/*.md`, surfaces drift, refreshes `Last verified` markers on confirmation |
+| [`agents/plan-validator.md`](.claude/agents/plan-validator.md) | Read-only: validates one plan file against `docs/plans/README.md` (header, checkboxes, link integrity, index consistency) |
+| [`agents/arch-note-writer.md`](.claude/agents/arch-note-writer.md) | Writes / updates one architecture note from the Ralphex skeleton; refuses speculative content |
+| [`agents/commit-trailer-checker.md`](.claude/agents/commit-trailer-checker.md) | Verifies every commit in a SHA range carries a `Plan:` trailer; surfaces phantom plan IDs |
+
+### Policy
+
+Every new Cursor rule, Claude command, or subagent gets a one-line
+entry in the table above. If the table grows past one screen, split
+it by area — but keep this file as the single index.
+
+The `Last verified: YYYY-MM-DD` line at the bottom of every
+architecture note is consumed by `/sync-docs`. Bump it only after a
+real diff against code; do not stamp it as a reflex.
+
+---
+
 ## Architecture Overview
 
 ```
