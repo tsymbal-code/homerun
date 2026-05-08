@@ -359,3 +359,5 @@ million-row tables will hit `statement_timeout`.
   conflict. Prefer the `YYYYMMDDNN` form and bump `NN` to avoid
   collisions; if you collide, rebase rather than write a merge
   migration.
+
+Last verified: <unverified>

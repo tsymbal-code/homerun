@@ -267,3 +267,5 @@ for the CPU-profile impact.
   path.** New scan paths added in the future must call it (or
   duplicate its funnel) — a path that skips it would silently
   ignore the tag filter.
+
+Last verified: <unverified>

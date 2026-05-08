@@ -574,3 +574,8 @@ group by 1, 2 order by 1 desc, usd desc;
 | Settings, secrets, encrypted API keys | [`settings-and-secrets.md`](settings-and-secrets.md) |
 | Database schema, migrations | [`database-and-migrations.md`](database-and-migrations.md) |
 | Three-plane runtime (`worker-trading`, `worker-news`, `worker-discovery`) | [`system-overview.md`](system-overview.md) |
+| News pipeline plane (where most of Track A + B above runs) | [`worker-news.md`](worker-news.md) |
+| Wallet-mimicry agent loop (deep dive of Strategy Reverse-Engineer) | [`strategy-reverse-engineer.md`](strategy-reverse-engineer.md) |
+| Live feeds, UI `/ws`, Redis pub/sub | [`websocket-and-events.md`](websocket-and-events.md) |
+
+Last verified: 2026-05-08

@@ -295,3 +295,5 @@ know what host the backend lives on — same-origin everything.
   100 ms windows). The 120 ms invalidation debounce in
   `useRealtimeInvalidation` is what keeps react-query from running
   in a tight loop. Don't lower it lightly.
+
+Last verified: <unverified>

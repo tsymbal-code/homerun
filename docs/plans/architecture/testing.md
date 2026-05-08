@@ -279,3 +279,5 @@ tests ran", not "missing file").
   service internals before each test. Adding a third autouse
   fixture should be done with care; prefer named fixtures opted
   into per test.
+
+Last verified: <unverified>

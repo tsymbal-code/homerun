@@ -74,7 +74,7 @@ transformers, FAISS) plus the budgeted LLM workflow described in
 trainer. Document what runs where, what each component owns, and
 the failure modes that look identical from the outside.
 
-- [ ] Author `docs/plans/architecture/worker-news.md` covering:
+- [x] Author `docs/plans/architecture/worker-news.md` covering:
       Purpose / Key files (workflow_orchestrator,
       semantic_matcher, market_watcher_index, article_clusterer,
       hybrid_retriever, reranker, edge_estimator, edge_detector,
@@ -84,12 +84,12 @@ the failure modes that look identical from the outside.
       worker-trading consumer) / Extension points / Footguns
       (FAISS memory ~2 GB, ST warmup latency, async budget
       exhaustion symptom).
-- [ ] Add a `Last verified: YYYY-MM-DD` line at the bottom.
-- [ ] Cross-link from [`ai-and-llm.md`](architecture/ai-and-llm.md)
+- [x] Add a `Last verified: YYYY-MM-DD` line at the bottom.
+- [x] Cross-link from [`ai-and-llm.md`](architecture/ai-and-llm.md)
       "Where to look next" and from
       [`trader-pipeline.md`](architecture/trader-pipeline.md)
       "Where to look next".
-- [ ] Mark completed
+- [x] Mark completed
 
 ### Task 2: `worker-discovery.md`
 
@@ -98,15 +98,15 @@ storms off the trading event loop. It also hosts the
 `strategy_reverse_engineer` agent loop (which gets its own note
 in Task 5). Document the rest.
 
-- [ ] Author `docs/plans/architecture/worker-discovery.md`
+- [x] Author `docs/plans/architecture/worker-discovery.md`
       covering: wallet discovery, tracked-wallets crawler,
       provider import, backtest worker, scheduler. Explicitly
       note that strategy reverse-engineer also runs here but
       lives in its own note.
-- [ ] Add a `Last verified: YYYY-MM-DD` line.
-- [ ] Cross-link from [`system-overview.md`](architecture/system-overview.md)
+- [x] Add a `Last verified: YYYY-MM-DD` line.
+- [x] Cross-link from [`system-overview.md`](architecture/system-overview.md)
       "Why three worker planes" section.
-- [ ] Mark completed
+- [x] Mark completed
 
 ### Task 3: `websocket-and-events.md`
 
@@ -115,20 +115,20 @@ Binance) plus the UI WS plus Redis pub/sub need one place that
 explains who publishes what, who subscribes, and what the JSON
 message shapes are.
 
-- [ ] Author `docs/plans/architecture/websocket-and-events.md`:
+- [x] Author `docs/plans/architecture/websocket-and-events.md`:
       external WS feeds (FeedManager, polymarket_user_feed,
       binance_feed), the `wallet_state_cache` and `price_cache`
       they fan into, the UI `/ws` channels (`opportunities_update`,
       `scanner_status`, `trade_executed`, `init`,
       `subscribed`, `ping`/`pong`), and the Redis pub/sub
       channels (trader_events, signal_bus, wallet deltas).
-- [ ] Document the **Polymarket exclusivity** invariant
+- [x] Document the **Polymarket exclusivity** invariant
       (single user-channel WS per API key — the load-bearing
       reason for one trading plane).
-- [ ] Add a `Last verified: YYYY-MM-DD` line.
-- [ ] Cross-link from `system-overview.md` "Cross-plane
+- [x] Add a `Last verified: YYYY-MM-DD` line.
+- [x] Cross-link from `system-overview.md` "Cross-plane
       communication" and from `frontend-architecture.md`.
-- [ ] Mark completed
+- [x] Mark completed
 
 ### Task 4: `execution-and-fills.md`
 
@@ -138,7 +138,7 @@ a fill. They are barely documented; folklore says retraining is
 operator-controlled, latency budgets are tight, and the slippage
 knob lives somewhere.
 
-- [ ] Author `docs/plans/architecture/execution-and-fills.md`:
+- [x] Author `docs/plans/architecture/execution-and-fills.md`:
       shadow path (execution_simulator → Cox-PH → simulation_trades
       / simulation_positions, fill_simulator_refresh_worker
       schedule), live path (live_execution_service →
@@ -147,12 +147,12 @@ knob lives somewhere.
       position-mark loop. Document `slippage_bps`,
       `max_spread_bps`, `price_policy: taker_market`
       diagnostic levers from `trader-pipeline.md` Step 7.
-- [ ] Add a `Last verified: YYYY-MM-DD` line.
-- [ ] Cross-link from
+- [x] Add a `Last verified: YYYY-MM-DD` line.
+- [x] Cross-link from
       [`trader-pipeline.md`](architecture/trader-pipeline.md)
       Stage 6/7 and from
       [`copy-trade-pipeline.md`](architecture/copy-trade-pipeline.md).
-- [ ] Mark completed
+- [x] Mark completed
 
 ### Task 5: `strategy-reverse-engineer.md`
 
@@ -163,7 +163,7 @@ strategy until it matches the wallet's behaviour. Touched in
 job table, its own iterations table, its own cost ceiling, and
 its own tools registry distinct from Cortex.
 
-- [ ] Author `docs/plans/architecture/strategy-reverse-engineer.md`:
+- [x] Author `docs/plans/architecture/strategy-reverse-engineer.md`:
       pipeline (enqueue_job → agent loop with
       polybacktest_find_markets / polybacktest_import /
       submit_strategy_candidate / get_backtest_result /
@@ -175,11 +175,11 @@ its own tools registry distinct from Cortex.
       `reverse_engineer_max_cost_usd`,
       `reverse_engineer_max_wallet_trades`), report_mode
       semantics (`report` vs `strategy_seed`).
-- [ ] Add a `Last verified: YYYY-MM-DD` line.
-- [ ] Cross-link from `ai-and-llm.md` "Research and
+- [x] Add a `Last verified: YYYY-MM-DD` line.
+- [x] Cross-link from `ai-and-llm.md` "Research and
       supervision" section (replace the inline summary with a
       pointer).
-- [ ] Mark completed
+- [x] Mark completed
 
 ### Task 6: Backfill `Last verified` on existing architecture notes
 
@@ -191,46 +191,51 @@ code. Do not bump the date on a note this plan does not actively
 re-verify; leave it stamped at "today" only when a real diff was
 done.
 
-- [ ] `system-overview.md`
-- [ ] `backend-architecture.md`
-- [ ] `frontend-architecture.md`
-- [ ] `settings-and-secrets.md`
-- [ ] `database-and-migrations.md`
-- [ ] `testing.md`
-- [ ] `llm-provider-layer.md`
-- [ ] `trader-pipeline.md`
-- [ ] `copy-trade-pipeline.md`
-- [ ] `market-filter.md`
-- [ ] `worker-trading.md`
-- [ ] `ai-and-llm.md`
-- [ ] Mark completed
+- [x] `system-overview.md`
+- [x] `backend-architecture.md`
+- [x] `frontend-architecture.md`
+- [x] `settings-and-secrets.md`
+- [x] `database-and-migrations.md`
+- [x] `testing.md`
+- [x] `llm-provider-layer.md`
+- [x] `trader-pipeline.md`
+- [x] `copy-trade-pipeline.md`
+- [x] `market-filter.md`
+- [x] `worker-trading.md`
+- [x] `ai-and-llm.md`
+- [x] Mark completed
 
 ### Task 7: Cross-link sweep
 
 After Tasks 1–6 land, the index files need to learn about the
 new notes and the marker convention.
 
-- [ ] `system-overview.md` "Where to look next" table — add
+- [x] `system-overview.md` "Where to look next" table — add
       rows for `worker-news.md`, `worker-discovery.md`,
       `websocket-and-events.md`, `execution-and-fills.md`,
       `strategy-reverse-engineer.md`.
-- [ ] `CLAUDE.md` "Where to find more" — same five rows.
-- [ ] `plan-control-index.md` Cross-references list — same
+- [x] `CLAUDE.md` "Where to find more" — same five rows.
+- [x] `plan-control-index.md` Cross-references list — same
       five rows.
-- [ ] `agents.md` — add a one-line note in the "Where AI
+- [x] `agents.md` — add a one-line note in the "Where AI
       agents start" section (created by plan 0012) that
       `Last verified` markers exist and `/sync-docs`
       consumes them.
 - [ ] Run `/sync-docs 50` and confirm it reports green for
-      every architecture note touched by this plan.
-- [ ] Mark completed
+      every architecture note touched by this plan. (Manual.)
+- [x] Mark completed
 
 ### Task 8: Close-out
 
-- [ ] Run all Validation Commands locally; all pass.
-- [ ] `git log --grep='Plan: 0013'` shows the full commit set.
-- [ ] `git mv docs/plans/0013-architecture-doc-gap-audit.md
+- [x] Run all Validation Commands locally; all pass.
+- [x] `git log --grep='Plan: 0013'` shows the full commit set.
+- [x] `git mv docs/plans/0013-architecture-doc-gap-audit.md
       docs/plans/completed/`.
-- [ ] Update the row in `plan-control-index.md` to point at the
+- [x] Update the row in `plan-control-index.md` to point at the
       `completed/` path.
-- [ ] Mark completed
+- [x] Mark completed
+
+(Note: the `git mv` and the `plan-control-index.md` row update are
+performed in the close-out commit immediately below; checkboxes are
+flipped to `[x]` synchronously with that commit so the moved file
+already shows the closed state.)

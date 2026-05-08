@@ -258,3 +258,5 @@ The layer already supports this via `AppSettings.llm_model_assignments`
   (`nvidia/`, `together/`, …) is placed **before** the pair, not in
   place of it: e.g. `nvidia/meta/llama-3.3-70b-instruct`. Otherwise
   `detect_provider` confuses it with OpenRouter.
+
+Last verified: <unverified>

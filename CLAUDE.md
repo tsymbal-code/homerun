@@ -138,6 +138,11 @@ ssh polyhome-1 'cd /home/polyhome/homerun && docker compose restart backend'
 | LLM provider layer (transport: providers, routing, keys) | [`docs/plans/architecture/llm-provider-layer.md`](docs/plans/architecture/llm-provider-layer.md) |
 | **Trader pipeline + "why isn't bot X opening positions"** | [`docs/plans/architecture/trader-pipeline.md`](docs/plans/architecture/trader-pipeline.md) |
 | **`worker-trading` process model + GIL bottleneck options** | [`docs/plans/architecture/worker-trading.md`](docs/plans/architecture/worker-trading.md) |
+| **`worker-news` plane (workflow orchestrator, FAISS, Cox trainer, weather)** | [`docs/plans/architecture/worker-news.md`](docs/plans/architecture/worker-news.md) |
+| **`worker-discovery` plane (wallet discovery, backtests, reverse-engineer queue)** | [`docs/plans/architecture/worker-discovery.md`](docs/plans/architecture/worker-discovery.md) |
+| **Live feeds, UI `/ws`, Redis pub/sub, in-process event bus** | [`docs/plans/architecture/websocket-and-events.md`](docs/plans/architecture/websocket-and-events.md) |
+| **Cox-PH fill simulator, live execution, reconciliation, redeemer** | [`docs/plans/architecture/execution-and-fills.md`](docs/plans/architecture/execution-and-fills.md) |
+| **LLM-driven wallet-mimicry pipeline (separate from Cortex / Copilot)** | [`docs/plans/architecture/strategy-reverse-engineer.md`](docs/plans/architecture/strategy-reverse-engineer.md) |
 | **Runtime knob-twists (DB-only, not in git): rollback recipes** | [`docs/operational/runtime-tweaks.md`](docs/operational/runtime-tweaks.md) |
 | Active plan queue and ordering | [`docs/plans/plan-control-index.md`](docs/plans/plan-control-index.md) |
 | UI walkthrough, sandbox/demo mode | [`docs/UI_AND_DEMO_MODE.md`](docs/UI_AND_DEMO_MODE.md) |

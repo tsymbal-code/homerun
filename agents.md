@@ -92,9 +92,14 @@ Every new Cursor rule, Claude command, or subagent gets a one-line
 entry in the table above. If the table grows past one screen, split
 it by area — but keep this file as the single index.
 
-The `Last verified: YYYY-MM-DD` line at the bottom of every
-architecture note is consumed by `/sync-docs`. Bump it only after a
-real diff against code; do not stamp it as a reflex.
+Every architecture note in `docs/plans/architecture/` ends with a
+`Last verified: YYYY-MM-DD` line (or `<unverified>` for notes that
+haven't been audited against code yet). `/sync-docs` reads these
+markers to triage which note is overdue. Bump the date only after a
+real diff against code; do not stamp it as a reflex. The full set of
+notes — five new ones added by plan 0013 — is indexed in
+[`docs/plans/architecture/system-overview.md`](docs/plans/architecture/system-overview.md)
+"Where to look next".
 
 ---
 

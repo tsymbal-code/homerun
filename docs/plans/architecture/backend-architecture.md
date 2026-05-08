@@ -310,3 +310,5 @@ events to the event bus.
 - **`init_database()` is idempotent but slow on first run** because
   alembic walks the full migration list. Containers wait on the
   `migrate` service to complete to avoid duplicate work.
+
+Last verified: <unverified>

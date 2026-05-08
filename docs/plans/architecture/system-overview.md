@@ -220,4 +220,11 @@ worker plane split. They differ only in process supervision.
 | Schema, Alembic migrations, `AsyncSessionLocal` patterns | [Database & Migrations](database-and-migrations.md) |
 | AI & LLM end-to-end (what decisions, what's classical ML, how news-edge picks a market) | [AI & LLM](ai-and-llm.md) |
 | Adding/changing an LLM provider | [LLM Provider Layer](llm-provider-layer.md) |
+| `worker-news` plane (workflow orchestrator, FAISS, weather, Cox trainer) | [worker-news](worker-news.md) |
+| `worker-discovery` plane (wallet discovery, backtests, reverse-engineer queue) | [worker-discovery](worker-discovery.md) |
+| Live feeds, UI `/ws`, Redis pub/sub, in-process event bus | [WebSockets and event channels](websocket-and-events.md) |
+| Cox-PH fill simulator, live execution, reconciliation, redeemer | [Execution and fills](execution-and-fills.md) |
+| LLM-driven wallet-mimicry pipeline | [Strategy reverse-engineer](strategy-reverse-engineer.md) |
 | Copy Trade end-to-end (`source='traders'`) — leader-wallet WS to consumer trader, with the deferred-state gate that drops normal-tier signals | [Copy-Trade Pipeline](copy-trade-pipeline.md) |
+
+Last verified: <unverified>

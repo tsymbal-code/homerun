@@ -507,3 +507,5 @@ Search hints:
 | Why the trading plane is its own container | [system-overview.md](system-overview.md) |
 | LLM verification path (`llm_verify_trades=true`) | [llm-provider-layer.md](llm-provider-layer.md) |
 | Operator-applied runtime knob-twists (rollback recipes) | [`../../operational/runtime-tweaks.md`](../../operational/runtime-tweaks.md) |
+
+Last verified: <unverified>

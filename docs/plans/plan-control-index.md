@@ -58,7 +58,7 @@ notes.
 | 0010 | [Fix `trader_decisions` FK race for in-process `source='traders'` publishes](completed/0010-fix-traders-publish-fk-race.md) | R        | 0009          |
 | 0011 | [Defensive `expires_at` on skeleton `trade_signals` + retention sweep](completed/0011-skeleton-trade-signal-ttl-and-retention.md) | R        | 0010          |
 | 0012 | [Agent onboarding baseline — Cursor rules + Claude Code skills](completed/0012-agent-onboarding-baseline.md) | D        | —             |
-| 0013 | [Architecture documentation gap audit](0013-architecture-doc-gap-audit.md) | D        | 0012          |
+| 0013 | [Architecture documentation gap audit](completed/0013-architecture-doc-gap-audit.md) | D        | 0012          |
 
 When adding a row: keep this table sorted by ID ascending. Don't
 re-number plans — gaps in IDs are normal and expected (deleted or
@@ -348,9 +348,20 @@ Only notes that aren't obvious from the title. All plans must follow
   [`system-overview.md`](architecture/system-overview.md)). Notable
   recent additions:
   [`ai-and-llm.md`](architecture/ai-and-llm.md) (LLM-vs-classical-ML
-  map, news-edge "winning market" pipeline) and
+  map, news-edge "winning market" pipeline),
   [`copy-trade-pipeline.md`](architecture/copy-trade-pipeline.md)
-  (the `source='traders'` family).
+  (the `source='traders'` family),
+  [`worker-news.md`](architecture/worker-news.md) /
+  [`worker-discovery.md`](architecture/worker-discovery.md) (the
+  two non-trading planes),
+  [`websocket-and-events.md`](architecture/websocket-and-events.md)
+  (four messaging layers in one map),
+  [`execution-and-fills.md`](architecture/execution-and-fills.md)
+  (Cox-PH shadow + live submit), and
+  [`strategy-reverse-engineer.md`](architecture/strategy-reverse-engineer.md)
+  (wallet-mimicry pipeline).
+  Every note ends with `Last verified: YYYY-MM-DD` (introduced by
+  plan 0013); `/sync-docs` consumes it.
 - Agent scaffolding (Cursor rules, Claude Code commands, subagents):
   [`agents.md`](../../agents.md) § "Where AI agents start" — single
   index. The `/sync-docs` command in

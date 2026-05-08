@@ -287,3 +287,5 @@ Two notes for plan authors:
   (`<service>_<field>` shows up in DB, Pydantic, TS, and UI), a
   rename is a 6-file diff plus an Alembic migration with `op.alter_column`.
   Prefer additions and mark old fields deprecated rather than rename.
+
+Last verified: <unverified>
