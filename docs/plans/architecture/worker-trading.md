@@ -654,3 +654,5 @@ build pipeline for something else" item, not a solo project.
   Option 1.
 - [Trader Pipeline](trader-pipeline.md) — sibling note covering the
   business-side data flow rather than the process model.
+
+Last verified: <unverified>

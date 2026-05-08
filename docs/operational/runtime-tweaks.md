@@ -1148,3 +1148,135 @@ canonical recipe. No special rollback is needed.
 
 CLOSED — fix shipped on `polyhome-1`. Closes the OPEN item from
 the `2026-05-08 ~05:00 UTC` entry above.
+
+---
+
+## 2026-05-08 ~10:30 UTC — Plan 0011: defensive `expires_at` on skeleton rows + stuck-skeleton retention sweep
+
+- **Surface**: code (`backend/services/intent_runtime.py`,
+  `backend/services/skeleton_signal_retention.py`,
+  `backend/workers/host.py`, `backend/config.py`).  No DB tweak —
+  three new config knobs default in code, no migration.
+- **Applied via**: plan 0011
+  ([`docs/plans/0011-skeleton-trade-signal-ttl-and-retention.md`](../plans/0011-skeleton-trade-signal-ttl-and-retention.md)),
+  redeploy via `BUILD_IMAGES=0 ./deploy/sync_remote.sh`.
+- **Why**: Plan 0010's publish-side skeleton-INSERT closed the
+  in-process FK race for the `traders` source by committing a
+  `(source, dedupe_key)` placeholder row in `trade_signals`
+  BEFORE the projection loop's UPSERT.  The skeleton was
+  committed with `expires_at = NULL`.  If `publish_opportunities`
+  dies between the skeleton commit and the projection-loop UPSERT
+  (process kill, connection drop, unhandled exception, mid-call
+  `docker compose restart`), the skeleton row stays in
+  `trade_signals` with `payload_json IS NULL`, `runtime_sequence
+  IS NULL`, `status='pending'`, `expires_at IS NULL` forever.
+  In the steady state the next genuine publish for the same
+  dedupe_key adopts the stuck row's id (Plan 0010's ON CONFLICT
+  DO NOTHING + re-SELECT path), so the system self-heals — but
+  a dedupe_key that never republishes leaves its skeleton in the
+  table forever.  The existing `_run_trade_signal_pruner_loop`
+  keys on `expires_at < now()` so it cannot reach `expires_at IS
+  NULL` orphans.  Plan 0011 adds two safeguards: (a) defensive
+  `expires_at = now + INTENT_RUNTIME_SKELETON_TTL_SECONDS` on
+  every skeleton-INSERTed row, and (b) a discovery-plane sweep
+  (`services.skeleton_signal_retention.prune_stuck_skeletons`)
+  that DELETEs orphaned skeletons matching `payload_json IS NULL
+  AND runtime_sequence IS NULL AND status='pending' AND created_at
+  < now() - max_age` outright (no status flip — they never
+  carried any consumer-visible state).
+- **Chosen defaults**:
+
+  | Knob | Default | Rationale |
+  |---|---:|---|
+  | `INTENT_RUNTIME_SKELETON_TTL_SECONDS` | 300 (5 min) | Generous; the projection loop commits within ~500 ms in steady state.  Strategy expires_at always wins via the projection's own UPSERT. |
+  | `INTENT_RUNTIME_SKELETON_RETENTION_INTERVAL_SECONDS` | 900 (15 min) | Cheap DELETE; orphans are rare so a frequent sweep is wasted cost. |
+  | `INTENT_RUNTIME_SKELETON_RETENTION_MAX_AGE_SECONDS` | 3600 (1 h) | Service-level helper additionally clamps caller value to `>= 60` to avoid racing the projection loop in dev / under heavy load. |
+
+- **Verification commands**:
+
+  ```bash
+  # Steady-state stuck-skeleton count (Tier 2 monitoring; should be 0).
+  ssh polyhome-1 "cd /home/polyhome/homerun && docker compose exec -T postgres \
+    psql -U homerun -d homerun -c \"select count(*) stuck_skeletons \
+    from trade_signals where payload_json is null \
+      and runtime_sequence is null and status='pending' \
+      and created_at < now() - interval '1 minute'\""
+
+  # Tier 1 invariant (Plan 0009 + Plan 0010); should report without_seq=0.
+  ssh polyhome-1 "cd /home/polyhome/homerun && docker compose exec -T postgres \
+    psql -U homerun -d homerun -c \"select strategy_type, status, count(*) n, \
+    sum((runtime_sequence is not null)::int) with_seq, \
+    sum((runtime_sequence is null)::int) without_seq \
+    from trade_signals \
+    where strategy_type in ('traders_copy_trade','traders_confluence') \
+      and status != 'pending' and payload_json is not null \
+      and created_at > now() - interval '5 minutes' \
+    group by strategy_type, status order by 1, 2\""
+
+  # Confirm the retention loop is alive on the discovery plane.
+  ssh polyhome-1 "cd /home/polyhome/homerun && docker compose logs --since 16m worker-discovery 2>&1 | \
+    grep -E 'skeleton-signal-retention|Pruned stuck trade_signals' | tail -10"
+  ```
+
+  Plus: inject a stuck skeleton manually via psql to exercise the
+  sweep end-to-end (the 5-step reproducer is in plan 0011
+  Task 6).
+
+### Changes
+
+| Path | Before | After |
+|---|---:|---:|
+| `intent_runtime.publish_opportunities` skeleton row | `expires_at` absent → SQL NULL → invisible to terminal-row pruner | `expires_at = now + INTENT_RUNTIME_SKELETON_TTL_SECONDS` (default 300 s) |
+| `worker-discovery` background tasks | terminal-row pruner only on trading plane | adds `skeleton-signal-retention` loop (DELETE every 15 min for orphans older than 1 h) |
+| `backend/config.py` | — | three new env-overridable knobs (TTL, retention interval, retention max age) |
+
+### Rollback
+
+The retention sweep is opt-in via the discovery plane's task list;
+removing it from `host.py` (one `if self._plane_name == 'discovery'`
+block) reverts to plan-0010-era behaviour where orphan skeletons
+accumulate forever invisible to the terminal-row pruner.  Stale
+skeletons that already accumulated under that mode can be cleaned
+out manually:
+
+```sql
+DELETE FROM trade_signals
+WHERE payload_json IS NULL
+  AND runtime_sequence IS NULL
+  AND status = 'pending'
+  AND created_at < now() - interval '1 hour';
+```
+
+The defensive `expires_at` on skeleton rows is also reverted by
+removing the `"expires_at": skeleton_expires_at` line from the
+skeleton row dict; rolling back this single line returns to plan
+0010 publish-time behaviour.  None of the three config knobs
+require a migration.
+
+### Status
+
+CLOSED — fix shipped on `polyhome-1` via
+`BUILD_IMAGES=1 ./deploy/sync_remote.sh` at 2026-05-08
+~07:33 UTC.  Post-deploy verification (20-minute soak):
+
+| Check | Result |
+|---|---:|
+| 7 containers Up healthy | OK |
+| FK violations (`trader_decisions_signal_id_fkey`) since deploy | **0** |
+| Tier 1 (`without_seq=0` for `traders_copy_trade`) | **0/264** |
+| Tier 2 (stuck skeletons in steady state) | **0** |
+| Defensive `expires_at` coverage on new `traders` skeletons | **331 / 331** |
+| Retention loop alive on discovery plane | first iteration logged at 07:34:07 UTC, second at 07:49:07 UTC |
+| Manual orphan injection → reap by live loop | **deleted=1 within 14 min** (within the ≤15 min budget) |
+| `trader_decisions` outcomes (`traders_copy_trade`) | 13 selected / 158 skipped / 48 blocked |
+
+The publish path's invariant chain is now: skeleton-INSERT
+synchronously commits a `(source, dedupe_key)` row with a
+defensive TTL → projection-loop UPSERT enriches it with
+`payload_json`, `runtime_sequence`, and the strategy's intended
+`expires_at` (overwriting the TTL) → if publish dies between
+those two steps, the discovery-plane sweep DELETEs the orphan
+within at most 1 hour.  Plans 0009 + 0010 + 0011 form the
+complete fix; the FK race that surfaced after Plan 0009 unmasked
+it (and that Plan 0010 closed for the in-process consume path)
+is now defended in depth at the storage layer too.

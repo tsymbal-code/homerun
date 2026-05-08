@@ -501,8 +501,34 @@ if prefetch_dedupe_keys:
         )
         prefetched_ids = {dk: sid for sid, dk in rows.all()}
 
-# inside the lock, replacing `signal_id = uuid.uuid4().hex`
-signal_id = prefetched_ids.get(dedupe_key) or uuid.uuid4().hex
+# Skeleton-INSERT pass for dedupe_keys with no existing DB row,
+# committed BEFORE the lock so the row is visible to every consumer
+# the moment publish_opportunities returns.  ON CONFLICT (source,
+# dedupe_key) DO NOTHING is idempotent under concurrent publish; the
+# re-query covers conflict-loser dedupe_keys (peer publisher won the
+# race between prefetch and INSERT).
+committed_ids: dict[str, str] = {}
+skeleton_dedupe_keys = [dk for dk in prefetch_dedupe_keys if dk not in prefetched_ids]
+if skeleton_dedupe_keys:
+    async with AsyncSessionLocal() as session:
+        await session.execute(
+            pg_insert(TradeSignal)
+              .values(skeleton_rows)  # id, source, signal_type, market_id, dedupe_key, status='pending'
+              .on_conflict_do_nothing(index_elements=["source", "dedupe_key"])
+        )
+        await session.commit()
+        # Re-query for the canonical id of every skeleton dedupe_key.
+        ...
+        committed_ids = {dk: sid for sid, dk in after_rows.all()}
+
+# inside the lock, replacing `signal_id = uuid.uuid4().hex` — three-way
+# fallback so the in-memory cache always matches the row that exists
+# (or is about to be enriched) in trade_signals:
+signal_id = (
+    prefetched_ids.get(dedupe_key)        # existing row (post-restart staleness mode)
+    or committed_ids.get(dedupe_key)      # row we just skeleton-inserted (in-process race mode)
+    or uuid.uuid4().hex                    # fallback if both DB hops failed (logged at debug)
+)
 ```
 
 The in-memory cache is now authoritative-equal-to-DB by
@@ -528,23 +554,63 @@ remains the single owner of the actual `trade_signals` write.
    pre-Plan-0009 workaround was to set the bot to `fast`;
    that workaround is now obsolete and should be reverted
    if it's still in place.)
-2. **Monitor the post-fix invariant.** The DB query
+2. **Monitor the post-fix invariants.** Plan 0009 + Plan 0010 +
+   Plan 0011 produce a two-tier monitoring scheme: a steady-state
+   alert that tolerates publish-time transients, and a stuck-
+   skeleton alert that detects publish-side failures.
+
+   **Tier 1 — steady-state (production alerting).** The DB query
    ```sql
    select strategy_type, status, count(*) n,
      sum((runtime_sequence is not null)::int) with_seq,
      sum((runtime_sequence is null)::int)     without_seq
    from trade_signals
    where strategy_type in ('traders_copy_trade','traders_confluence')
+     and status != 'pending'
+     and payload_json is not null
      and created_at > now() - interval '5 minutes'
    group by strategy_type, status order by 1, 2;
    ```
-   should always show `without_seq = 0` for both rows. If
-   `traders_copy_trade` ever shows `without_seq > 0` again,
-   either someone reverted the fix or someone added a new
-   strategy to the `traders` source that explicitly sets
-   `execution_activation` and is producing the deferred
-   state — investigate before assuming the fix is intact.
-3. **Add new sources to the allow-list explicitly.** The
+   should always show `without_seq = 0` for both rows.
+   The `payload_json is not null` filter excludes the publish-time
+   transient (Plan 0010 commits a skeleton ~10–500 ms before the
+   projection loop enriches it; that's healthy in-flight state,
+   not a regression). The `status != 'pending'` filter excludes
+   skeletons too (they ship with `status='pending'`).
+
+   **Tier 2 — stuck-skeleton (Plan 0011).** A skeleton older than
+   the projection's drain budget is an orphan — `publish_opportunities`
+   died between the skeleton commit and the projection's UPSERT.
+   The retention sweep on the discovery plane DELETEs rows older
+   than `INTENT_RUNTIME_SKELETON_RETENTION_MAX_AGE_SECONDS`
+   (default 1 h), and Plan 0011 stamps a defensive
+   `expires_at = now() + INTENT_RUNTIME_SKELETON_TTL_SECONDS`
+   (default 5 min) so the existing terminal-row pruner can also
+   reach orphans.  Operator monitoring query:
+   ```sql
+   select count(*) stuck_skeletons from trade_signals
+   where payload_json is null
+     and runtime_sequence is null
+     and status = 'pending'
+     and created_at < now() - interval '1 minute';
+   ```
+   Should always be 0 in steady state. A non-zero result means
+   the publish path is dying mid-call (process kill, connection
+   drop, unhandled exception). Correlate with `worker-trading`
+   logs for `publish_opportunities` exceptions.
+3. **`traders_copy_trade` does NOT belong in `_PREWARM_SOURCES`.**
+   Plan 0009 fixed the explicit `ws_post_arm_tick` gate, but
+   `intent_runtime.py` retains a second deferred-state path keyed
+   by `_PREWARM_SOURCES = {"scanner"}` (see
+   [`intent_runtime.py:76, 2308, 2373`](../../../backend/services/intent_runtime.py)).
+   If a future change adds `"traders"` to that set, Copy Trade
+   signals will once again be deferred until the leader-wallet
+   token IDs receive a strict-WS quote — for tokens that aren't
+   in the CLOB feed subscription, that quote may never arrive,
+   and we'll be back to the pre-0009 symptom. Document any
+   addition to `_PREWARM_SOURCES` and re-run Plan 0008's
+   diagnostic queries before merging.
+4. **Add new sources to the allow-list explicitly.** The
    warn-once log line surfaces the next missing source key,
    but it does not fail closed. If you see
    `WARNING signal_bus: Unknown strategy source_key '...'`
@@ -552,7 +618,15 @@ remains the single owner of the actual `trade_signals` write.
    `_EXECUTION_ACTIVATION_BY_SOURCE_KEY` (and, if it needs
    strict-WS pricing, also in
    `intent_runtime._uses_runtime_price_revalidation` /
-   `_PREWARM_SOURCES`).
+   `_PREWARM_SOURCES`). Note that **four production strategies
+   currently have unregistered source keys** that fall through
+   to the `_DEFAULT_EXECUTION_ACTIVATION = "immediate"` branch
+   with a one-time WARN: `weather` (`weather_distribution.py`),
+   `manual` (`manual_manage_hold.py`), `sports`
+   (`sports_overreaction_fader.py`), `news` (`news_edge.py`).
+   These are all empirically active in shadow today; the safe
+   default is correct for them, but registering them
+   explicitly silences the WARN and locks the contract.
 
 ## Conclusion
 
@@ -576,10 +650,24 @@ without a registered policy.
 Plan 0010 then closed the publish-side FK race that the
 runtime-sequence gate had masked: `publish_opportunities`
 prefetches the canonical `(source, dedupe_key) → id` mapping
-from `trade_signals` before allocating ids, so the in-memory
-cache is authoritative-equal-to-DB by construction and the
-orchestrator's `_ensure_runtime_signal_persisted` never has
-a unique-constraint conflict to silently swallow.
+from `trade_signals` before allocating ids, AND synchronously
+skeleton-INSERTs a `(source, dedupe_key)` placeholder row for
+genuinely new dedupe keys before pinging consumers. The
+in-memory cache is authoritative-equal-to-DB by construction
+and the orchestrator's `_ensure_runtime_signal_persisted`
+never has a unique-constraint conflict to silently swallow.
+
+Plan 0011 hardened the orphan path of Plan 0010's skeleton
+INSERT: the skeleton row now ships with a defensive
+`expires_at = now + INTENT_RUNTIME_SKELETON_TTL_SECONDS`
+(so the existing `_run_trade_signal_pruner_loop` can reach
+orphans), and a new retention sweep on the discovery plane
+(`services.skeleton_signal_retention.prune_stuck_skeletons`)
+DELETEs orphaned skeletons (`payload_json IS NULL AND
+runtime_sequence IS NULL AND status='pending' AND
+created_at < now() - max_age`) outright every 15 min.
+Operators monitor the orphan count via the Tier 2 query in
+**Operational guidance**.
 
 The deferred-state branches in `publish_opportunities`
 (lines 2129-2141 and 2186-2195) remain as defensive code
@@ -588,16 +676,23 @@ but are not reachable from any current source key.
 ## Open questions
 
 None. Plan 0009 closed the runtime-sequence gate; Plan 0010
-closed the FK race that gate had been masking. Two
-post-fix invariants apply:
+closed the FK race that gate had been masking; Plan 0011
+hardened the skeleton-INSERT orphan path.  Three post-fix
+invariants apply:
 
-1. `without_seq = 0` for `traders_*` rows in the DB query
-   from **Operational guidance** (Plan 0009).
+1. `without_seq = 0` for `traders_*` rows in the Tier 1 DB
+   query from **Operational guidance** (Plan 0009).
 2. Zero `trader_decisions_signal_id_fkey` violations for
    `traders_copy_trade` over a 30-minute soak under
    steady-state load (Plan 0010, validated by the four
    post-deploy checks listed in plan 0010's
    `## Validation Commands`).
+3. `stuck_skeletons = 0` in the Tier 2 DB query from
+   **Operational guidance** — i.e. no skeleton row sits
+   in `trade_signals` for more than 1 minute without the
+   projection loop committing its UPSERT (Plan 0011,
+   enforced both by the defensive `expires_at` TTL and by
+   the discovery-plane retention sweep).
 
 ## See also
 
@@ -607,4 +702,7 @@ post-fix invariants apply:
 - [`docs/plans/completed/0008-investigate-traders-source-routing-on-normal.md`](../completed/0008-investigate-traders-source-routing-on-normal.md) — the investigation plan that produced this note.
 - [`docs/plans/completed/0009-fix-traders-source-on-normal.md`](../completed/0009-fix-traders-source-on-normal.md) — runtime-sequence gate fix.
 - [`docs/plans/completed/0010-fix-traders-publish-fk-race.md`](../completed/0010-fix-traders-publish-fk-race.md) — publish-side FK race fix (publish-time id adoption from `trade_signals`).
+- [`docs/plans/0011-skeleton-trade-signal-ttl-and-retention.md`](../0011-skeleton-trade-signal-ttl-and-retention.md) — defensive `expires_at` on skeleton-INSERTed rows + stuck-skeleton retention sweep on the discovery plane.
 - [`docs/plans/architecture/_appendix/0008-baseline-2026-05-07.txt`](_appendix/0008-baseline-2026-05-07.txt) — baseline data captured during investigation.
+
+Last verified: <unverified>
