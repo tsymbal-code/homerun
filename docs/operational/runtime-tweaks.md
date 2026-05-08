@@ -1280,3 +1280,190 @@ within at most 1 hour.  Plans 0009 + 0010 + 0011 form the
 complete fix; the FK race that surfaced after Plan 0009 unmasked
 it (and that Plan 0010 closed for the in-process consume path)
 is now defended in depth at the storage layer too.
+
+---
+
+## 2026-05-08 ~15:50 UTC — relax shadow gates so `selected → trader_orders` materializes (orchestrator + Copy Trade bot)
+
+- **Surface**: orchestrator `global_runtime` (`app_settings`-backed)
+  + bot `risk_limits_json` for `Sandbox - Traders Copy Trade` +
+  new UI surface in `TradingPanel.tsx` for the previously
+  API-only `runtime_trigger_cycle_timeout_seconds` knob.
+- **Applied via**: UI (Trading Panel → Settings; per-bot Risk
+  Limits) + one-shot `curl PUT /api/trader-orchestrator/settings`
+  for the new knob (UI now also exposes it).
+- **Why**: throughout 2026-05-07 / 2026-05-08 the shadow stack
+  produced steady `selected` decisions (≥100/h on
+  `traders_copy_trade`) but **0 `trader_orders`**.  Multiple
+  causes intersected.  The two operator-tunable ones identified
+  while reading `trader_decision_checks`:
+  1. `Strict WS pricing source` rejected entries because the
+     in-process WS ladder lagged the snapshot freshness budget;
+  2. `Source notional floor` and shadow ordersize hit
+     `max_trade_notional_usd=5` before the strategy could
+     express any meaningful position.
+
+  Concurrently, runtime-trigger cycles fired by `signals.publish`
+  ran with the hard-coded fallback `_RUNTIME_TRIGGER_DEFAULT_CYCLE_TIMEOUT_SECONDS = 10.0`
+  (`backend/workers/trader_orchestrator_worker.py:934` family).
+  The 10 s budget is too tight for Cox-PH + microstructure +
+  multi-gate evaluation under shadow load — heavy cycles
+  reliably timed out before reaching the order-write path.
+  Orchestrator settings already had a JSON-only knob
+  `runtime_trigger_cycle_timeout_seconds`
+  (`backend/api/routes_trader_orchestrator.py:160`, validator
+  range `3.0 – 60.0`) but the Settings sheet in
+  `TradingPanel.tsx` did not expose it.
+- **Important correction to a prior assistant note**: an earlier
+  draft of this journal entry claimed `session_engine` does not
+  write `trader_orders` in shadow because of the
+  `if mode == "live"` block at
+  `backend/services/trader_orchestrator/session_engine.py:1530`.
+  That is **wrong**.  Line 1530 is the *pre-submit* placeholder
+  (idempotency keying for live submission only); the
+  *post-execution* path at
+  `backend/services/trader_orchestrator/session_engine.py:2604`
+  (`build_trader_order_row(...)` + `trader_orders.append(...)`)
+  runs unconditionally for both shadow and live legs.  The
+  classic / `latency_class=normal` pipeline therefore IS the
+  ML-feeding path in shadow — switching every bot to `fast` is
+  not a prerequisite for `trader_orders` to appear.  All seven
+  active bots stay on `latency_class=normal` (the single
+  exception, `Sandbox - Tail-End`, is on `fast` because the
+  strategy is single-leg by design and predates the ML
+  refactor — leave it).  This is the operator's explicit policy:
+  classic-only so ML training data is consistent and dry-run
+  results are representative of the live path.
+
+### Changes
+
+| Path | Before | After |
+|---|---:|---:|
+| Orchestrator → Live Market Context → `Strict WS Pricing Only` | `true` | `false` |
+| Orchestrator → Live Market Context → `Max Market Data Age (ms)` | `10000` (10 s) | `20000` (20 s) |
+| Orchestrator → Loop → `Runtime-Trigger Cycle Timeout (seconds)` | unset → hard-coded 10 s default | `45` |
+| `Sandbox - Traders Copy Trade` → Risk Limits → `max_trade_notional_usd` | `5.0` | `25.0` |
+| `Sandbox - Traders Copy Trade` → Risk Limits → `max_position_notional_usd` | `5.0` | `5.0` (unchanged — operator only raised per-trade size) |
+| `frontend/src/components/TradingPanel.tsx` Settings sheet | `runtime_trigger_cycle_timeout_seconds` not surfaced | new "Runtime-Trigger Cycle Timeout" input next to "Trader Cycle Timeout" |
+| `frontend/src/services/apiTraders.ts` `TraderOrchestratorConfig.global_runtime` | missing field | adds `runtime_trigger_cycle_timeout_seconds: number \| null` |
+| `backend/services/trader_orchestrator_state.py` `_normalize_global_runtime_settings` + `compose_trader_orchestrator_config` | did not read or echo `runtime_trigger_cycle_timeout_seconds` | normalizes it (clamp `3.0..60.0`) and echoes it on `GET /api/trader-orchestrator/status` |
+
+### Verification commands
+
+```bash
+# Orchestrator runtime — confirm the three knobs landed
+ssh polyhome-1 'curl -fsS http://127.0.0.1:8888/api/trader-orchestrator/status' \
+  | python3 -c "
+import json, sys
+gr = json.load(sys.stdin)['config']['global_runtime']
+print('strict_ws_pricing_only:', gr['live_market_context']['strict_ws_pricing_only'])
+print('max_market_data_age_ms:', gr['live_market_context']['max_market_data_age_ms'])
+print('runtime_trigger_cycle_timeout_seconds:', gr.get('runtime_trigger_cycle_timeout_seconds'))
+print('trader_cycle_timeout_seconds:', gr.get('trader_cycle_timeout_seconds'))
+"
+# Expected output:
+#   strict_ws_pricing_only: False
+#   max_market_data_age_ms: 20000
+#   runtime_trigger_cycle_timeout_seconds: 45.0
+#   trader_cycle_timeout_seconds: 60.0
+
+# Per-bot risk limits — confirm Copy Trade got the bump
+ssh polyhome-1 "cd /home/polyhome/homerun && docker compose exec -T postgres \
+  psql -U homerun -d homerun -c \"select name, latency_class, \
+    (risk_limits_json->>'max_trade_notional_usd')::float trade_cap, \
+    (risk_limits_json->>'max_position_notional_usd')::float pos_cap \
+    from traders where is_enabled and not is_paused order by name\""
+
+# Shadow trader_orders flow — should grow if the gates were the actual blocker
+ssh polyhome-1 "cd /home/polyhome/homerun && docker compose exec -T postgres \
+  psql -U homerun -d homerun -c \"select \
+    count(*) filter (where created_at > now() - interval '30 minutes') orders_30m, \
+    count(*) filter (where created_at > now() - interval '10 minutes') orders_10m, \
+    max(created_at) last_order_at \
+    from trader_orders where mode='shadow'\""
+
+# Decision distribution — sanity that bots are still firing
+ssh polyhome-1 "cd /home/polyhome/homerun && docker compose exec -T postgres \
+  psql -U homerun -d homerun -c \"select decision, count(*) n \
+    from trader_decisions where created_at > now() - interval '60 minutes' \
+    group by decision order by n desc\""
+
+# Stage failure attribution — what's still gating selected → orders
+ssh polyhome-1 "cd /home/polyhome/homerun && docker compose exec -T postgres \
+  psql -U homerun -d homerun -c \"select check_label, count(*) n \
+    from trader_decision_checks \
+    where created_at > now() - interval '60 minutes' \
+      and not passed \
+    group by check_label order by n desc limit 15\""
+```
+
+### Rollback
+
+Each tweak is independently revertable through the same UI
+flow that applied it (UI is the operator-facing surface; the
+storage is an `app_settings` row + a `traders.risk_limits_json`
+column, both transactional).  Direct SQL recipes if the UI is
+unreachable:
+
+```sql
+-- Orchestrator runtime knobs (atomic JSONB update; preserves the rest of the doc)
+UPDATE trader_orchestrator_control
+SET settings_json = jsonb_set(
+  jsonb_set(
+    jsonb_set(
+      settings_json,
+      '{global_runtime,live_market_context,strict_ws_pricing_only}',
+      'true'::jsonb,
+      true
+    ),
+    '{global_runtime,live_market_context,max_market_data_age_ms}',
+    '10000'::jsonb,
+    true
+  ),
+  '{global_runtime,runtime_trigger_cycle_timeout_seconds}',
+  'null'::jsonb,
+  true
+)
+WHERE id = 1;
+
+-- Copy Trade bot trade-cap revert
+UPDATE traders
+SET risk_limits_json = jsonb_set(
+  risk_limits_json,
+  '{max_trade_notional_usd}',
+  '5.0'::jsonb,
+  true
+)
+WHERE id = '61dcbeb2b9bc42bd9e9635a09ae5e0c3';
+```
+
+The `runtime_trigger_cycle_timeout_seconds` UI surface is a
+code change (one input field + one TS interface field + one
+backend normalizer entry) that lives in git; it does not have a
+"DB rollback" — revert by removing the input from
+`TradingPanel.tsx` and the field from
+`apiTraders.ts` / `trader_orchestrator_state.py`.
+
+### Status
+
+OPEN — `0 trader_orders` in the 30-minute window after the
+tweaks landed.  `trader_decisions` continues to produce
+`selected` (~110/h on the 60-minute lookback) but the path
+between `selected` and the `session_engine` post-execution
+write is still gated.  Next step: query
+`trader_decision_checks` after a fresh 30-minute soak to
+identify the remaining blocking check (likely
+`Source notional floor`, `Live liquidity floor`, or a
+`Minimum exit notional feasibility` cousin) and either tune the
+strategy parameter (vkladka **Tune** per bot) or relax the risk
+limit further.
+
+### Operator policy reminder (sticky)
+
+All bots stay on `latency_class=normal` (classic) by default.
+The fast-tier runtime is reserved for the single bot that
+explicitly needs it (`Sandbox - Tail-End`).  ML training data
+flows through the classic path — switching everything to fast
+would split the dataset and break dry-run-to-live
+representativeness.  Do not propose `latency_class=fast` as a
+generic "make orders appear" remedy.
