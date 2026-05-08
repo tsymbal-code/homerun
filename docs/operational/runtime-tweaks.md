@@ -1467,3 +1467,155 @@ flows through the classic path — switching everything to fast
 would split the dataset and break dry-run-to-live
 representativeness.  Do not propose `latency_class=fast` as a
 generic "make orders appear" remedy.
+
+## 2026-05-08 ~19:00 UTC — three new Risk Limits exposed in UI: chase-up policy, market-data age, entry-drift
+
+### Why this is needed
+
+The 24-hour audit (after the previous-section tweaks) showed
+that `trader_orders` remained at 0 for the entire day across
+**all four active bots** despite ~990 `selected` decisions.
+Cause: a single systemic blocker —
+`Execution submission: limit_price_not_executable` — fired
+4 242 times (Tail-End 96 % of decisions, NegRisk 86 %, Certainty
+Shock 78 %, Copy Trade 16 %).  The shadow simulator
+(`backend/services/optimization/execution_estimator.py`) refuses
+to fill BUY legs whenever any book level is priced above the
+strategy's `signal.entry_price`; for chase-driven strategies
+(copy-trade, news-edge, tail-end) the live ask routinely
+exceeds the leader's fill price by a few bps and the simulator
+rejects every wave.
+
+The toggle that disables this guard already lives in the code
+(`StrategySDK.allow_taker_limit_buy_above_signal_price`,
+default `false`), but it was reachable only through hand-edited
+`strategy_params` JSON — not through any UI surface.  Two
+sibling parameters had the same problem:
+
+* `max_market_data_age_ms` — only readable from
+  `strategy_params` or the env-default
+  `EXECUTION_MARKET_DATA_MAX_AGE_MS=10000`.  Per-bot tuning
+  required a strategy-schema patch.
+* `max_entry_drift_pct` — orchestrator-level (read from
+  `effective_risk_limits` in `trader_orchestrator_worker.py`),
+  but the field was missing from
+  `TRADER_RISK_FIELDS_SCHEMA`, so it never rendered in
+  `RiskLimitsView`.
+
+### What changed (in git, not DB)
+
+Backend (rebuild required):
+
+| File | Change |
+|---|---|
+| `backend/services/strategy_sdk.py` | Added `max_entry_drift_pct: 10.0`, `max_market_data_age_ms: None`, `allow_taker_limit_buy_above_signal: False` to `TRADER_RISK_DEFAULTS`; appended three field descriptors to `TRADER_RISK_FIELDS_SCHEMA`; extended `validate_trader_risk_config` with bounded coercion (drift `0–100 %`, age `50–300 000 ms`, chase-up bool). |
+| `backend/services/trader_orchestrator/decision_gates.py` | `_resolve_market_data_age_budget_ms(strategy_params, timeframe, risk_limits=None)` now falls back to `risk_limits.max_market_data_age_ms` before the env-default; both call-sites in `apply_platform_decision_gates` pass `effective_risk_limits`. |
+| `backend/services/trader_orchestrator/order_manager.py` | `_allow_taker_limit_buy_above_signal(...)` and `_aggressive_limit_buy_submit_as_gtc(...)` now accept a `risk_limits` arg and use it as the SDK-default when `strategy_params` is silent.  `submit_execution_leg(...)` and `submit_execution_wave(...)` accept and forward `risk_limits`. |
+| `backend/services/trader_orchestrator/session_engine.py` | `_submit_execution_wave_with_cancellation_protection` closure now passes `risk_limits=risk_limits` (already in scope from `execute_signal`). |
+| `backend/services/trader_orchestrator/fast_submit.py` | `execute_fast_signal(...)` accepts `risk_limits` and forwards to `submit_execution_leg`. |
+| `backend/workers/fast_trader_runtime.py` | `_submit_and_persist` reads `self._trader.get("risk_limits")` and passes through. |
+
+Tests added:
+
+* `backend/tests/test_strategy_sdk_trader_risk.py` — four new
+  cases covering normalization, clamping, empty→None
+  semantics, and schema exposure.
+* `backend/tests/test_trader_orchestrator_decision_gates.py` —
+  three cases for the `_resolve_market_data_age_budget_ms`
+  precedence chain (strategy → risk → env), plus an
+  end-to-end `apply_platform_decision_gates` case where a
+  15 000 ms-old quote passes only because
+  `risk_limits.max_market_data_age_ms = 20 000`.
+* `backend/tests/test_trader_order_manager_live.py` — four
+  cases for the `_allow_taker_limit_buy_above_signal` /
+  `_aggressive_limit_buy_submit_as_gtc` precedence chain.
+
+Frontend: **no changes**.  `RiskLimitsView` renders directly
+from the backend-published schema via `StrategyConfigForm`, so
+adding fields to `TRADER_RISK_FIELDS_SCHEMA` is enough.
+
+### Precedence (read this before tuning)
+
+For each of the three new fields the resolution order is:
+
+1. `strategy_params.<key>` (per-bot, set in **Tune** vkladka or
+   via API) — highest priority.  Lets a strategy override
+   risk-level defaults when its execution model needs it.
+2. `risk_limits.<key>` (per-bot, set in **Risk Limits** vkladka
+   — the new fields).  This is the layer the operator should
+   reach for when adjusting whole-bot behaviour.
+3. Env-default (only for `max_market_data_age_ms` →
+   `EXECUTION_MARKET_DATA_MAX_AGE_MS`; the other two default to
+   `False` / `10.0` respectively).
+
+For `max_entry_drift_pct` the orchestrator reads
+`effective_risk_limits.max_entry_drift_pct` directly (no
+strategy_params layer) — the new SDK field simply makes that
+existing read renderable in the UI.
+
+### Recommended values for shadow / dry-run
+
+These are the values that should reasonably let `selected`
+flow through to `trader_orders` without breaking the
+microstructure realism that ML training depends on:
+
+| Bot | `allow_taker_limit_buy_above_signal` | `max_market_data_age_ms` | `max_entry_drift_pct` |
+|---|---|---:|---:|
+| Sandbox - Traders Copy Trade | `true` | `20 000` | `15 %` |
+| Sandbox - Tail-End | `true` | `15 000` | `12 %` |
+| Sandbox - NegRisk | `true` | `10 000` | `10 %` |
+| Sandbox - Certainty Shock | `true` | `10 000` | `10 %` |
+| Sandbox - Market Making | leave `false` | leave empty | leave `10 %` |
+| Sandbox - Traders Confluence | leave `false` | leave empty | leave `10 %` |
+| Sandbox - Basic Arbitrage | leave `false` | leave empty | leave `10 %` |
+
+Rationale: the four chase/event-driven bots benefit from
+chase-up because the 24-h pattern is "leader fills at $X,
+market drifts to $X+ε within seconds, our limit at $X is
+rejected".  Market-Making is a maker strategy where chasing up
+defeats the spread-capture thesis.  Basic Arb / Confluence
+have other blockers (no signals or token-conflict bug) — the
+new fields don't help them.
+
+### Live-mode caveat
+
+`allow_taker_limit_buy_above_signal=true` materially relaxes
+the simulator's price discipline: BUY legs may fill at prices
+above the leader's entry by an unbounded amount (capped only
+by `max_execution_price` if the strategy supplies one).  In
+**shadow** this is the right tradeoff — every realistic
+chase-fill should be captured for ML training.  Before
+flipping a bot to **live** mode revisit each value: keep
+`max_market_data_age_ms` tight (≤ 5 000 for normal-latency
+copy-trade), reduce `max_entry_drift_pct` (≤ 5 %), and weigh
+whether chase-up should remain on for that strategy or be
+gated by an explicit `max_execution_price` per-leg cap.
+
+### How to roll back
+
+If a tweak hurts a bot, clear the field in **Risk Limits**:
+
+* `allow_taker_limit_buy_above_signal` → uncheck (defaults
+  back to `False`, which restores the original
+  `limit_price_not_executable` behaviour)
+* `max_market_data_age_ms` → leave empty (falls back to
+  strategy default → env default)
+* `max_entry_drift_pct` → leave at `10` (the historical
+  default the orchestrator already used)
+
+There is no DB-only rollback for the schema/code change —
+revert is by removing the three field descriptors from
+`TRADER_RISK_FIELDS_SCHEMA` and the matching coercion lines in
+`validate_trader_risk_config`.
+
+### Status
+
+OPEN — schema is live on the server (verified via
+`GET /api/trader-sources/schema → shared_risk_fields`), all
+three keys round-trip through `PUT /api/traders/{id}`.  No bot
+has the new fields populated yet — next step is for the
+operator to set the recommended values for the four
+chase/event bots in **Risk Limits** vkladka and observe
+whether `Execution submission: limit_price_not_executable`
+drops as the dominant blocker over a 30–60 minute soak.
+
