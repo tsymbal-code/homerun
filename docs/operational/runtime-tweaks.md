@@ -1619,3 +1619,95 @@ chase/event bots in **Risk Limits** vkladka and observe
 whether `Execution submission: limit_price_not_executable`
 drops as the dominant blocker over a 30–60 minute soak.
 
+## 2026-05-08 ~19:30 UTC — chase-up shadow simulator fix (code patch, not DB)
+
+- **Surface**: `code (backend image)`
+- **Applied via**: `code change → BUILD_IMAGES=1 ./deploy/sync_remote.sh`
+- **Why**: The previous entry exposed
+  `allow_taker_limit_buy_above_signal` in **Risk Limits**, but a
+  6-minute soak on `Sandbox - Traders Copy Trade` with the flag
+  set to `True` showed `Execution submission:
+  limit_price_not_executable` was *still* the dominant blocker —
+  82 instances vs 1 selected/cycle.  Investigation traced the
+  flag to `_resolve_execution_price_bounds`, which only adjusts
+  `max_execution_price` (a **live**-mode broker cap), while the
+  shadow path in `submit_execution_leg` always passes
+  `limit_price = price` (live mid / signal entry) to
+  `ensemble_estimate(...)`.  In a venue with any spread
+  (`ask = mid + ε`) the simulator's first iteration evaluates
+  `level.price (= ask) > limit_price (= mid)` → `break` →
+  `_empty_estimate(reason="limit_price_not_executable")`.  Net
+  effect: the toggle was **a no-op for shadow** — exactly the
+  mode where ML/dry-run lives.
+- **Code change**: `submit_execution_leg` (shadow branch) now
+  derives an **effective shadow ceiling**:
+  - Default = live mid / signal entry (existing behaviour).
+  - When `allow_taker_limit_buy_above_signal=True` and
+    `order_side="BUY"`: lift the ceiling to the **strongest
+    explicit cap** from `strategy_params` / `leg` /
+    `leg.metadata` (`max_execution_price`, `max_entry_price`,
+    `max_probability`, `_derive_min_upside_price_cap` of
+    `min_upside_percent`).  If no explicit cap exists, ceiling
+    = `1.0` (the natural binary-market boundary).
+  - Note: `max_execution_price` from
+    `_resolve_execution_price_bounds` cannot be used here
+    because that function injects the signal-price as a
+    *fallback* even when chase-up is on — the whole point of
+    chase-up is to ignore that fallback.  The shadow branch
+    therefore re-collects only the explicit caps.
+  - The lift is applied **only** to the simulator's
+    `limit_price` argument; `survival_features` still records
+    the original `price` so Cox training labels the strategy's
+    real intent, not the lifted ceiling.
+- **Files**:
+  - `backend/services/trader_orchestrator/order_manager.py` —
+    moved `_resolve_execution_price_bounds` call to top of
+    `submit_execution_leg` (was duplicated in live branch only),
+    added shadow-side `shadow_limit_price` lift block before the
+    `ensemble_estimate(...)` call.
+  - `backend/tests/test_trader_order_manager_live.py` — new test
+    `test_shadow_buy_with_chase_up_lifts_simulator_limit_so_asks_above_mid_fill`
+    that runs the same fixture twice (chase=False vs chase=True)
+    and asserts the no-chase path returns
+    `limit_price_not_executable` while the chase path produces
+    a real `executed` result.  This pins the regression so the
+    next refactor cannot silently re-introduce the no-op.
+- **Verified**:
+  - `pytest tests/test_trader_order_manager_live.py` — 17/17
+    pass on the running `worker-trading` container.
+  - 6-minute live soak after redeploy: `Execution submission`
+    fail count for `Sandbox - Traders Copy Trade` dropped from
+    82 → 1 in the same window; `selected` decisions rose from
+    ~1/hour to 9/6min (~1.5/min); `Tail-End` produced its first
+    real `trader_order` since 2026-05-07 (cancelled by its own
+    `max_probability=0.905` cap when the market drifted above
+    that — strategy-level rejection, **not** the
+    `limit_price_not_executable` simulator artifact).
+- **Live-mode caveat**: This is a **shadow-only** path; the live
+  branch was already correct (live broker enforces
+  `max_execution_price` from
+  `_resolve_execution_price_bounds`).  The patch does **not**
+  weaken live-mode price discipline.
+- **Rollback**: `git revert` the order_manager.py changes (the
+  test file's new test will then fail and surface the
+  regression).  No DB-only rollback exists for code paths.
+
+### Status
+
+OPEN — chase-up now functional for shadow.  Remaining blockers
+on `Sandbox - Traders Copy Trade` per 30-min soak (in order of
+volume): `Source notional floor`, `Adverse entry drift limit`
+(despite `max_entry_drift_pct=15`, this gate is the
+**strategy-level** symmetric drift check, not the risk-limit
+one), `Stacking guard` (already-occupied markets — copy trader
+seeing the same wallet's repeated trades), `Minimum exit
+notional feasibility` (driven by current
+`max_trade_notional_usd=5` ⇒ exit notional often <$2; raising
+to 25 unblocks this for Copy Trade but increases shadow capital
+at risk per trade).  Next investigation: why
+`SessionExecutionResult.orders_written=1` appears in
+`worker-trading` logs but `trader_orders`/`simulation_trades`
+remain empty for the Copy Trade cycles ending 17:27–17:28 —
+suggests a shadow commit or persistence path that the
+chase-up patch did not exercise.  Tracking separately.
+
