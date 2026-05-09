@@ -363,6 +363,40 @@ For shadow mode, this is almost always **Cox-PH `limit_price_not_executable`**
 on the chosen entry price. Loosen `slippage_bps`, `max_spread_bps`,
 or switch `price_policy: taker_market` for diagnosis.
 
+If `exec_sessions = 0` despite `decisions.decision='selected'` rows
+existing, and the orchestrator log shows a successful submission
+without a matching `execution_session persisted` INFO line, the
+canonical cause is the **commit-missing failure mode** in
+`_persist_execution_projection` (commit `936f96a4`,
+`runtime-tweaks.md` 2026-05-09 entry). Signature:
+
+- `selected` decisions accumulate normally
+- `trader_open_positions` blocker fires on > 80 % of cycles
+- `execution_sessions`, `trader_orders`, `trader_positions` all empty
+- no rollback log line, no Cox-PH reason
+- INFO `execution_session persisted` is **absent** (the permanent
+  fingerprint added by the fix); ERROR
+  `execution_session persist commit failed` is also absent (no
+  exception was raised — the rollback came from the async session
+  close, not an error path)
+
+The fix added `await self.db.commit()` at the end of
+`_persist_execution_projection`. If the symptom returns after a
+refactor of the persister, run the regression test
+`test_execute_signal_shadow_persists_with_commit_so_async_session_close_does_not_rollback`
+before any deeper investigation — it pins the invariant.
+
+Note: shadow trades land in `trader_orders` (`mode='shadow'`) +
+`trader_positions` + `execution_sessions`, **not** in
+`simulation_trades` / `simulation_positions`. The latter are
+owned by the legacy standalone simulator
+([`services/simulation/execution_simulator.py`](../../../backend/services/simulation/execution_simulator.py))
+and are empty in current production. The Step 7 diagnostic SQL
+above predates this clarification — when `sim_trades = 0` for a
+shadow bot, that is normal; check `trader_orders` instead. See
+[`execution-and-fills.md`](execution-and-fills.md) § "Shadow path"
+for the current ledger surface.
+
 ### Step 8 — Worker-trading log slice
 
 When the SQL views above conflict (e.g. signals exist, decisions
@@ -442,6 +476,21 @@ Search hints:
   the bot field overrides it. If both are empty, decisions stay
   `selected` but no `simulation_trades` rows appear — the symptom
   looks like Step 7 fill failure but is actually configuration.
+- **`_persist_execution_projection` must commit.** A subtle race
+  killed shadow trading on 2026-05-09: the persister flushed
+  `trader_orders` / `execution_sessions` / `trader_positions`
+  rows but did not commit, and async session close rolled them
+  back. Symptom looked like Step 7 fill failure but
+  `execution_sessions` was empty too.  Fix: commit
+  `936f96a4` adds explicit `await self.db.commit()` at the end
+  of the projection persister, with rollback + ERROR log on
+  failure (`execution_session persist commit failed`) and INFO
+  log on success (`execution_session persisted`). Regression
+  test: `test_execute_signal_shadow_persists_with_commit_so_async_session_close_does_not_rollback`.
+  Diagnosis details and rollback recipe in
+  [`runtime-tweaks.md`](../../operational/runtime-tweaks.md)
+  2026-05-09 entry. Do not refactor the persister without
+  re-running the regression test.
 - **Frontend / API validation mismatch on `trader_cycle_timeout_seconds`.**
   The `Trader Cycle Timeout` input in the Bots → ⚙ Settings flyout
   ([TradingPanel.tsx:12751](../../../frontend/src/components/TradingPanel.tsx))
@@ -510,4 +559,4 @@ Search hints:
 | Submission-side defence layer (9 modules between decision and fill) | [execution-defense.md](execution-defense.md) |
 | Operator-applied runtime knob-twists (rollback recipes) | [`../../operational/runtime-tweaks.md`](../../operational/runtime-tweaks.md) |
 
-Last verified: <unverified>
+Last verified: 2026-05-09 (Step 7 + footguns updated for the `_persist_execution_projection` commit-missing failure mode introduced by commit `936f96a4`; corresponds to plan 0016.)

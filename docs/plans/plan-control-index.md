@@ -61,6 +61,7 @@ notes.
 | 0013 | [Architecture documentation gap audit](completed/0013-architecture-doc-gap-audit.md) | D        | 0012          |
 | 0014 | [Documentation hygiene and quality gates for AI agents](completed/0014-doc-sync-discipline-and-quality-gates.md) | D        | 0012, 0013    |
 | 0015 | [Close remaining architecture-doc gaps](completed/0015-close-remaining-doc-gaps.md) | D        | 0013, 0014    |
+| 0016 | [Documentation hygiene for the shadow-execution commit fix](completed/0016-document-shadow-commit-fix.md) | R        | 0014, 0015    |
 
 When adding a row: keep this table sorted by ID ascending. Don't
 re-number plans — gaps in IDs are normal and expected (deleted or
@@ -310,6 +311,22 @@ Only notes that aren't obvious from the title. All plans must follow
   on `git commit` without a `Plan:` trailer, and a single
   "Documentation hygiene" section in `agents.md` that consolidates
   all obligations. No runtime code changes.
+
+- **Plan 0016 — Documentation hygiene for the shadow-execution
+  commit fix.** Refactor / hardening (R, secondary D). Post-hoc
+  audit-trail for commit `936f96a4`
+  (`fix(session_engine): ensure execution session persistence
+  with explicit commit in shadow mode`) which landed on `main`
+  as an emergency hotfix without a `Plan:` trailer. Records the
+  cross-reference in `plan-control-index`, corrects two
+  architecture notes that the fix made wrong (the shadow ledger
+  is `trader_orders`/`trader_positions`/`execution_sessions`,
+  not the legacy `simulation_*` tables; and a second canonical
+  cause for "selected → 0 orders" exists alongside the Cox-PH
+  one), and lists three out-of-scope drift items the
+  `/sync-docs 5` audit surfaced for future plans. No runtime
+  code changes — the patch is already shipped; this plan moves
+  documentation only.
 
 ## Ordering decision tree (for agents picking the next plan)
 

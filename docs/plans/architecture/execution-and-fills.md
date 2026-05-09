@@ -23,9 +23,16 @@ This layer is responsible for:
      and (if true) a fill price within slippage budget.
    - **Live:** signing and submitting orders to Polymarket CLOB
      (via py-clob-client) and Kalshi REST.
-3. Persisting results in `trader_orders` / `simulation_trades`
-   and updating `trader_positions` / `simulation_positions` /
-   `simulation_accounts`.
+3. Persisting results: the **orchestrator-driven shadow path**
+   (the one used by every running bot today) writes to
+   `trader_orders` (`mode='shadow'`) + `trader_positions` +
+   `execution_sessions`. The legacy
+   `simulation_trades` / `simulation_positions` /
+   `simulation_accounts` triple is owned by the standalone
+   replay simulator
+   (`services/simulation/execution_simulator.py`) and is not
+   exercised by the live orchestrator (zero `simulation_trades`
+   rows in production at the time of writing).
 4. Reconciling local books with venue truth (`trader_reconciliation_worker`).
 5. Redeeming winnings on resolved markets (`redeemer_worker`).
 6. Marking unrealised PnL on open positions
@@ -42,18 +49,46 @@ It does **not**:
 
 ## Key files
 
-### Shadow path (Cox-PH fill simulator)
+### Shadow path
+
+The orchestrator-driven shadow path (current, used by every
+running bot) and the legacy standalone-simulator shadow path live
+side-by-side in the codebase. Operators meet the first one; the
+second exists for replay/historical work.
+
+#### Orchestrator-driven shadow (current)
 
 | Path | What it holds |
 |---|---|
-| [`backend/services/simulation/execution_simulator.py`](../../../backend/services/simulation/execution_simulator.py) | `ExecutionSimulator` (line 23). `run()` (line 251+) iterates selected legs, calls `submit_execution_leg()`, mutates `simulation_account.current_capital` |
+| [`backend/services/trader_orchestrator/session_engine.py`](../../../backend/services/trader_orchestrator/session_engine.py) | `ExecutionSessionEngine.execute_signal()` orchestrates one signal end-to-end. `_persist_execution_projection()` is the single writer of the shadow ledger: it flushes `trader_orders` / `trader_positions` / `execution_sessions` rows and **must** call `await self.db.commit()` before returning (commit added in `936f96a4`; the regression test pins this invariant). On commit failure: rollback + ERROR `execution_session persist commit failed`; on success: INFO `execution_session persisted`. |
+| [`backend/services/trader_orchestrator/order_manager.py`](../../../backend/services/trader_orchestrator/order_manager.py) | `submit_execution_leg()` — the per-leg submit pipeline; consumes Cox-PH inference for executability and slippage and writes the `trader_orders` row. |
 | [`backend/services/fill_simulator/cox_inference.py`](../../../backend/services/fill_simulator/cox_inference.py) | `evaluate()` (lines 71–100). Returns `P(fill within horizon | covariates)`. Hot-path; no lifelines/pandas. Key covariates: `queue_ahead_shares`, `spread_bps`, `mid_distance_bps`, `recent_trade_intensity_per_sec`, `ttr_bucket_*` |
 | [`backend/services/fill_simulator/cox_trainer.py`](../../../backend/services/fill_simulator/cox_trainer.py) | training pipeline; runs in `worker-news` plane via `cox_trainer_worker` |
 | [`backend/services/fill_simulator/empirical_constants.py`](../../../backend/services/fill_simulator/empirical_constants.py), [`survival_features.py`](../../../backend/services/fill_simulator/survival_features.py), [`ensemble.py`](../../../backend/services/fill_simulator/ensemble.py), [`latency.py`](../../../backend/services/fill_simulator/latency.py) | covariate engineering and ensembling |
 
+Tables written by this path:
+
+- `trader_orders` (`mode='shadow'`) — per-leg row
+- `trader_positions` — open/closed position rows
+- `execution_sessions` — per-decision state machine
+  (`pending` → `running` → `completed`/`failed`)
+- `execution_session_legs` — per-leg detail under the session
+
 The Cox-PH model artefact lives in the `fill_probability_models`
 table; the row with `active=True` is the current one. The trainer
 bumps a `generation` counter on promotion.
+
+#### Legacy standalone simulator (replay-only)
+
+| Path | What it holds |
+|---|---|
+| [`backend/services/simulation/execution_simulator.py`](../../../backend/services/simulation/execution_simulator.py) | `ExecutionSimulator` (line 23). `run()` (line 251+) iterates selected legs, calls a private `submit_execution_leg()` from the legacy module, mutates `simulation_account.current_capital`. Writes `simulation_trades` / `simulation_positions` and decrements `simulation_accounts.current_capital`. **Not invoked by the orchestrator-driven path.** |
+
+This module exists for historical replay and standalone simulation
+runs. In live operation, every shadow trade goes through the
+orchestrator path above; `simulation_trades` is empty in the
+current production deployment. Treat it as a candidate for
+future retirement (no code change in this plan).
 
 ### Live path
 
@@ -205,6 +240,22 @@ section of `trader_orchestrator_worker.py` (lines 4740–4859).
 - **Concurrency cap on Polymarket.** `POLYMARKET_CLIENT_IO_CONCURRENCY=8`
   bounds in-flight CLOB calls. Higher values trip rate limits;
   lower values cap throughput on heavy days.
+- **Missing commit in `_persist_execution_projection`.** Symptom:
+  `selected` decisions exist, the
+  `trader_open_positions` blocker fires on > 80 % of cycles,
+  `trader_orders` and `execution_sessions` tables stay empty
+  despite the orchestrator log line claiming a successful
+  submission. Root cause: the persister flushed rows but did
+  not commit; the async session close then rolled them back.
+  Diagnosed and fixed in commit `936f96a4` (full diagnosis +
+  rollback recipe in
+  [`docs/operational/runtime-tweaks.md`](../../operational/runtime-tweaks.md)
+  `2026-05-09 ~07:30 UTC` entry). The regression test
+  `test_execute_signal_shadow_persists_with_commit_so_async_session_close_does_not_rollback`
+  pins the invariant; do not refactor the persister without
+  re-running it. INFO `execution_session persisted` and ERROR
+  `execution_session persist commit failed` are the
+  permanent fingerprints to grep for.
 
 ## Test coverage
 
@@ -287,4 +338,4 @@ lives natively in this note.
 | `PriceCache` / `WalletStateCache` | [`websocket-and-events.md`](websocket-and-events.md) |
 | Sandbox account model (capital, slippage, max position size) | [`settings-and-secrets.md`](settings-and-secrets.md) |
 
-Last verified: 2026-05-08 (Observability + cross-link section appended in plan 0015; underlying code unchanged.)
+Last verified: 2026-05-09 (Shadow-path key-files block rewritten to separate orchestrator-driven shadow from legacy standalone simulator after commit `936f96a4`; missing-commit footgun added; corresponds to plan 0016.)
