@@ -504,10 +504,45 @@ Search hints:
   semantics. Direct API call works around the UI bound:
   `curl -X PUT /api/trader-orchestrator/settings -d
   '{"global_runtime":{"trader_cycle_timeout_seconds":150}}'`.
+
+  **Sibling knob — `runtime_trigger_cycle_timeout_seconds`** (added
+  2026-05-08, commit `c8b2c144`). Same flyout exposes a second
+  timeout that governs the *lightweight* runtime-trigger cycles
+  (no maintenance, no scanning). UI input
+  ([TradingPanel.tsx:12780](../../../frontend/src/components/TradingPanel.tsx))
+  and the backend normaliser
+  ([trader_orchestrator_state.py:387-390](../../../backend/services/trader_orchestrator_state.py))
+  agree on `[3, 60]` with default 10 s. No mismatch, no footgun —
+  noted here so readers tracing the timeout flyout aren't surprised
+  by the second field.
+- **Three execution-policy fields on `risk_limits`** (added
+  2026-05-08, commit `6ab5f3a6`). These live alongside the existing
+  `max_position_notional_usd` / `max_orders_per_cycle` you saw in
+  Step 2 and are read by the decision-and-execution path:
+
+  | Field | Default | Read by | Effect |
+  |---|---|---|---|
+  | `max_entry_drift_pct` | 10.0 | `decision_gates.apply_platform_decision_gates` ([decision_gates.py](../../../backend/services/trader_orchestrator/decision_gates.py)) | Symmetric tolerance: `|live_price − signal_entry_price| / signal_entry_price · 100`. Lower → strategies skip when market moves; higher → more fills at worse prices. |
+  | `max_market_data_age_ms` | `None` | `decision_gates._resolve_market_data_age_budget_ms` ([decision_gates.py:212-217](../../../backend/services/trader_orchestrator/decision_gates.py)) | Per-bot ceiling for live quote staleness at gate-time. Empty → fall back to `strategy_params.max_market_data_age_ms` then env `EXECUTION_MARKET_DATA_MAX_AGE_MS`. |
+  | `allow_taker_limit_buy_above_signal` | `False` | `order_manager._allow_taker_limit_buy_above_signal` ([order_manager.py:267-274](../../../backend/services/trader_orchestrator/order_manager.py)) | When ON, **shadow** simulator may fill BUY legs at prices above signal `entry_price` (chase-up). Default OFF rejects whenever the book moved up since signal — the dominant cause of `Execution submission: limit_price_not_executable` rejections seen in Step 7. Live-mode price discipline is unaffected. |
+
+  These are passed end-to-end through the cascade
+  `submit_execution_leg(strategy_params, risk_limits)` →
+  `fast_submit.execute_fast_signal(risk_limits)` →
+  `fast_trader_runtime._FastTraderTask` (every fast-tier cycle
+  forwards `dict(self._trader.get("risk_limits") or {})`). The
+  fallback precedence inside `_allow_taker_limit_buy_above_signal`
+  is **strategy_params first** (with alias support for
+  `allow_taker_limit_pay_up`,
+  `allow_taker_limit_to_exceed_signal_price`,
+  `allow_buy_above_signal_price`), then `risk_limits`, then
+  `False`. SDK defaults and validation live in
+  [`strategy_sdk.py:411-413, 453-481, 1937-1949`](../../../backend/services/strategy_sdk.py)
+  (`TRADER_RISK_DEFAULTS`).
 - **`Trader cycle slow` log is the gold-standard latency view.**
   When `_run_trader_once_inner` exceeds half the timeout it emits a
   WARNING with a per-stage breakdown
-  ([trader_orchestrator_worker.py:7944](../../../backend/services/trader_orchestrator/) — line varies by build):
+  ([backend/workers/trader_orchestrator_worker.py](../../../backend/workers/trader_orchestrator_worker.py) — exact emit-line varies by build):
 
   ```json
   {"duration_s": 10.2, "processed_signals": 1, "decisions_written": 1,
@@ -559,4 +594,4 @@ Search hints:
 | Submission-side defence layer (9 modules between decision and fill) | [execution-defense.md](execution-defense.md) |
 | Operator-applied runtime knob-twists (rollback recipes) | [`../../operational/runtime-tweaks.md`](../../operational/runtime-tweaks.md) |
 
-Last verified: 2026-05-09 (Step 7 + footguns updated for the `_persist_execution_projection` commit-missing failure mode introduced by commit `936f96a4`; corresponds to plan 0016.)
+Last verified: 2026-05-09 (Step 7 + footguns updated for the `_persist_execution_projection` commit-missing failure mode introduced by commit `936f96a4`; corresponds to plan 0016. /sync-docs N=5 audit on the same date added the `runtime_trigger_cycle_timeout_seconds` sibling-knob note plus the new `risk_limits` triple — `max_entry_drift_pct`, `max_market_data_age_ms`, `allow_taker_limit_buy_above_signal` — for commits `c8b2c144`/`6ab5f3a6`, and corrected the stale link to `backend/workers/trader_orchestrator_worker.py`.)

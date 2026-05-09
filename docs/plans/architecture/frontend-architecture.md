@@ -296,4 +296,4 @@ know what host the backend lives on — same-origin everything.
   `useRealtimeInvalidation` is what keeps react-query from running
   in a tight loop. Don't lower it lightly.
 
-Last verified: <unverified>
+Last verified: 2026-05-08
