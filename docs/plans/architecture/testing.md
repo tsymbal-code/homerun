@@ -1,7 +1,7 @@
 # Architecture: Testing
 
 The repository has two test surfaces with very different maturity:
-the **backend has 186 pytest files** with real Postgres integration
+the **backend has 195 pytest files** with real Postgres integration
 and a 60 s global timeout enforced in CI; the **frontend has no test
 runner at all** and relies on `tsc --noEmit` plus `npm run build`
 for static safety. This note maps both, plus the CI workflows that
@@ -28,7 +28,7 @@ plans.
 | Path | What it holds |
 |---|---|
 | [backend/pyproject.toml](../../../backend/pyproject.toml) | `[tool.pytest.ini_options]` — `asyncio_mode = "strict"`, `timeout = 60` |
-| [backend/tests/conftest.py](../../../backend/tests/conftest.py) | 365 lines: two autouse fixtures + ~10 domain fixtures |
+| [backend/tests/conftest.py](../../../backend/tests/conftest.py) | 364 lines: two autouse fixtures + ~14 domain fixtures |
 | [backend/tests/postgres_test_db.py](../../../backend/tests/postgres_test_db.py) | `build_postgres_session_factory()` — per-test isolated DB via asyncpg |
 | [backend/tests/test_*.py](../../../backend/tests/) | 186 test files, all `test_<subsystem>.py` |
 | [.github/workflows/ci.yml](../../../.github/workflows/ci.yml) | Backend lint + tests + frontend tsc + frontend build |
@@ -280,4 +280,4 @@ tests ran", not "missing file").
   fixture should be done with care; prefer named fixtures opted
   into per test.
 
-Last verified: <unverified>
+Last verified: 2026-05-09 (Plan 0017: real-diff against `backend/tests/` (195 pytest files, was 186), `backend/tests/conftest.py` (364 lines and 14 domain fixtures + 2 autouse, was 365/~10), pytest config + 60 s timeout in `pyproject.toml`, CI postgres:16-alpine in `.github/workflows/ci.yml`. Frontend has no test runner (confirmed via `frontend/package.json`: only `dev`/`build`/`preview` scripts; no Vitest/Jest configs). The "never test by strategy slug" rule still matches `agents.md` § What NOT to Do.)

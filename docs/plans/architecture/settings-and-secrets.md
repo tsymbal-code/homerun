@@ -32,11 +32,11 @@ to unwrap encrypted columns.
 
 | Path | What it holds |
 |---|---|
-| [backend/models/database.py:1190+](../../../backend/models/database.py) | `class AppSettings(Base)` — every column is in one model, `id="default"` is the singleton row |
+| [backend/models/database.py:1248+](../../../backend/models/database.py) | `class AppSettings(Base)` — every column is in one model, `id="default"` is the singleton row |
 | [backend/utils/secrets.py](../../../backend/utils/secrets.py) | `encrypt_secret`, `decrypt_secret`, `is_encrypted`, `_ENC_PREFIX = "enc:v1:"`, Fernet derivation |
 | [backend/api/routes_settings.py](../../../backend/api/routes_settings.py) | Pydantic models (`PolymarketSettings`, `KalshiSettings`, `OracleSettings`, `LLMSettings`, …), `GET/PUT /api/settings`, section-specific `PUT /api/settings/<section>`, `POST /api/settings/test/<service>`, `POST /api/settings/export` / `import` |
 | [backend/api/settings_helpers.py](../../../backend/api/settings_helpers.py) | `apply_update_request(settings, request)` — single source of truth for "what changed", `set_encrypted_secret`, the `needs_*_reinit` flag dictionary |
-| [backend/config.py:753+](../../../backend/config.py) | `_load_async_settings()`, `apply_runtime_settings_overrides()`, `apply_events_settings()`, `apply_search_filters()` — applies DB overrides over env defaults |
+| [backend/config.py:968+](../../../backend/config.py) | `apply_runtime_settings_overrides()` (line 968), `apply_events_settings()` (line 781), `apply_search_filters()` (line 872) — applies DB overrides over env defaults |
 | [frontend/src/services/apiSettings.ts](../../../frontend/src/services/apiSettings.ts) | TS interfaces mirroring each Pydantic section |
 | [frontend/src/components/SettingsPanel.tsx](../../../frontend/src/components/SettingsPanel.tsx), [AccountSettingsFlyout.tsx](../../../frontend/src/components/AccountSettingsFlyout.tsx), [ai/AIProvidersView.tsx](../../../frontend/src/components/ai/AIProvidersView.tsx) | Three UI surfaces that read/write settings |
 
@@ -160,7 +160,7 @@ Two important properties of this design:
 
 ## Pydantic ↔ ORM mapping
 
-`apply_update_request` ([settings_helpers.py:679+](../../../backend/api/settings_helpers.py))
+`apply_update_request` ([settings_helpers.py:687+](../../../backend/api/settings_helpers.py))
 is intentionally one big function. It walks each Pydantic section
 in turn, copying attributes onto the ORM row. Three patterns repeat:
 
@@ -288,4 +288,4 @@ Two notes for plan authors:
   rename is a 6-file diff plus an Alembic migration with `op.alter_column`.
   Prefer additions and mark old fields deprecated rather than rename.
 
-Last verified: <unverified>
+Last verified: 2026-05-09 (Plan 0017: real-diff against `backend/models/database.py` AppSettings — line ref corrected from 1190+ → 1248+; `backend/api/settings_helpers.py:apply_update_request` corrected from 679+ → 687+; `backend/config.py` overrides — corrected 753+ → 968+ and removed the `_load_async_settings()` reference (function does not exist in the current code; the actual entry points are `apply_runtime_settings_overrides`, `apply_events_settings`, `apply_search_filters`). Encryption module, sandbox-account model, hot-reload semantics confirmed unchanged.)

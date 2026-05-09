@@ -259,4 +259,4 @@ The layer already supports this via `AppSettings.llm_model_assignments`
   place of it: e.g. `nvidia/meta/llama-3.3-70b-instruct`. Otherwise
   `detect_provider` confuses it with OpenRouter.
 
-Last verified: <unverified>
+Last verified: 2026-05-09 (Plan 0017: real-diff against `backend/services/ai/llm_provider.py` — 9-provider `LLMProvider` enum confirmed (lines 146-157), `detect_provider` prefix table at lines 2471-2509 matches the note, `BaseLLMProvider` 4-method interface intact, `LLMSettings` Pydantic at `routes_settings.py:99+` includes nvidia fields, `apply_update_request` at `settings_helpers.py:687` with `needs_llm_reinit` at line 1091, migration head `202605070001_add_nvidia_nim_columns.py` matches. Status: IN SYNC, no edits beyond this marker.)

@@ -85,8 +85,8 @@ class MarketTagSeen(Base):
     __tablename__ = "market_tags_seen"
 
     tag = Column(String, primary_key=True)
-    first_seen = Column(DateTime(timezone=True), nullable=False, default=_utcnow)
-    last_seen = Column(DateTime(timezone=True), nullable=False, default=_utcnow, onupdate=_utcnow)
+    first_seen = Column(DateTime, nullable=False, default=_utcnow)
+    last_seen = Column(DateTime, nullable=False, default=_utcnow, onupdate=_utcnow)
     occurrences = Column(BigInteger, nullable=False, default=1)
 
     __table_args__ = (
@@ -276,4 +276,4 @@ for the CPU-profile impact.
 | The parallel pipeline this filter cannot reach (no `tags` field) | [crypto-fast-binary-lane.md](crypto-fast-binary-lane.md) |
 | Trader pipeline downstream of the filter | [trader-pipeline.md](trader-pipeline.md) |
 
-Last verified: <unverified>
+Last verified: 2026-05-09 (Plan 0017: real-diff against `backend/services/scanner.py` `_apply_market_tag_whitelist` (line 945) and `_filter_tradable_markets` (line 988); `backend/models/database.py` `MarketTagSeen` columns confirmed but the `DateTime(timezone=True)` annotation in the note's code snippet was stale — actual code uses `DateTime` without the `timezone=True` parameter; updated. `MARKET_TAG_AGGREGATOR_ENABLED` flag (config.py:182), Settings UI integration (`SettingsPanel.tsx:256, 430-431, 1311-1313`), and the cross-links to `market-quality-and-prioritization.md` + `crypto-fast-binary-lane.md` (added by plan 0015) all verified.)

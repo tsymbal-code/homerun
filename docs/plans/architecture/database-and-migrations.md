@@ -35,7 +35,7 @@ not on the model classes.
 | [backend/models/model_registry.py](../../../backend/models/model_registry.py) | `register_all_models()` — explicit registration so Alembic autogenerate sees every model |
 | [backend/alembic.ini](../../../backend/alembic.ini) | Alembic config — `script_location`, default URL (overridden at runtime by `config.settings.DATABASE_URL`) |
 | [backend/alembic/env.py](../../../backend/alembic/env.py) | Online + offline runners, points at `Base.metadata`, calls `register_all_models()` |
-| [backend/alembic/versions/](../../../backend/alembic/versions/) | 130+ migration files; current head is `202605060001` |
+| [backend/alembic/versions/](../../../backend/alembic/versions/) | 130+ migration files; current head is `202605070002` |
 | [backend/utils/retry.py](../../../backend/utils/retry.py) | `is_retryable_db_error(exc)` — recognises serialization conflicts, deadlocks, transient connection issues |
 
 ## The `Base` and the singleton schema file
@@ -128,7 +128,7 @@ redeploy before reading them for meaningful aggregation.
   Postgres reaps half-dead clients within ~90 s.
 
 A SQLAlchemy `connect` event listener
-([database.py:4736](../../../backend/models/database.py)) also turns
+([database.py:4764](../../../backend/models/database.py)) also turns
 on TCP keepalive on the **client** raw socket, since asyncpg doesn't
 expose a connect-time keepalive parameter. This makes both ends of
 the connection notice partition / NIC failure within ~90 s.
@@ -360,4 +360,4 @@ million-row tables will hit `statement_timeout`.
   collisions; if you collide, rebase rather than write a merge
   migration.
 
-Last verified: <unverified>
+Last verified: 2026-05-09 (Plan 0017: real-diff against `backend/alembic/versions/` listing — current head bumped from `202605060001` → `202605070002` per actual chain on disk; TCP keepalive event listener ref corrected from `database.py:4736` (a comment line) → `database.py:4764` (the actual `@event.listens_for` registration). Other line refs and patterns confirmed.)

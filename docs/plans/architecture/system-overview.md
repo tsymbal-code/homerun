@@ -231,4 +231,4 @@ worker plane split. They differ only in process supervision.
 | Pre-scanner market gating (regime, quality, prioritiser, depth) | [Market quality and prioritisation](market-quality-and-prioritization.md) |
 | Copy Trade end-to-end (`source='traders'`) — leader-wallet WS to consumer trader, with the deferred-state gate that drops normal-tier signals | [Copy-Trade Pipeline](copy-trade-pipeline.md) |
 
-Last verified: <unverified>
+Last verified: 2026-05-09 (Plan 0017: real-diff against `docs/plans/architecture/` directory listing, `docker-compose.yml` 8-service block, `backend/workers/host.py` `_PLANE_CONFIGS`, default ports. All cross-links to plans 0013/0015 notes resolve. Status: IN SYNC, no edits beyond this marker.)

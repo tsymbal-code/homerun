@@ -311,4 +311,4 @@ events to the event bus.
   alembic walks the full migration list. Containers wait on the
   `migrate` service to complete to avoid duplicate work.
 
-Last verified: <unverified>
+Last verified: 2026-05-09 (Plan 0017: real-diff against `backend/main.py` lifespan, 34+ `routes_*.py` routers, `host.py` `_PLANE_CONFIGS`, `strategy_loader.py` / `data_source_loader.py` plug-in patterns, cross-process messaging surfaces (Postgres rows + Redis pub/sub + event_bus). Status: IN SYNC, no edits beyond this marker.)

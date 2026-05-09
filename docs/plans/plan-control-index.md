@@ -62,6 +62,7 @@ notes.
 | 0014 | [Documentation hygiene and quality gates for AI agents](completed/0014-doc-sync-discipline-and-quality-gates.md) | D        | 0012, 0013    |
 | 0015 | [Close remaining architecture-doc gaps](completed/0015-close-remaining-doc-gaps.md) | D        | 0013, 0014    |
 | 0016 | [Documentation hygiene for the shadow-execution commit fix](completed/0016-document-shadow-commit-fix.md) | R        | 0014, 0015    |
+| 0017 | [Real-diff audit of `<unverified>` architecture notes](completed/0017-audit-unverified-arch-notes.md) | D        | 0013, 0014    |
 
 When adding a row: keep this table sorted by ID ascending. Don't
 re-number plans — gaps in IDs are normal and expected (deleted or
