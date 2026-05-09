@@ -1711,3 +1711,110 @@ remain empty for the Copy Trade cycles ending 17:27–17:28 —
 suggests a shadow commit or persistence path that the
 chase-up patch did not exercise.  Tracking separately.
 
+## 2026-05-08 ~20:15 UTC — shadow execute_signal commit fix (code patch, not DB)
+
+- **Surface**: code (`backend/services/trader_orchestrator/session_engine.py`)
+- **Applied via**: edit + `./deploy/sync_remote.sh`
+- **Why**: After the chase-up fix, `Execution submission` blocker
+  collapsed but `trader_orders` / `execution_sessions` /
+  `trader_positions` stayed at **0 rows for 25+ minutes**, while
+  `Sandbox - Traders Copy Trade` accumulated `Risk blocked:
+  trader_open_positions (next=14 max=12)` ~80% of decisions.
+  Worker-restart cleared the block once (70 → 3 phantom keys),
+  but it grew back to 13 within ~20s of the next selected burst.
+  Deep-dive into the call graph found the root cause:
+  - `submit_order` (`workers/trader_orchestrator_worker.py:1596`)
+    in shadow mode opens a per-call session
+    (`async with AsyncSessionLocal() as submit_session`) and never
+    commits it.
+  - `execute_signal` flushes the new
+    `ExecutionSession` / `ExecutionSessionLeg` /
+    `TraderOrder` / `ExecutionSessionOrder` rows via
+    `_persist_execution_projection` but only **flushes**, never
+    commits (live's `_commit_pre_submit_projection` is the only
+    explicit commit and it runs only when
+    `entry_submit_placeholders` is non-empty).
+  - On `async with` exit, `AsyncSession.close()` rolls back every
+    pending insert.  The caller still receives
+    `SessionExecutionResult(status="executed",
+    orders_written=1, created_orders=[…])` and faithfully calls
+    `hot_state.upsert_active_order(...)` for each row — pinning a
+    phantom open-position key in memory against a now-empty DB.
+    After ~14 such bursts, `trader_open_positions` cap fires and
+    blocks every subsequent decision until the worker is
+    restarted.  Silent failure: no `transient DB error`, no
+    `_commit_with_retry` failure surfaced, because the worker
+    session is a **different** session from `submit_session` and
+    its commit succeeds (it has nothing to commit).
+- **Patch**: insert an explicit `await self.db.commit()` inside
+  `_persist_execution_projection` after all flushes /
+  `set_trade_signal_status` / `sync_trader_position_inventory`,
+  before event-bus publishes.  On `DBAPIError` the commit
+  rolls back, logs `execution_session persist commit failed`
+  with full diagnostic context (session_id, trader_id, mode,
+  trader_order_count, error_class, error), and re-raises so the
+  caller sees the failure (worker treats it as a transient DB
+  error and retries the signal next cycle).  On success a single
+  `execution_session persisted` INFO line is emitted when
+  `trader_orders` is non-empty so production has a permanent
+  fingerprint of working persistence.
+
+### Code changes
+
+| File | Change |
+|---|---|
+| `backend/services/trader_orchestrator/session_engine.py` | Added `from sqlalchemy.exc import DBAPIError`, `from utils.logger import get_logger`, module logger; in `_persist_execution_projection` after the inventory-sync loop and before event-bus publishes — `await self.db.commit()` wrapped in `try/except DBAPIError` with rollback + structured ERROR log + re-raise; INFO log on success when `trader_orders` is non-empty. |
+| `backend/tests/test_execution_session_engine.py` | New regression test `test_execute_signal_shadow_persists_with_commit_so_async_session_close_does_not_rollback` that drives `mode="shadow"` end-to-end with mocked submit_execution_wave and asserts `db.commit_calls >= 1` plus persisted `TraderOrder` / `ExecutionSessionOrder` rows.  Without the patch this test fails (commit_calls == 0). |
+
+### Verification
+
+After deploy + orchestrator unpause, 2-minute soak:
+- 10 selected decisions, 7 blocked, 4 skipped (vs. 0 selected
+  pre-fix, all blocked on `trader_open_positions`).
+- 10 `trader_orders` rows committed (`status=open`,
+  `total_notional_usd=$191`).
+- 10 `execution_sessions` rows committed (`status=completed`).
+- 13 `trader_positions` rows committed (`status=open`,
+  `total_notional_usd=$215`).
+- `execution_session persisted` INFO line ratio ≈ 1 per selected
+  decision.  Zero `execution_session persist commit failed`
+  occurrences.
+- `trader_open_positions` blocker dropped to 0.  Remaining gate
+  blocks (`Adverse entry drift limit`, `Entry price ceiling`,
+  `Entry drift from signal`, `Minimum exit notional feasibility`,
+  `Execution submission`) are all expected normal-population
+  blockers, not the systemic phantom-cap issue.
+
+### Live-mode interaction
+
+`_commit_pre_submit_projection` (live placeholders) still runs
+unchanged.  The new commit at end of
+`_persist_execution_projection` is a **second** commit on the
+same session for live; this is safe because the second commit
+only persists incremental changes flushed after the pre-submit
+commit.  Empty-pending commit is a no-op.
+
+### Rollback
+
+```bash
+# 1. revert the session_engine.py changes
+git revert <commit-sha>
+# 2. push to local checkout
+./deploy/sync_remote.sh
+```
+
+The new test `test_execute_signal_shadow_persists_with_commit_so_async_session_close_does_not_rollback`
+will fail on revert and surface the regression immediately.
+
+### Status
+
+OPEN — fix deployed and verified.  Remaining work:
+- Watch `simulation_trades` table — currently 0 rows ever (this
+  table appears unused for the new pipeline; may be legacy for
+  the older simulation engine).  The new path writes to
+  `trader_orders` + `trader_positions` + `execution_sessions`,
+  which is consistent with the architecture in
+  `docs/plans/architecture/trader-pipeline.md`.
+- Soak for 24h to confirm phantom positions stay at 0 across
+  market hours.
+
