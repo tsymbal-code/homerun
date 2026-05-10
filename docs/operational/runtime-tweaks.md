@@ -1818,3 +1818,48 @@ OPEN — fix deployed and verified.  Remaining work:
 - Soak for 24h to confirm phantom positions stay at 0 across
   market hours.
 
+### 2026-05-10 ~07:47 UTC — Plan 0021: orchestrator auto-resume in shadow
+
+- **Surface**: `backend/main.py::_reset_orchestrator_boot_state` (code,
+  not DB — the change is shipped in the image; it changes how the
+  function reads/writes `trader_orchestrator_control` on each
+  backend startup).
+- **Applied via**: `./deploy/sync_remote.sh` (commit `fd93339f`).
+- **Why**: Every backend container restart was hard-pausing the
+  trader orchestrator (`is_enabled=false, is_paused=true,
+  selected_account_id=null`), forcing operator to click Resume +
+  Start in the UI even after a routine redeploy. This is correct
+  for live-mode (never auto-resume risk) but operationally noisy
+  for shadow bots which hold no real money and benefit from
+  surviving a redeploy unchanged.
+- **Expected effect**: backend restart with prior state
+  `mode='shadow' AND is_enabled=true AND is_paused=false` now
+  preserves it (only `live_arm` and `live_preflight` are nulled,
+  which must never survive a process restart). Live mode and any
+  operator-stopped/paused state still hard-reset.
+- **Verification (this redeploy)**:
+  - Pre-deploy: `mode=shadow, is_enabled=t, is_paused=f,
+    selected_account_id="08fb2d1e-3bb1-4cd5-bd22-db3efbe4085e"`.
+  - Post-deploy (immediate, post-`docker compose down/up`):
+    same row — mode/enabled/paused/account preserved,
+    `live_arm=null, live_preflight=null`. Snapshot updated to
+    `current_activity="Cycle[scheduled:general] monitoring open
+    orders=12"` within seconds (the first cycle ran without
+    operator intervention).
+- **Regression tests**: 6 unit tests in
+  [`backend/tests/test_main_lifespan_smoke.py`](../../backend/tests/test_main_lifespan_smoke.py)
+  pin both branches plus the live-flag-clearing invariant. Run
+  via `bash scripts/run_tests_remote.sh tests/test_main_lifespan_smoke.py`
+  (note: also bind-mount `backend/main.py` if testing local edits
+  before redeploy).
+- **Rollback**:
+  ```bash
+  git revert fd93339f
+  ./deploy/sync_remote.sh
+  ```
+  Old hard-reset behaviour returns; orchestrator goes back to
+  pause-on-every-restart.
+- **Status**: SHIPPED — verified on 2026-05-10 redeploy. No
+  operator action required to bring sandbox bots back after future
+  redeploys.
+

@@ -491,6 +491,28 @@ Search hints:
   [`runtime-tweaks.md`](../../operational/runtime-tweaks.md)
   2026-05-09 entry. Do not refactor the persister without
   re-running the regression test.
+- **Backend restart and orchestrator boot state.** The FastAPI
+  lifespan calls `_reset_orchestrator_boot_state` in
+  [`backend/main.py:190`](../../../backend/main.py) on every
+  process startup. As of plan 0021 the reset is **conditional**:
+  - **Auto-resume branch** — when the prior persisted state is
+    `mode='shadow' AND is_enabled=true AND is_paused=false`, the
+    orchestrator preserves it across restart. `selected_account_id`
+    and `shadow_account_id` are kept; only `live_preflight` and
+    `live_arm` are nulled (they must never survive a process
+    restart). Snapshot reads `current_activity="Resumed in shadow
+    on application startup"` until the first cycle overwrites it.
+  - **Hard-reset branch** — for `mode='live'`, or any
+    `is_enabled=false` / `is_paused=true` prior state, the legacy
+    safety reset still fires: `is_enabled=false, is_paused=true,
+    mode='shadow', requested_run_at=null,
+    selected_account_id=null, shadow_account_id=null`. Operator
+    must `POST /api/trader-orchestrator/start` with a fresh account
+    selection. This applies to all post-crash live recovery paths.
+  Regression tests pin both branches in
+  [`test_main_lifespan_smoke.py`](../../../backend/tests/test_main_lifespan_smoke.py).
+  To revert to unconditional hard-reset, `git revert` the
+  Plan 0021 commit and redeploy.
 - **Frontend / API validation mismatch on `trader_cycle_timeout_seconds`.**
   The `Trader Cycle Timeout` input in the Bots → ⚙ Settings flyout
   ([TradingPanel.tsx:12751](../../../frontend/src/components/TradingPanel.tsx))
@@ -594,4 +616,14 @@ Search hints:
 | Submission-side defence layer (9 modules between decision and fill) | [execution-defense.md](execution-defense.md) |
 | Operator-applied runtime knob-twists (rollback recipes) | [`../../operational/runtime-tweaks.md`](../../operational/runtime-tweaks.md) |
 
-Last verified: 2026-05-09 (Step 7 + footguns updated for the `_persist_execution_projection` commit-missing failure mode introduced by commit `936f96a4`; corresponds to plan 0016. /sync-docs N=5 audit on the same date added the `runtime_trigger_cycle_timeout_seconds` sibling-knob note plus the new `risk_limits` triple — `max_entry_drift_pct`, `max_market_data_age_ms`, `allow_taker_limit_buy_above_signal` — for commits `c8b2c144`/`6ab5f3a6`, and corrected the stale link to `backend/workers/trader_orchestrator_worker.py`.)
+Last verified: 2026-05-10 (footgun added for the conditional
+orchestrator boot-state reset shipped by plan 0021 — auto-resume
+shadow branch in `_reset_orchestrator_boot_state`. Prior verification
+2026-05-09: Step 7 + footguns updated for the `_persist_execution_projection`
+commit-missing failure mode introduced by commit `936f96a4`; corresponds
+to plan 0016. /sync-docs N=5 audit on the same date added the
+`runtime_trigger_cycle_timeout_seconds` sibling-knob note plus the
+new `risk_limits` triple — `max_entry_drift_pct`,
+`max_market_data_age_ms`, `allow_taker_limit_buy_above_signal` — for
+commits `c8b2c144`/`6ab5f3a6`, and corrected the stale link to
+`backend/workers/trader_orchestrator_worker.py`.)

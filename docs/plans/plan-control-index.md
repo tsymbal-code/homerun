@@ -65,7 +65,7 @@ notes.
 | 0017 | [Real-diff audit of `<unverified>` architecture notes](completed/0017-audit-unverified-arch-notes.md) | D        | 0013, 0014    |
 | 0018 | [Fix stuck shadow positions on `traders_copy_trade`](completed/0018-fix-stuck-shadow-positions-traders-copy-trade.md) | B        | —             |
 | 0019 | [Test suite hardening — coverage, markers, smoke tests, remote runner](completed/0019-test-suite-hardening.md) | D        | —             |
-| 0021 | [Auto-resume orchestrator in shadow mode on application startup](0021-orchestrator-auto-resume-shadow-on-startup.md) | B        | —             |
+| 0021 | [Auto-resume orchestrator in shadow mode on application startup](completed/0021-orchestrator-auto-resume-shadow-on-startup.md) | B        | —             |
 
 When adding a row: keep this table sorted by ID ascending. Don't
 re-number plans — gaps in IDs are normal and expected (deleted or
