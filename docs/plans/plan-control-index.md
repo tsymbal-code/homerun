@@ -68,7 +68,7 @@ notes.
 | 0020 | [Make Alembic migrations replayable from base on a fresh DB](completed/0020-make-alembic-migrations-replayable.md) | R        | 0019          |
 | 0021 | [Auto-resume orchestrator in shadow mode on application startup](completed/0021-orchestrator-auto-resume-shadow-on-startup.md) | B        | —             |
 | 0022 | [Quiet `missing_polymarket_credentials` reseeder warn spam](completed/0022-quiet-missing-polymarket-credentials-warn-spam.md) | R        | 0018          |
-| 0023 | [Broaden binary-market outcome normalisation beyond literal Yes/No](0023-broaden-binary-outcome-normalisation-beyond-yes-no.md) | B        | 0018          |
+| 0023 | [Broaden binary-market outcome normalisation beyond literal Yes/No](completed/0023-broaden-binary-outcome-normalisation-beyond-yes-no.md) | B        | 0018          |
 
 When adding a row: keep this table sorted by ID ascending. Don't
 re-number plans — gaps in IDs are normal and expected (deleted or

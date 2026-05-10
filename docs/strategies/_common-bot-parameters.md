@@ -396,6 +396,18 @@ def _resolve_leg_direction(leg, fallback_direction):
 `outcome="YES"|"NO"`. NegRisk multi-leg бандл — це купа окремих
 "BUY YES" на N бінарних ринків, не один multi-outcome ордер.
 
+**Label vocabulary не має значення.** Gamma може повернути
+`outcomes=["Yes","No"]`, `["Up","Down"]` (crypto), `["Arsenal","Field"]`
+(candidate/field), `["Trump","Other"]` тощо. `traders_copy_trade`
+signal-service канонікалізує **будь-який 2-token ринок** до
+канонічних `Yes`/`No` за позицією token-у в `tokens[]` (idx 0 →
+"Yes", idx 1 → "No"). Це plan 0023 розширення Plan 0018 normalisation,
+яке раніше працювало тільки коли labels містили літеральне Yes/No.
+Після канонікалізації стратегія завжди емітить `direction='buy_yes'`
+або `'buy_no'` через існуючу гілку, і downstream шари (simulator,
+lifecycle, fast-submit) працюють без defensive widening через
+`token_id`.
+
 **Виняток** — Polymarket-ринки виду "single market з N outcomes"
 (не categorical-event): рідкі outright-формати (UFC fighter outright,
 LoL series), де один `market_id` має `outcomes=["Fighter A","Fighter B","Fighter C"]`.

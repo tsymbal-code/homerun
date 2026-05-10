@@ -1905,3 +1905,56 @@ OPEN — fix deployed and verified.  Remaining work:
   `app_settings`: the next reseeder cycle observes `init_error=None`,
   emits the resume announcement, and standard logging returns.
 
+### 2026-05-10 ~12:05 UTC — Plan 0023: broaden binary-market outcome normalisation
+
+- **Surface**: `backend/services/traders_copy_trade_signal_service.py::_resolve_market_snapshot`
+  (code, not DB — ships in the image).
+- **Applied via**: `./deploy/sync_remote.sh` (commit `7770d8d1`).
+- **Why**: Plan 0018's binary-market outcome normaliser only fired
+  when the gamma `outcomes` list contained a literal "Yes" or "No"
+  label. Crypto BTC up/down markets (`["Up","Down"]`) and other
+  binary-but-non-Yes/No vocabularies skipped normalisation, the
+  outcome leaked through as the original label (e.g. `"down"`),
+  the strategy emitted `direction=""`, the `_resolve_leg_direction`
+  fallback returned bare `"buy"`, and the simulator's defensive
+  widening could not find a `tokens[]` list in the live_market
+  payload (only `selected_token_id` singular). Result: every
+  backfill cycle (~5 s) raised `Unsupported direction 'buy'` for
+  the affected orders, sustaining the
+  `shadow_ledger_backfill_failed` warn stream that Plan 0018 was
+  expected to silence (~50/h on the Sandbox bot).
+- **Expected effect**: any 2-token Polymarket market is binary by
+  construction (the two tokens are the YES and NO sides of a
+  single condition regardless of label vocabulary). Drop the
+  `{"yes","no"} & lowered` guard so every 2-token market
+  canonicalises to `Yes`/`No` by token-position. Multi-outcome
+  single-market structures (>2 tokens) still skip normalisation.
+- **Verification (this redeploy)**:
+  - Pre-deploy: **2** `shadow_ledger_backfill_failed` events in
+    the 10-min window for Sandbox bot
+    (`trader=61dcbeb2b9bc42bd9e9635a09ae5e0c3`).
+  - Post-deploy (10-min window after restart settle): **0**.
+    The two known-stuck pre-fix orders
+    (`247669fc155a4d7abc5f8ee9cd68bc04`,
+    `08bce1226e574413a4bbb70e05d1f8c7`) are `status='resolved_loss'`
+    and fell out of the backfill candidate query
+    (`_ACTIVE_ORDER_STATUSES = {submitted, executed, completed,
+    open}`) after the orchestrator restart — no manual SQL drain
+    was needed. New copy-trade signals on Up/Down markets now
+    emit `direction='buy_yes'`/`'buy_no'` directly via the
+    strategy's existing canonical branch.
+- **Regression tests**: 2 new + 3 pre-existing tests in
+  [`backend/tests/test_traders_copy_trade_signal_service.py`](../../backend/tests/test_traders_copy_trade_signal_service.py)
+  pin Up/Down + Arsenal/Field normalisation plus the multi-outcome
+  passthrough. All 14 tests pass via
+  `bash scripts/run_tests_remote.sh tests/test_traders_copy_trade_signal_service.py`.
+- **Rollback**:
+  ```bash
+  git revert 7770d8d1
+  ./deploy/sync_remote.sh
+  ```
+  The `{"yes","no"} & lowered` guard returns and the up/down
+  stuck-order pattern returns with it.
+- **Status**: SHIPPED — verified 2026-05-10. Plan 0018's
+  shadow_ledger_backfill_failed stream is now fully silenced.
+
