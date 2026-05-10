@@ -320,7 +320,7 @@ the strategy itself should align with the rest of the codebase:
 **don't emit a synthetic `direction` for cases the resolver can't
 handle.** Empty string lets `_resolve_leg_direction` take over.
 
-- [ ] In [`backend/services/strategies/traders_copy_trade.py:499-503`](../../backend/services/strategies/traders_copy_trade.py:499)
+- [x] In [`backend/services/strategies/traders_copy_trade.py:499-503`](../../backend/services/strategies/traders_copy_trade.py:499)
       change the `direction` field in the `positions_to_take`
       dict from `"buy"` (else-branch) to `""`. Keep the
       `buy_yes`/`buy_no` explicit cases unchanged — they are
@@ -328,7 +328,7 @@ handle.** Empty string lets `_resolve_leg_direction` take over.
       Document the empty-string contract in the inline comment
       block above (one short sentence on why "" lets fallback
       run).
-- [ ] Create new file
+- [x] Create new file
       `backend/tests/test_traders_copy_trade_strategy.py` (no
       sibling exists — verified via `ls backend/tests/ | grep
       traders_copy_trade` returns only the signal-service file)
@@ -341,7 +341,7 @@ handle.** Empty string lets `_resolve_leg_direction` take over.
         — payload with `outcome="Fighter A"` asserts
         `opportunity.positions_to_take[0]["direction"] == ""` (NOT
         `"buy"`). Pins the post-fix contract.
-- [ ] Add regression tests in existing
+- [x] Add regression tests in existing
       [`backend/tests/test_execution_session_engine.py`](../../backend/tests/test_execution_session_engine.py)
       (next to `test_build_plan_normalizes_limit_sell_action_from_position_payload`
       at line 205):
@@ -356,9 +356,9 @@ handle.** Empty string lets `_resolve_leg_direction` take over.
         — leg with `direction=""`, `side="buy"`, `outcome="fighter a"`
         → returns `"buy"`. Pins the contract that bare-buy is the
         documented terminal output for true multi-outcome.
-- [ ] Run validation:
+- [x] Run validation:
       `cd backend && pytest tests/test_traders_copy_trade_strategy.py tests/test_execution_session_engine.py -q`.
-- [ ] Mark completed
+- [x] Mark completed
 
 ### Task 5: escalate `shadow_ledger_backfill_failed` severity on repeat
 
