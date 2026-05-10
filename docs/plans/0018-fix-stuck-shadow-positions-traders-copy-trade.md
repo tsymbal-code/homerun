@@ -262,7 +262,7 @@ existing in-flight orders that shipped before Task 2 (with
 `direction='buy'`) plus genuine multi-outcome orders. Both need
 the simulator and lifecycle to learn `direction='buy'` + token_id.
 
-- [ ] In [`backend/services/simulation.py:55-62`](../../backend/services/simulation.py:55)
+- [x] In [`backend/services/simulation.py:55-62`](../../backend/services/simulation.py:55)
       change `_direction_to_position_side` from a `(direction)` →
       `(PositionSide, str)` to `(direction, payload=None)` →
       `(PositionSide, str)`. When direction is `buy`/`sell` (not
@@ -273,7 +273,7 @@ the simulator and lifecycle to learn `direction='buy'` + token_id.
       `ValueError` — those need first-class support, out of scope
       here. Update every caller in `simulation.py` to thread the
       payload through.
-- [ ] In [`backend/services/trader_orchestrator/position_lifecycle.py:879-885`](../../backend/services/trader_orchestrator/position_lifecycle.py:879)
+- [x] In [`backend/services/trader_orchestrator/position_lifecycle.py:879-885`](../../backend/services/trader_orchestrator/position_lifecycle.py:879)
       change `_direction_outcome_index(direction)` to
       `_direction_outcome_index(direction, *, market_info=None, token_id=None)`.
       For `buy_yes`/`buy_no` keep the existing 0/1 mapping. For
@@ -282,7 +282,7 @@ the simulator and lifecycle to learn `direction='buy'` + token_id.
       `tokens.index(token_id)`. Update every caller (search for
       `_direction_outcome_index(` across the file) to pass the
       already-available `market_info` and `payload.token_id`.
-- [ ] Add regression tests in existing
+- [x] Add regression tests in existing
       [`backend/tests/test_simulation_orchestrator_ledger.py`](../../backend/tests/test_simulation_orchestrator_ledger.py)
       (next to the three ledger-recording tests):
       - `test_direction_to_position_side_resolves_buy_via_token_id_at_index_zero`
@@ -297,7 +297,7 @@ the simulator and lifecycle to learn `direction='buy'` + token_id.
         — end-to-end: the existing happy path with `direction='buy'`
         instead of `buy_yes` should now succeed (no `ValueError`),
         proving Task 3a unblocks the shadow ledger backfill path.
-- [ ] Add regression tests in existing
+- [x] Add regression tests in existing
       [`backend/tests/test_trader_position_lifecycle_resolution.py`](../../backend/tests/test_trader_position_lifecycle_resolution.py)
       (sibling section to the existing `test_load_market_info_*` block):
       - `test_direction_outcome_index_resolves_buy_via_token_id_with_market_info`
@@ -309,9 +309,9 @@ the simulator and lifecycle to learn `direction='buy'` + token_id.
       - `test_direction_outcome_index_canonical_buy_yes_unchanged_by_widening`
         — pin that `buy_yes`/`buy_no` shortcut still returns 0/1
         without consulting market_info (perf + back-compat).
-- [ ] Run validation:
+- [x] Run validation:
       `cd backend && pytest tests/test_simulation_orchestrator_ledger.py tests/test_trader_position_lifecycle_resolution.py -q`.
-- [ ] Mark completed
+- [x] Mark completed
 
 ### Task 4: strip explicit `direction='buy'` from `traders_copy_trade._build_copy_opportunity`
 
