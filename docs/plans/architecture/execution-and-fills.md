@@ -235,6 +235,53 @@ section of `trader_orchestrator_worker.py` (lines 4740–4859).
   judged the limit unreachable given current depth + spread. The
   fix is upstream (looser `slippage_bps`, `max_spread_bps`, or
   `price_policy: market`), not in this layer.
+
+### Chase-up cap reduction
+
+When `allow_taker_limit_buy_above_signal=True` is set on a BUY
+leg, the shadow path (and the live `_resolve_execution_price_bounds`
+helper) lift the order's effective ceiling above the signal price
+to a "tightest explicit execution-price cap" computed from the
+strategy's emitted leg + metadata + `strategy_params`. Per Plan
+0035 (split entry-band from execution-price cap), the helper that
+performs this reduction is
+[`_chase_up_execution_caps`](../../../backend/services/trader_orchestrator/order_manager.py)
+(near line 239) and considers **only execution-price caps**:
+
+- `leg.max_execution_price`
+- `metadata.max_execution_price`
+- `strategy_params.max_execution_price`
+- `strategy_params.max_entry_price`
+
+Entry-band guards — `strategy_params.max_probability` and
+`_derive_min_upside_price_cap(min_upside_percent)` — are
+explicitly **not** considered at chase-up. They apply at
+signal-emission time (the strategy refuses to emit a signal whose
+probability is too close to 1.0 or whose upside falls below the
+floor); mixing them into the chase-up reducer collapses the
+ceiling to whichever entry-band guard is tighter, blocking the
+intended chase. This was the root cause of the
+`Sandbox - Tail-End` cancellation cluster diagnosed in Plan 0033
+and fixed in Plan 0035.
+
+Both reduction sites use the same helper:
+
+- The **shadow** chase-up branch in `submit_execution_leg`
+  (lines ~970–1000) — lifts `shadow_limit_price` to the helper's
+  `min(...)` (or 1.0 if the helper returns empty).
+- The **live** path's `_resolve_execution_price_bounds`
+  (BUY branch, lines ~340–367) — surfaces the helper's `min(...)`
+  as `max_execution_price` into `live_execution_adapter.execute_live_order`.
+
+The SELL branch of `_resolve_execution_price_bounds` is
+unaffected; it correctly limits to execution-price floors only
+(`min_execution_price`, `min_exit_price`, `min_sell_price`).
+Regression coverage:
+`tests/test_trader_order_manager_live.py::test_chase_up_execution_caps_*`
+(helper-level) and `::test_shadow_chase_up_*`,
+`::test_submit_execution_leg_live_taker_limit_caps_execution_to_explicit_execution_price_bound`,
+`::test_submit_execution_leg_live_ignores_entry_band_caps_for_max_execution_price`
+(end-to-end).
 - **Polymarket signing pitfalls.** EIP-712 domain separation is
   strict; `signature_type` 0/1/2 must match what Polymarket
   expects for the order maker. A mismatched signature returns a
@@ -363,4 +410,4 @@ lives natively in this note.
 | `PriceCache` / `WalletStateCache` | [`websocket-and-events.md`](websocket-and-events.md) |
 | Sandbox account model (capital, slippage, max position size) | [`settings-and-secrets.md`](settings-and-secrets.md) |
 
-Last verified: 2026-05-10 (Plan 0018: shadow-ledger backfill subsection added with `_direction_to_position_side` widening contract and `_resolve_shadow_ledger_backfill_severity` escalation; real-diff against `simulation.py` and `trader_orchestrator_worker.py` shows symbols match.); previously 2026-05-09 (Shadow-path key-files block rewritten to separate orchestrator-driven shadow from legacy standalone simulator after commit `936f96a4`; missing-commit footgun added; corresponds to plan 0016.)
+Last verified: 2026-05-10 (Plan 0035: added "Chase-up cap reduction" footgun subsection documenting `_chase_up_execution_caps` helper and the entry-band-vs-execution-price split; real-diff against `order_manager.py` shows the new helper at line 239, the shadow site at line ~985, and the live `_resolve_execution_price_bounds` BUY branch at line ~340 all delegate to it.); previously 2026-05-10 (Plan 0018: shadow-ledger backfill subsection added with `_direction_to_position_side` widening contract and `_resolve_shadow_ledger_backfill_severity` escalation; real-diff against `simulation.py` and `trader_orchestrator_worker.py` shows symbols match.); previously 2026-05-09 (Shadow-path key-files block rewritten to separate orchestrator-driven shadow from legacy standalone simulator after commit `936f96a4`; missing-commit footgun added; corresponds to plan 0016.)

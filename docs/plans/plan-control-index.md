@@ -77,6 +77,11 @@ notes.
 | 0029 | [Knob interaction matrix — HIGH tier expansion + 4 dead-code findings](completed/0029-knob-matrix-high-tier-expansion.md) | D        | 0025          |
 | 0031 | [Flag dead-code `risk_limits` knobs in UI with red background](completed/0031-flag-dead-code-knobs-in-ui.md) | U        | 0029          |
 | 0032 | [Eliminate fast-trader dedup-spam (signal_cache deep fix)](completed/0032-eliminate-fast-trader-dedup-spam.md) | D        | —             |
+| 0033 | [Verify Cox-PH shadow-fill pessimism before tuning](completed/0033-verify-cox-ph-shadow-fill-pessimism.md) | D        | —             |
+| 0034 | [Per-entry audit of the CRITICAL-tier knob matrix](completed/0034-critical-knob-matrix-per-entry-audit.md) | D        | 0025, 0029    |
+| 0035 | [Split entry-band cap from execution-price cap in shadow chase-up](completed/0035-split-entry-band-from-execution-price-cap.md) | R        | 0033          |
+| 0036 | [Per-entry audit of the HIGH-tier knob matrix](completed/0036-high-knob-matrix-per-entry-audit.md) | D        | 0029          |
+| 0037 | [Verify Plan 0035 chase-cap drop on 2026-05-11](0037-verify-plan-0035-chase-cap-drop-2026-05-11.md) | D        | 0035          |
 
 When adding a row: keep this table sorted by ID ascending. Don't
 re-number plans — gaps in IDs are normal and expected (deleted or

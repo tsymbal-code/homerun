@@ -2725,3 +2725,35 @@ VERDICT FILED, no knob changed. Operator may apply the
 tweak — when made — will be its own runtime-tweaks entry with the
 full CRITICAL walkthrough.
 
+### 2026-05-10 — Plan 0035 cap-split simulation (24 / 24 Bucket-A rows recovered)
+
+Replayed the 33 cancelled `Sandbox - Tail-End` orders through the
+post-fix `_chase_up_execution_caps` reducer (Plan 0035 path 2,
+not the operator-config path 1). Script:
+[`scripts/simulate_0035_chase_up_caps.py`](../../scripts/simulate_0035_chase_up_caps.py)
+(deletable after this entry; preserved here for reproducibility).
+
+| Bucket | Recovered | Total | Note |
+|---|---:|---:|---|
+| A — config-gated chase would help | 24 | 24 | All recovered: `post_fix_shadow_limit = ctx_max_entry_price ≥ book_best_ask` for every Bucket-A row in the canonical book-snapshot CSV |
+| C — book above chase cap | 0 | 2 | Unchanged: spread-blowout cases where even the chase-up target was below `best_ask` |
+| Indeterminate (no snapshot) | — | 7 | No book snapshot to evaluate against |
+
+The script output and the bucket totals match the Plan 0033 doc's
+Verdict 1 logic directly: every row that the Plan 0033 evidence
+classified as "cap collapse blocked an otherwise-valid fill" recovers
+under the post-fix reducer. The two Bucket-C rows remain uncrossable
+as expected — those are real spread blowouts, not config bugs.
+
+Note on the count: Plan 0033's bucket-classification.md narrative
+quoted "25 / 27 evidenced rows" in Bucket A; the canonical CSV
+(`0033-book-snapshot-join.csv`) actually has 24 / 26 (one row that
+the narrative attributed to Bucket A is `no_book_snapshot` in the
+CSV, so it sits in Indeterminate). The CSV is the artefact of
+record. 24 / 24 is the full recovery rate for evidenced Bucket-A
+rows.
+
+This is a code-side simulation, not a runtime tweak. The actual
+production rollout is tracked in Plan 0035 / Task 5; verification
+SQL lives there.
+
