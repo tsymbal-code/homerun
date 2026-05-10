@@ -104,7 +104,7 @@ configuration-absence sentinel. Each of the three current WARN
 sites becomes "WARN if non-quiet, else DEBUG", with a one-shot
 WARN at the transition.
 
-- [ ] Above `_reseed_wallet_state_cache_from_rest`
+- [x] Above `_reseed_wallet_state_cache_from_rest`
       ([`trader_reconciliation_worker.py:714`](../../backend/workers/trader_reconciliation_worker.py:714)):
       add a module-level constant
       `_MISSING_CREDS_INIT_ERROR_SENTINEL = "missing_polymarket_credentials"`
@@ -112,7 +112,7 @@ WARN at the transition.
       `_last_observed_reseeder_init_error: str | None = None`.
       Document with a 3-line comment why this shapes per-cycle
       logging (not a state machine — just a transition detector).
-- [ ] Add a helper
+- [x] Add a helper
       `_announce_reseeder_state_transition_if_changed() -> bool`
       that:
       1. Reads `current = live_execution_service.get_last_init_error()`.
@@ -128,23 +128,23 @@ WARN at the transition.
       5. Updates the module global.
       6. Returns `True` if currently in quiet mode
          (`current == sentinel`), else `False`.
-- [ ] In `_reseed_wallet_state_cache_from_rest`, immediately after
+- [x] In `_reseed_wallet_state_cache_from_rest`, immediately after
       `cache = get_wallet_state_cache()`: call the helper, bind
       result to `quiet_mode = _announce_reseeder_state_transition_if_changed()`.
-- [ ] Replace each of the three `logger.warning(...)` skip sites
+- [x] Replace each of the three `logger.warning(...)` skip sites
       (current lines ~763, ~770, ~786) with:
       `(logger.debug if quiet_mode else logger.warning)(...)`.
       Keep the message strings and structured fields exactly the
       same — only the level changes. Other warn sites in the same
       function (the `ensure_initialized` exception block at line
       751) are NOT skip-warns and stay at WARNING.
-- [ ] Inline comment block (3-5 lines) above the three replaced
+- [x] Inline comment block (3-5 lines) above the three replaced
       sites: "When init-error is the configuration-absence sentinel
       (`missing_polymarket_credentials`), per-cycle skip warnings
       are demoted to DEBUG to avoid log-spam in shadow-only
       deployments. The transition into and out of this state is
       announced once at WARNING by `_announce_reseeder_state_transition_if_changed`."
-- [ ] Mark completed
+- [x] Mark completed
 
 ### Task 2: Regression tests in new `test_wallet_cache_reseeder_quiet_mode.py`
 
@@ -153,14 +153,14 @@ behaviour — `test_wallet_state_cache.py` tests the cache class,
 `test_trader_live_provider_reconciliation.py` tests live-provider
 reconciliation. Justify a new file by scope.
 
-- [ ] Create `backend/tests/test_wallet_cache_reseeder_quiet_mode.py`
+- [x] Create `backend/tests/test_wallet_cache_reseeder_quiet_mode.py`
       with a 4-line module docstring naming
       `_announce_reseeder_state_transition_if_changed` and
       `_reseed_wallet_state_cache_from_rest` as the units under
       test, with one short paragraph on why a separate file
       (the loop's logging policy is its own concern, distinct
       from the cache it seeds and the live-provider it queries).
-- [ ] Add `test_first_cycle_with_missing_creds_emits_one_warn_announcement`:
+- [x] Add `test_first_cycle_with_missing_creds_emits_one_warn_announcement`:
       reset the module state global to `None` (via `monkeypatch`),
       patch `live_execution_service.get_last_init_error` to return
       the sentinel, capture log output via `caplog` at DEBUG level,
@@ -168,54 +168,49 @@ reconciliation. Justify a new file by scope.
       containing the string `"demoting per-cycle warnings to DEBUG"`
       and at least one DEBUG line containing the per-cycle skip
       message.
-- [ ] Add `test_second_cycle_with_same_missing_creds_emits_no_warn`:
+- [x] Add `test_second_cycle_with_same_missing_creds_emits_no_warn`:
       pre-set the module global to the sentinel, run the helper,
       assert ZERO `WARNING`-level lines from the reseeder logger.
-- [ ] Add `test_transition_out_of_missing_creds_emits_resume_warn`:
+- [x] Add `test_transition_out_of_missing_creds_emits_resume_warn`:
       pre-set module global to the sentinel, patch init-error to
       return `None`, run the helper, assert one WARN line with
       `"resuming standard logging"` and `previous_state=missing_polymarket_credentials`
       / `current_state=None` (or however the structured field is named).
-- [ ] Add `test_other_init_errors_keep_warn`: pre-set module
+- [x] Add `test_other_init_errors_keep_warn`: pre-set module
       global to `None`, patch init-error to return a transient
       string like `"gamma_timeout"`, run the helper, assert the
       per-cycle skip path emits at WARNING (not DEBUG). Pins that
       we only quiet the configuration-absence sentinel.
-- [ ] Add `test_re_entry_into_missing_creds_emits_announcement_again`:
+- [x] Add `test_re_entry_into_missing_creds_emits_announcement_again`:
       patch sequence is `None → sentinel → None → sentinel`; assert
       exactly two demote-announcements and one resume-announcement
       (so operators see every transition, not just the first).
-- [ ] Run validation:
+- [x] Run validation:
       `bash scripts/run_tests_remote.sh tests/test_wallet_cache_reseeder_quiet_mode.py`.
-- [ ] Mark completed
+- [x] Mark completed
 
 ### Task 3: Deploy, verify log volume drop, update docs, close out
 
-- [ ] Pre-deploy log-volume measurement:
-      ```bash
-      ssh polyhome-1 'cd /home/polyhome/homerun && docker compose logs --since=10m worker-trading 2>&1 | grep -c "WalletStateCache reseeder skipped"'
-      ```
-      Record the count in this checkbox.
-- [ ] Run `./deploy/sync_remote.sh`. Confirm `worker-trading`
-      restarts cleanly.
-- [ ] Post-deploy log-volume measurement (run the same grep
-      ~10 minutes after restart). Expected: 0 or 1 (only the
-      transition announcement). Record the count.
-- [ ] Confirm the announcement WARN appears exactly once near
-      restart:
-      ```bash
-      ssh polyhome-1 'cd /home/polyhome/homerun && docker compose logs --since=15m worker-trading 2>&1 | grep "demoting per-cycle warnings to DEBUG" | wc -l'
-      ```
-      Expected: 1. Record the count.
-- [ ] Append a new entry to
+- [x] Pre-deploy log-volume measurement: **120 lines per 10 min**
+      (≈ 720/hour spam baseline confirmed).
+- [x] Ran `./deploy/sync_remote.sh`. All containers `(healthy)` /
+      `Started` post-restart; backend healthy in ≤ 16 s.
+- [x] Post-deploy log-volume measurement (5-min window after
+      ~75 s settle): **0 per-cycle skip warns**, vs 120/10min
+      before. ~720/hour spam eliminated.
+- [x] Announcement WARN count post-restart: **1** (exactly as
+      expected — single "demoting per-cycle warnings to DEBUG"
+      line near startup, confirming the transition detector
+      fires once on entry into quiet mode).
+- [x] Append a new entry to
       [`docs/operational/runtime-tweaks.md`](../operational/runtime-tweaks.md)
       (`2026-05-10 ~HH:MM UTC — Plan 0022: quiet missing_polymarket_credentials reseeder spam`)
       with surface (`backend/workers/trader_reconciliation_worker.py::_reseed_wallet_state_cache_from_rest`),
       one-paragraph why (Plan 0018 surfaced this; cleanup),
       pre/post log-volume numbers, and rollback (`git revert <SHA>`,
       redeploy).
-- [ ] `git mv docs/plans/0022-quiet-missing-polymarket-credentials-warn-spam.md docs/plans/completed/`.
-- [ ] Update the row in [`plan-control-index.md`](plan-control-index.md)
+- [x] `git mv docs/plans/0022-quiet-missing-polymarket-credentials-warn-spam.md docs/plans/completed/`.
+- [x] Update the row in [`plan-control-index.md`](plan-control-index.md)
       to point at the `completed/` path.
-- [ ] `git log --grep='Plan: 0022'` shows the full commit chain.
-- [ ] Mark completed
+- [x] `git log --grep='Plan: 0022'` shows the full commit chain.
+- [x] Mark completed

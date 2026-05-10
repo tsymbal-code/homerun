@@ -1863,3 +1863,45 @@ OPEN — fix deployed and verified.  Remaining work:
   operator action required to bring sandbox bots back after future
   redeploys.
 
+### 2026-05-10 ~11:18 UTC — Plan 0022: quiet `missing_polymarket_credentials` reseeder spam
+
+- **Surface**: `backend/workers/trader_reconciliation_worker.py::_reseed_wallet_state_cache_from_rest`
+  (code, not DB — ships in the image).
+- **Applied via**: `./deploy/sync_remote.sh` (commit `37c9964f`).
+- **Why**: Plan 0018 closing analysis surfaced that the reseeder
+  loop was emitting ~720 `WARNING` lines per hour on this Sandbox-
+  only deployment because all four `app_settings.polymarket_*`
+  credential fields are NULL. The cache is a live-mode-only
+  dependency, so the warnings carried zero operational signal —
+  pure log noise that hid real degradation.
+- **Expected effect**: per-cycle skip warnings demoted to `DEBUG`
+  when `live_execution_service.get_last_init_error()` is the literal
+  string `"missing_polymarket_credentials"`. One `WARNING`
+  announcement at the moment the loop enters this state, one when
+  it exits. Other init-error strings (transient HTTP, gamma
+  timeouts) keep the existing per-cycle `WARNING` because those
+  are real degradation, not configuration absence.
+- **Verification (this redeploy)**:
+  - Pre-deploy: 120 `WalletStateCache reseeder skipped` lines per
+    10-min window in `worker-trading`.
+  - Post-deploy (5-min window after restart settle): **0**
+    per-cycle skip warns; **1** "demoting per-cycle warnings to
+    DEBUG" announcement (transition detector fired once on entry
+    into the quiet state, exactly as designed).
+- **Regression tests**: 5 unit tests in
+  [`backend/tests/test_wallet_cache_reseeder_quiet_mode.py`](../../backend/tests/test_wallet_cache_reseeder_quiet_mode.py)
+  pinning entry announcement, steady-state silence, exit
+  announcement, non-sentinel WARN preservation, and re-entry
+  announcement repetition. Run via
+  `bash scripts/run_tests_remote.sh tests/test_wallet_cache_reseeder_quiet_mode.py`.
+- **Rollback**:
+  ```bash
+  git revert 37c9964f
+  ./deploy/sync_remote.sh
+  ```
+  Per-cycle WARNs return.
+- **Status**: SHIPPED — verified 2026-05-10. The fix becomes a
+  no-op the moment Polymarket credentials are added to
+  `app_settings`: the next reseeder cycle observes `init_error=None`,
+  emits the resume announcement, and standard logging returns.
+
