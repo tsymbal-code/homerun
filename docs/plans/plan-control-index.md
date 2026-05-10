@@ -70,6 +70,10 @@ notes.
 | 0022 | [Quiet `missing_polymarket_credentials` reseeder warn spam](completed/0022-quiet-missing-polymarket-credentials-warn-spam.md) | R        | 0018          |
 | 0023 | [Broaden binary-market outcome normalisation beyond literal Yes/No](completed/0023-broaden-binary-outcome-normalisation-beyond-yes-no.md) | B        | 0018          |
 | 0024 | [Upsert in `sync_trader_position_inventory` to eliminate `uq_trader_position_identity` IntegrityError](0024-upsert-trader-position-inventory.md) | B        | —             |
+| 0025 | [Knob interaction matrix — CRITICAL tier](completed/0025-knob-interaction-matrix-critical-tier.md) | D        | —             |
+| 0026 | [Walkthrough template for CRITICAL knob changes](completed/0026-runtime-tweaks-walkthrough-template-critical.md) | D        | 0025          |
+| 0027 | [Agent memory rule — CRITICAL knob walkthrough enforcement](completed/0027-agent-memory-rule-critical-knob-walkthrough.md) | D        | 0025, 0026    |
+| 0028 | [Default Ralphex plan rule — CRITICAL knob touch policy](completed/0028-ralphex-plan-rule-critical-knob-touch.md) | D        | 0025, 0026, 0027 |
 
 When adding a row: keep this table sorted by ID ascending. Don't
 re-number plans — gaps in IDs are normal and expected (deleted or

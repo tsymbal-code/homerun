@@ -112,6 +112,73 @@ Rules:
    bullet — runnable end-to-end by a CI agent or by Ralphex itself to
    confirm the plan didn't regress the repo.
 
+## CRITICAL knob touch policy
+
+If any Task in your plan applies a `PUT` / `POST` /
+`psql UPDATE` / UI Save that mutates one of the **CRITICAL-tier
+safety knobs** listed in the
+[knob interaction matrix](../strategies/_common-bot-parameters.md#knob-interaction-matrix--critical-tier),
+the plan must satisfy three additional obligations on top of
+the regular Ralphex format. The matrix is the canonical list
+(15 knobs as of 2026-05-10); do not duplicate it inline here —
+that creates drift.
+
+**Why this exists.** Risk-knob changes have non-obvious indirect
+consumers and compound effects. In 2026-05-08/09 the same class
+of dimensional bug was introduced three times by plans that
+didn't design around the walkthrough requirement. The fix lives
+at three layers — matrix (Phase 1), walkthrough template
+(Phase 2, agent-applied), this rule (plan-design layer).
+Sibling: [agent memory rule](../../../../../Users/dtsym/.claude/projects/-Users-dtsym-Work-Splunk--Project-X-homerun/memory/feedback_critical_knob_walkthrough.md)
+fires at apply-time; this rule fires at plan-write-time.
+
+**Obligation 1 — link the matrix entries from `## Context / References`.**
+
+For every CRITICAL knob the plan touches, add a bullet:
+
+```markdown
+- [`<knob-name>` matrix entry](../strategies/_common-bot-parameters.md#critical--<knob-name>)
+```
+
+Without these links the plan is incomplete; reviewers can't
+audit whether compound effects were considered.
+
+**Obligation 2 — every applying-Task carries a walkthrough check-box.**
+
+Drop this snippet into every Task that applies a CRITICAL
+change:
+
+```markdown
+- [ ] Fill the [walkthrough template](../operational/runtime-tweaks.md#walkthrough-template-for-critical-knob-changes)
+  in `runtime-tweaks.md` for this change: Step 1 (direct gate
+  impact, numeric), Step 2 (indirect-metric impact, numeric),
+  Step 3 (live SQL/curl simulation), Step 4 (compound-effect
+  checklist), Step 5 (rollback recipe < 30 s). Numeric values
+  only; `n/a` allowed only when the matrix entry confirms zero
+  impact.
+```
+
+The check-box ticks **only when the journal entry is written**,
+not when the change is applied. Order: write walkthrough →
+apply change → tick.
+
+**Obligation 3 — disclose HIGH/MEDIUM coverage in `## Out of scope`.**
+
+If the plan also touches HIGH or MEDIUM-tier knobs (the bulk of
+`risk_limits` / `strategy_params`), explicitly note in
+`## Out of scope` that those changes are **not** walked through.
+Reviewers should know what level of analysis was applied.
+Example: *"This plan walks through the CRITICAL change to
+`max_daily_loss_usd` only. The accompanying
+`min_probability=0.75 → 0.70` (MEDIUM) change is documented in
+the Tune-section per-strategy doc and does not require a
+walkthrough."*
+
+**`plan-validator` agent integration.** The
+`.claude/agents/plan-validator.md` agent's checklist has been
+extended (plan 0028) to flag any plan whose Tasks PUT/UPDATE a
+CRITICAL knob without the walkthrough check-box.
+
 ## Working a plan
 
 1. **Create.** Copy a sibling plan as a template or start fresh. The

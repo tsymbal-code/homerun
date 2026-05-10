@@ -43,6 +43,201 @@ When a tweak proves useful and gets promoted to a code default
 a `**Promoted to code on YYYY-MM-DD in commit <sha>**` line and
 append a follow-up note marking the operational tweak unnecessary.
 
+### CRITICAL-tier knob changes — consult the interaction matrix first
+
+If the change touches any field listed in the **Knob interaction
+matrix — CRITICAL tier** section of
+[`docs/strategies/_common-bot-parameters.md`](../strategies/_common-bot-parameters.md#knob-interaction-matrix--critical-tier),
+the entry in this journal is **incomplete** without a 5-step
+walkthrough — see the [Walkthrough template](#walkthrough-template-for-critical-knob-changes)
+below. The list of CRITICAL knobs covered today (2026-05-10):
+
+`max_position_notional_usd` · `max_trade_notional_usd` ·
+`max_gross_exposure_usd` · `min_exit_notional` (gate, not knob;
+see `enforce_min_exit_notional`) · `max_open_orders` ·
+`max_open_positions` · `max_daily_loss_usd` ·
+`circuit_breaker_drawdown_pct` (DEAD CODE — flagged in the
+matrix) · `halt_on_consecutive_losses` ·
+`max_consecutive_losses` · `circuit_breaker_safe_exit` (event,
+not knob) · `block_new_orders` · `traders.is_paused/is_enabled`
+· `worker_control.is_paused/is_enabled` ·
+`allow_taker_limit_buy_above_signal`.
+
+Without the walkthrough, a "tighten the loss cap" tweak can
+silently kill the copy-trade bot via the
+`copy_drawdown` indirect consumer (see matrix entry on
+`max_daily_loss_usd`). This journal saw that exact failure
+mode three times in the 2026-05-08 / 2026-05-09 sessions —
+hence the three-layer fix (Phase 1 = matrix, Phase 2 = this
+template, Phase 3 = agent memory rule).
+
+## Walkthrough template for CRITICAL knob changes
+
+Every new entry under `## Entries` that touches a CRITICAL-tier
+knob (per the list above) **must** include the five steps
+below. Prose-only ("no impact expected") answers are rejected
+at audit; numeric values or explicit `n/a — verified against
+matrix on YYYY-MM-DD` are required. `n/a` is acceptable
+**only when the matrix entry confirms zero impact**, not when
+the writer "doesn't expect" anything.
+
+If the change is wrapped in a Ralphex plan rather than a one-off
+operator tweak, the plan must additionally satisfy the
+[CRITICAL knob touch policy](../plans/README.md#critical-knob-touch-policy)
+(plan 0028). The journal entry produced by the plan still
+fills this template — that's the artefact the plan-design rule
+binds against.
+
+### Step 1 — Direct gate impact (numeric)
+
+For each CRITICAL field changed:
+
+| Field | Before | After | Direct gate(s) | Pre threshold | Post threshold |
+|---|---:|---:|---|---:|---:|
+| <field> | <num> | <num> | <gate from matrix> | <formula evaluated at "before"> | <formula evaluated at "after"> |
+
+### Step 2 — Indirect-metric impact (numeric)
+
+For each indirect consumer documented in the matrix entry
+for the changed field:
+
+| Field changed | Derived metric | Pre value (today's data) | Post value (today's data) | Sibling gate that reads it |
+|---|---|---:|---:|---|
+
+If the matrix entry has zero indirect consumers, write
+`n/a — matrix confirms zero indirect consumers`.
+
+### Step 3 — Live data simulation (SQL or curl, not prose)
+
+```sql
+-- "How many decisions in the last 24 h would have been blocked
+--  under the new threshold?"  Or the gate-specific equivalent.
+SELECT ... FROM trader_decisions WHERE ...
+```
+
+Paste the **actual query result** (1–2 numbers, ideally a
+before/after pair). Prose-only responses fail the audit.
+
+### Step 4 — Compound-effect checklist
+
+Tick every sibling-knob row that interacts with this change
+according to the matrix. At least one row must be ticked **or**
+the value `none — verified against matrix on YYYY-MM-DD`
+written explicitly. Compound effects beyond the matrix
+(strategy-params, etc.) go in a free-form bullet below the
+checklist.
+
+- [ ] `max_position_notional_usd` — <effect or `n/a`>
+- [ ] `max_trade_notional_usd` — <effect or `n/a`>
+- [ ] `max_gross_exposure_usd` — <effect or `n/a`>
+- [ ] `max_open_orders` / `max_open_positions` — <effect or `n/a`>
+- [ ] `max_daily_loss_usd` — <effect or `n/a`>
+- [ ] `circuit_breaker_drawdown_pct` — DEAD CODE per matrix; ignore unless matrix changes
+- [ ] `halt_on_consecutive_losses` / `max_consecutive_losses` — <effect or `n/a`>
+- [ ] `circuit_breaker_safe_exit` (force-flatten event) — <effect or `n/a`>
+- [ ] `block_new_orders` — <effect or `n/a`>
+- [ ] `traders.is_paused` / `traders.is_enabled` — <effect or `n/a`>
+- [ ] `worker_control.is_paused` / `worker_control.is_enabled` — <effect or `n/a`>
+- [ ] `allow_taker_limit_buy_above_signal` — <effect or `n/a`>
+
+### Step 5 — Rollback recipe (must run in < 30 s)
+
+```bash
+# Exact SQL / curl / UI path that returns the system to the
+# pre-tweak state in under 30 seconds.  Tested before applying.
+```
+
+### Worked example — hypothetical `max_daily_loss_usd: 300 → 100`
+
+Illustrative. **Not an actual tweak applied to production.**
+Shows the dimensional-bug class the matrix was written to
+prevent.
+
+#### Step 1 — Direct gate impact
+
+| Field | Before | After | Direct gate(s) | Pre threshold | Post threshold |
+|---|---:|---:|---|---:|---:|
+| `max_daily_loss_usd` | 300 | 100 | `trader_daily_loss` ([`risk_manager.py:61-84`](../../backend/services/trader_orchestrator/risk_manager.py)) | `trader_daily_realized_pnl > -300 → pass` | `trader_daily_realized_pnl > -100 → pass` |
+| `max_daily_loss_usd` | 300 | 100 | `trader_daily_total_loss` ([`risk_manager.py:104-117`](../../backend/services/trader_orchestrator/risk_manager.py)) | `realized + unrealized > -300 → pass` | `realized + unrealized > -100 → pass` |
+
+#### Step 2 — Indirect-metric impact
+
+| Field changed | Derived metric | Pre value (today's data) | Post value (today's data) | Sibling gate that reads it |
+|---|---|---:|---:|---|
+| `max_daily_loss_usd` | `trader_drawdown_pct` = `(-trader_total_daily_pnl / max_daily_loss_usd) × 100` | sample $30 loss → `30 / 300 × 100 = 10%` | sample $30 loss → `30 / 100 × 100 = 30%` | `copy_drawdown` ([`traders_copy_trade.py:599, 797`](../../backend/services/strategies/traders_copy_trade.py)) |
+
+The same nominal $30 loss now reads as **3× the drawdown%**.
+Any `max_copy_drawdown_pct < 30` (the copy-trade
+strategy_param) trips `copy_drawdown` — silently disabling
+the bot for the rest of the session even though the dollar
+loss is unchanged.
+
+#### Step 3 — Live data simulation
+
+```sql
+-- Block-rate counterfactual: how many "selected" decisions in
+-- the last 24 h would have hit the trader_daily_loss gate at
+-- the tighter $100 floor?
+SELECT
+  count(*) FILTER (WHERE pnl_at_decision <= -100) AS would_block_post,
+  count(*) FILTER (WHERE pnl_at_decision <= -300) AS would_block_pre,
+  count(*)                                          AS total_selected
+FROM (
+  SELECT
+    d.id,
+    (SELECT coalesce(sum(o.actual_profit), 0)
+     FROM trader_orders o
+     WHERE o.trader_id = d.trader_id
+       AND o.created_at::date = d.created_at::date
+       AND o.created_at <= d.created_at) AS pnl_at_decision
+  FROM trader_decisions d
+  WHERE d.created_at > now() - interval '24h'
+    AND d.decision = 'selected'
+) sub;
+```
+
+Expected output shape (illustrative):
+`would_block_post=12 | would_block_pre=0 | total_selected=180`
+→ tightening blocks **12 of 180 (~6.7 %)** decisions that
+would have proceeded under the old threshold. Confirms
+non-trivial impact even before considering the indirect
+`copy_drawdown` chain.
+
+#### Step 4 — Compound-effect checklist
+
+- [ ] `max_position_notional_usd` — n/a (independent cap)
+- [ ] `max_trade_notional_usd` — n/a (independent cap)
+- [ ] `max_gross_exposure_usd` — n/a (independent cap)
+- [ ] `max_open_orders` / `max_open_positions` — n/a (count-cap, not pnl)
+- [ ] `max_daily_loss_usd` — **THIS IS THE CHANGE**
+- [ ] `circuit_breaker_drawdown_pct` — DEAD CODE per matrix; no effect
+- [x] `halt_on_consecutive_losses` / `max_consecutive_losses` — **compound**: if CB safe-exit fires after change, force-flatten N positions can realize > $100 instantly → re-block on `daily_loss` immediately, looks like permanent halt
+- [x] `circuit_breaker_safe_exit` — see above
+- [ ] `block_new_orders` — n/a
+- [ ] `traders.is_paused` / `traders.is_enabled` — n/a
+- [ ] `worker_control.is_paused` / `worker_control.is_enabled` — n/a
+- [ ] `allow_taker_limit_buy_above_signal` — n/a
+
+Strategy-param compound (outside matrix scope):
+- **`max_copy_drawdown_pct`** (Copy Trade strategy_param,
+  default 100.0): `trader_drawdown_pct` becomes 3× more
+  sensitive. If operator ever tightens `max_copy_drawdown_pct`
+  below 30, the bot silences immediately. Recommendation:
+  audit `max_copy_drawdown_pct` for every active
+  Copy-Trade-class bot **before** applying this change.
+
+#### Step 5 — Rollback
+
+```bash
+ssh polyhome-1 "cd /home/polyhome/homerun && docker compose exec -T postgres \
+  psql -U homerun -d homerun -c \
+  \"UPDATE traders SET risk_limits = jsonb_set(risk_limits::jsonb, '{max_daily_loss_usd}', '300'::jsonb)::json
+    WHERE name = 'Sandbox - Traders Copy Trade';\""
+```
+
+(In real entries, the rollback applies to **all** traders
+the tweak touched, not just one.)
+
 ## Why this lives in git
 
 The actual values live in Postgres on `polyhome-1`. They are not

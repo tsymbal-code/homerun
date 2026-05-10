@@ -447,3 +447,527 @@ LoL series), де один `market_id` має `outcomes=["Fighter A","Fighter B"
   джерело гейтів.
 - `backend/services/trader_orchestrator/risk_manager.py` — канонічне
   джерело risk-чеків.
+
+## Knob interaction matrix — CRITICAL tier
+
+> **Призначення.** Перш ніж змінювати будь-який knob із цього
+> розділу через UI / API / SQL — **прочитай відповідний entry**.
+> Кожен запис показує, **які саме gate-и читають це поле**, з
+> точною формулою та `file:line`, плюс **похідні метрики**, що
+> самі залежать від цього knob-а й тригерять інші gate-и
+> (compound effects). Без цього довідника аналіз залишається
+> поверхневим і регулярно дає dimensionally-wrong результат
+> (типові симптоми: «затиснули loss-cap → бот замовк цілком»;
+> «ввімкнули halt → CB одразу зливає позиції»).
+>
+> Phase 2 (template `runtime-tweaks.md`-entry, що вимагає
+> walkthrough на CRITICAL зміну) і Phase 3 (memory-rule, що
+> змушує консультуватися саме з цим розділом перед PUT-ом) —
+> окремі плани. Цей файл — Phase 1, **знання**.
+
+**Tier-класифікація:**
+
+- **CRITICAL** — state-flipping, wide blast radius, важко
+  відкотити (loss caps, drawdown, halt-flags, position-size
+  caps). **Зміна вимагає walkthrough.**
+- **HIGH** — змінює поведінку (latency, decision filters), але
+  не state-flipping (`max_market_data_age_ms`,
+  `max_entry_drift_pct`, `slippage_bps`).
+- **MEDIUM** — strategy-params що тонко тюнять детекцію
+  (`min_probability`, `min_upside_percent`).
+- **LOW** — UI flags, polling intervals, не на critical path.
+
+Цей розділ покриває **15 CRITICAL knobs**. HIGH/MEDIUM
+розкидані по `docs/strategies/<slug>.md`-нотатках і у
+[`trader-pipeline.md`](../plans/architecture/trader-pipeline.md).
+
+> **Drift warning.** Усі формули нижче зафіксовані станом на
+> 2026-05-10. Якщо ви рефакторите будь-який цитований
+> `file:line` — оновіть і цей розділ у тому ж commit-і. Без
+> drift-тестів (Phase 4 candidate) матриця може стати
+> misleading мовчки.
+
+---
+
+### CRITICAL — `max_position_notional_usd`
+
+**Default:** 5.0 USD ([`strategy_sdk.py:395`](../../backend/services/strategy_sdk.py))
+
+#### Direct consumers
+
+| Gate | Формула | File:line | reason-string |
+|---|---|---|---|
+| `trader_market_exposure` | `next_market = current_market_value + new_size`; `next_market <= min(global_per_market, max_position_notional_usd) → pass` | [`risk_manager.py:205-212`](../../backend/services/trader_orchestrator/risk_manager.py) | `Risk blocked: trader_market_exposure (next=X.XX max=Y.YY)` |
+
+#### Indirect consumers
+
+Жодних похідних метрик не читає цей knob.
+
+#### Compound with
+
+- **`max_gross_exposure_usd`:** ефективна максимальна
+  кількість одночасно відкритих позицій ≈
+  `floor(max_gross_exposure_usd / max_position_notional_usd)`
+  на одному ринку. З default-ами 5/2000 = 400 на ринок —
+  тобто `max_gross_exposure_usd` зазвичай binding-у, а не
+  position-cap. Зменшення position-cap зменшує **розмір**
+  позиції, не змінює загальний risk-budget.
+- **`halt_on_consecutive_losses` + `max_consecutive_losses`:**
+  менший `max_position_notional_usd` = бот більше робить
+  спроб у тому самому risk-budget = **streak-counter може
+  накручуватися швидше при тій же ринковій ситуації**.
+
+---
+
+### CRITICAL — `max_trade_notional_usd`
+
+**Default:** 5.0 USD ([`strategy_sdk.py:397`](../../backend/services/strategy_sdk.py))
+
+#### Direct consumers
+
+| Gate | Формула | File:line | reason-string |
+|---|---|---|---|
+| `trader_trade_notional` | `max(0.0, size_usd) <= max(1.0, max_trade_notional_usd) → pass` | [`risk_manager.py:156`](../../backend/services/trader_orchestrator/risk_manager.py) | `Risk blocked: trader_trade_notional (size=X.XX max=Y.YY)` |
+
+#### Indirect consumers
+
+Жодних.
+
+#### Compound with
+
+- **`max_position_notional_usd`:** trade-notional обмежує
+  одну операцію, position-notional — сумарну позицію на
+  ринку. Якщо `max_trade_notional_usd > max_position_notional_usd`,
+  effective limit = position-cap; trade-cap не binding.
+
+---
+
+### CRITICAL — `max_gross_exposure_usd`
+
+**Default:** 2000.0 USD ([`strategy_sdk.py:396`](../../backend/services/strategy_sdk.py))
+
+#### Direct consumers
+
+| Gate | Формула | File:line | reason-string |
+|---|---|---|---|
+| `global_gross_exposure` | `next_gross = max(0.0, gross_exposure_usd) + max(0.0, size_usd)`; `next_gross <= max_gross_exposure_usd → pass` | [`risk_manager.py:167-175`](../../backend/services/trader_orchestrator/risk_manager.py) | `Risk blocked: global_gross_exposure (next=X.XX max=Y.YY)` |
+| `size_cap` (sizing) | `notional_default = max(50.0, max_gross_exposure_usd × 0.10)` | [`decision_gates.py:763-785`](../../backend/services/trader_orchestrator/decision_gates.py) | `Capped to max_trade_notional_usd=X.XX` |
+
+#### Indirect consumers
+
+Знос на дефолтний размер позиції через `decision_gates`:
+коли strategy-параметри не виставили явний `notional_usd`,
+`size_cap` бере 10% від gross як фолбек. Зміна
+`max_gross_exposure_usd` опосередковано **зміщує дефолт
+розміру**, навіть якщо `max_position_notional_usd` сам по
+собі не змінився.
+
+#### Compound with
+
+- **`max_position_notional_usd`:** добуток обох — стеля
+  одночасних відкритих позицій (див. вище).
+- **`max_open_orders` / `max_open_positions`:** якщо count-cap
+  binding, gross-cap може бути не binding-ом і навпаки.
+  Перевір обидва перед зміною.
+
+---
+
+### CRITICAL — `min_exit_notional` (computed gate, not a knob)
+
+**Default:** обчислюється per-strategy ([`decision_gates.py:1810-1833`](../../backend/services/trader_orchestrator/decision_gates.py))
+**Не лежить у `TRADER_RISK_DEFAULTS`.** Замість цього є
+**boolean knob `enforce_min_exit_notional`** у
+`source_configs[0].strategy_params`, default `True`
+([`decision_gates.py:1666`](../../backend/services/trader_orchestrator/decision_gates.py)).
+
+#### Direct consumers
+
+| Gate | Формула | File:line | reason-string |
+|---|---|---|---|
+| `min_exit_notional` | `required_size_usd` обчислюється з `entry_price`, `stop_loss_pct`, `min_order_size_usd`; `size_usd + 1e-9 >= required_size_usd → pass` | [`decision_gates.py:1810-1833`](../../backend/services/trader_orchestrator/decision_gates.py) | `Min-exit-notional guard blocked: required size >= X.XX for min exit $Y.YY` |
+
+#### Indirect consumers
+
+Жодних.
+
+#### Compound with
+
+- **`max_position_notional_usd`:** якщо **ваш position-cap**
+  менший за `required_size_usd`, бот блокується **на цьому**
+  gate-і — не на position-cap. Симптом: low-frequency strategy
+  з $5 cap-ом постійно бачить «Min-exit-notional guard
+  blocked: required size >= 2.00».
+- **`enforce_min_exit_notional=false`** у strategy_params
+  обходить цей guard повністю — використовуй для дрібних
+  positions де можна допустити часткові exits.
+
+---
+
+### CRITICAL — `max_open_orders`
+
+**Default:** 20 ([`strategy_sdk.py:392`](../../backend/services/strategy_sdk.py))
+
+#### Direct consumers
+
+| Gate | Формула | File:line | reason-string |
+|---|---|---|---|
+| `trader_open_orders` | `(trader_open_orders + 1) <= max_open_orders → pass` | [`risk_manager.py:182-193`](../../backend/services/trader_orchestrator/risk_manager.py) | `Risk blocked: trader_open_orders (next=X max=Y)` |
+
+#### Indirect consumers
+
+Жодних.
+
+#### Compound with
+
+- **`max_open_positions`:** обидва count-cap-и читаються
+  паралельно. Перший, що binding, блокує. Якщо тільки
+  `max_open_orders` встановлено — `max_open_positions` defaults
+  до того ж значення.
+- **«Stuck positions» pattern (2026-05-08):** коли positions
+  не закриваються (немає resolution / strategy не emit-ить
+  exit signal), open count росте до cap, потім **усі нові
+  decisions блокуються `trader_open_orders`** і бот виглядає
+  «замороженим». Симптом ≈ 90% decisions blocked + 0 нових
+  orders.
+
+---
+
+### CRITICAL — `max_open_positions`
+
+**Default:** 12 ([`strategy_sdk.py:393`](../../backend/services/strategy_sdk.py))
+
+#### Direct consumers
+
+| Gate | Формула | File:line | reason-string |
+|---|---|---|---|
+| `trader_open_positions` | `(trader_open_positions + 1) <= max_open_positions → pass` | [`risk_manager.py:178-201`](../../backend/services/trader_orchestrator/risk_manager.py) | `Risk blocked: trader_open_positions (next=X max=Y)` |
+
+#### Indirect consumers
+
+Жодних.
+
+#### Compound with
+
+- **`max_open_orders`:** див. компаньйон-запис вище.
+- **`max_position_notional_usd` × кількість позицій × ринкові
+  умови:** якщо стратегія схильна відкривати **множинні
+  позиції на одному ринку** (різні directions / lots),
+  position-count росте швидше за market-count.
+
+---
+
+### CRITICAL — `max_daily_loss_usd`
+
+**Default:** 300.0 USD ([`strategy_sdk.py:398`](../../backend/services/strategy_sdk.py))
+
+#### Direct consumers
+
+| Gate | Формула | File:line | reason-string |
+|---|---|---|---|
+| `trader_daily_loss` | `trader_daily_realized_pnl > -max_daily_loss_usd → pass` | [`risk_manager.py:61-84`](../../backend/services/trader_orchestrator/risk_manager.py) | `Risk blocked: trader_daily_loss (realized=X.XX floor=-Y.YY)` |
+| `trader_daily_total_loss` | `trader_total_daily_pnl = realized + unrealized`; `total > -max_daily_loss_usd → pass` | [`risk_manager.py:104-117`](../../backend/services/trader_orchestrator/risk_manager.py) | `Risk blocked: trader_daily_total_loss (realized=X unrealized=Y total=Z floor=-W)` |
+
+#### Indirect consumers
+
+| Derived metric | Формула | Where computed | Where read | Gate |
+|---|---|---|---|---|
+| `trader_drawdown_pct` | `(-trader_total_daily_pnl / max_daily_loss_usd) × 100` | [`trader_orchestrator_worker.py:6416-6432`](../../backend/workers/trader_orchestrator_worker.py) | [`traders_copy_trade.py:599, 797`](../../backend/services/strategies/traders_copy_trade.py) | `copy_drawdown` |
+
+`trader_drawdown_pct` пропонується через `copy_risk_context`
+у `traders_copy_trade` strategy. Gate `copy_drawdown` блокує
+коли `trader_drawdown_pct > max_copy_drawdown_pct`
+(strategy_param, default 100.0 — фактично disabled).
+
+#### Compound with
+
+- **`max_copy_drawdown_pct` (strategy_param, не risk_limit):**
+  знижуючи `max_daily_loss_usd` у N разів, ви робите
+  `trader_drawdown_pct` у **N разів чутливішим** (бо чисельник
+  той самий, знаменник зменшився). `copy_drawdown` gate
+  тригериться у N разів швидше при тих самих $-збитках.
+  Класична пастка: оператор тисне «daily loss = 50 замість
+  300», і Copy Trade бот замовкає цілком при ±$2 daily loss.
+- **`circuit_breaker_drawdown_pct`:** **НЕЗАЛЕЖНА база** —
+  цей CB-knob був би відсотком від `starting_capital`, не від
+  `max_daily_loss_usd`. **АЛЕ зараз dead code** — див. запис
+  нижче.
+
+---
+
+### CRITICAL — `circuit_breaker_drawdown_pct` (DEAD CODE — не впливає на runtime)
+
+**Default:** 12.0 % ([`strategy_sdk.py:410`](../../backend/services/strategy_sdk.py))
+**Schema:** [`strategy_sdk.py:447`](../../backend/services/strategy_sdk.py)
+**Validation:** [`strategy_sdk.py:1934-1935`](../../backend/services/strategy_sdk.py)
+
+#### Direct consumers
+
+**Жодного.** Перевірено `git grep` 2026-05-10 по
+`backend/`: усі 4 згадки — лише `strategy_sdk.py` (defaults +
+schema + coerce). **Жоден gate, жодний worker, жоден
+decision-path не читає це поле.** Параметр відображається в
+UI (вкладка Risk), валідується (0..100), персиститься в
+`risk_limits_json` — але runtime його ігнорує.
+
+#### Що насправді відіграє роль circuit breaker
+
+Реальний break — **`halt_on_consecutive_losses` +
+`max_consecutive_losses`** ([`risk_manager.py:119-130`](../../backend/services/trader_orchestrator/risk_manager.py),
+[`trader_orchestrator_worker.py:5155-5240`](../../backend/workers/trader_orchestrator_worker.py)).
+Він не дивиться на drawdown-percentage; рахує лише
+послідовні збиткові закриття.
+
+#### Compound with
+
+Не має жодного на сьогодні. Якщо ви виставили
+`circuit_breaker_drawdown_pct=12` і думаєте, що CB зрабить на
+12% drawdown — **він не зрабить нічого**. Або підіймайте
+`halt_on_consecutive_losses=True` + знижуйте
+`max_consecutive_losses` (це справжній CB), або заводьте
+плаг fix-плану на повноцінне підключення `circuit_breaker_drawdown_pct`.
+
+---
+
+### CRITICAL — `halt_on_consecutive_losses`
+
+**Default:** True ([`strategy_sdk.py:408`](../../backend/services/strategy_sdk.py))
+
+#### Direct consumers
+
+| Gate | Формула | File:line | reason-string |
+|---|---|---|---|
+| `trader_loss_streak` | `(not halt_on_losses) or trader_consecutive_losses < max_consecutive_losses → pass` | [`risk_manager.py:119-130`](../../backend/services/trader_orchestrator/risk_manager.py) | `Risk blocked: trader_loss_streak (streak=N max=M)` |
+| Auto-pause + safe-exit | `if halt_on_losses and trader_loss_streak >= max_consecutive_losses_limit: → auto-pause + reconcile_live_positions(reason="circuit_breaker_safe_exit")` | [`trader_orchestrator_worker.py:5155-5240`](../../backend/workers/trader_orchestrator_worker.py) | event_type `circuit_breaker_pause` |
+
+#### Indirect consumers
+
+Жодних похідних метрик. Але **тригерить
+`circuit_breaker_safe_exit` event**, що сам по собі
+викликає [`reconcile_live_positions`](../../backend/services/trader_orchestrator/) →
+**force-flatten усіх відкритих позицій трейдера**.
+
+#### Compound with
+
+- **`max_consecutive_losses`:** перший контролює
+  ON/OFF самого механізму, другий — поріг. Перетин обох
+  binding одночасно.
+- **`max_position_notional_usd`:** менший cap → більше спроб
+  на той самий budget → streak досягає ліміту швидше при
+  тих самих ринкових умовах.
+- **`max_open_orders`:** якщо до моменту halt-у відкрито N
+  позицій, force-flatten реалізує всі N збитків одночасно.
+  Може миттєво пробити `max_daily_loss_usd` cap, що
+  в свою чергу заблокує перезапуск після ручного
+  `is_paused=false`.
+
+---
+
+### CRITICAL — `max_consecutive_losses`
+
+**Default:** 4 ([`strategy_sdk.py:409`](../../backend/services/strategy_sdk.py))
+
+#### Direct consumers
+
+Той самий список, що й у `halt_on_consecutive_losses` вище —
+обидва читаються спільно в `risk_manager.py:119-130` та
+`trader_orchestrator_worker.py:5155-5240`.
+
+#### Indirect consumers
+
+Жодних.
+
+#### Compound with
+
+Те ж compound що й `halt_on_consecutive_losses`. Окреме
+зауваження: **знизити `max_consecutive_losses` з 4 до 2 = у
+~2× більш ймовірний halt** при тій самій win-rate стратегії.
+Грубо: P(streak=N) ≈ (1 − win_rate)^N, тому 4→2 еквівалент
+скорочення P(halt) інверсно. Перед зміною — порахуйте
+очікувану win-rate бота і прикиньте, скільки halt-ів
+очікувано на день.
+
+---
+
+### CRITICAL — `circuit_breaker_safe_exit` (event trigger, not numeric)
+
+**Не numeric knob.** Це **назва event-у**, який емітиться
+коли `halt_on_consecutive_losses` тригериться.
+
+#### Direct consumers (event handlers)
+
+| Trigger | File:line | Action |
+|---|---|---|
+| `event_type=circuit_breaker_pause`, `subkind=circuit_breaker_safe_exit` | [`trader_orchestrator_worker.py:5155-5240`](../../backend/workers/trader_orchestrator_worker.py) | (1) trader auto-paused (`is_paused=true`); (2) `reconcile_live_positions(reason="circuit_breaker_safe_exit")` — force-flatten усіх відкритих позицій |
+
+#### Indirect consumers
+
+Жодних. Це terminal action, не gate.
+
+#### Compound with
+
+- **Force-flatten + `max_daily_loss_usd`:** N відкритих
+  позицій на момент halt → одномоментна реалізація N
+  збитків → миттєвий `daily_loss_cap` breach → блокує
+  re-entry навіть після ручного `is_paused=false`.
+  Спостерігалося в session 2026-05-08.
+- **Live-mode vs shadow:** у live це реальні CLOB cancels +
+  market-orders на закриття. У shadow — virtual flatten
+  через `simulation_positions` updates. Семантика та сама,
+  cost different.
+
+---
+
+### CRITICAL — `block_new_orders` (per-trader column)
+
+**Default:** False ([`backend/models/database.py:3796`](../../backend/models/database.py))
+
+#### Direct consumers
+
+| Gate | Формула | File:line | reason-string |
+|---|---|---|---|
+| `trader_block_new_orders` (implicit) | `if trader.block_new_orders: skip entire signal-processing cycle (return early)` | [`trader_orchestrator_worker.py:5268-5274`](../../backend/workers/trader_orchestrator_worker.py) | log-only: `block_new_orders active for trader X — skipping all signal processing` |
+| (fast-tier) | той же check у fast-runtime | [`fast_trader_runtime.py:977-986`](../../backend/workers/fast_trader_runtime.py) | event_type `fast_signal_skipped` |
+
+#### Indirect consumers
+
+Жодних.
+
+#### Set via
+
+`PUT /api/traders/{trader_id}/block-new-orders`
+([`routes_traders.py:1740-1771`](../../backend/api/routes_traders.py)).
+
+#### Compound with
+
+- **`is_paused`:** обидва зупиняють вхід. Різниця:
+  `block_new_orders` тільки для нових orders, дозволяє
+  exit/manage existing. `is_paused` — повне skip cycle (no
+  signals, no exits via signal-loop).
+- **Force-flatten triggers (CB safe-exit):** працюють
+  **поверх** `block_new_orders` — навіть якщо blocked, CB
+  все одно flatten-не позиції. Перевірено в коді
+  reconcile path.
+
+---
+
+### CRITICAL — `traders.is_paused` / `traders.is_enabled`
+
+**Defaults:** `is_enabled=true`, `is_paused=false`
+([`routes_workers.py:106-107`](../../backend/api/routes_workers.py))
+
+#### Direct consumers
+
+| Gate | Формула | File:line |
+|---|---|---|
+| Trader cycle gate | `is_running = bool(is_enabled) and not bool(is_paused)`; if not running → skip cycle | [`trader_orchestrator_worker.py:1133, 8443`](../../backend/workers/trader_orchestrator_worker.py) |
+| Fast-tier cycle gate | те саме | [`fast_trader_runtime.py:977-986`](../../backend/workers/fast_trader_runtime.py) |
+
+#### Indirect consumers
+
+`traders_running` метрика на cycle dashboard ([`trader_orchestrator_worker.py:1077-1082`](../../backend/workers/trader_orchestrator_worker.py)) —
+візуальна, не gate-driving.
+
+#### Compound with
+
+- **Worker_control.is_paused (orchestrator-wide):** окрема
+  таблиця, окремий scope. `worker_control(trader_orchestrator).is_paused=true`
+  зупиняє ВЕСЬ orchestrator незалежно від per-trader flags.
+- **`block_new_orders`:** див. вище.
+
+---
+
+### CRITICAL — `worker_control.is_paused` / `worker_control.is_enabled` (orchestrator-wide)
+
+**Defaults:** `is_enabled=false`, `is_paused=true` на
+свіжому деплої ([`routes_workers.py:420-421`](../../backend/api/routes_workers.py)).
+
+#### Direct consumers
+
+| Gate | Формула | File:line | reason-string |
+|---|---|---|---|
+| Orchestrator cycle | `if (not is_enabled) or is_paused or kill_switch: skip cycle (return [], 3.0)` | [`trader_orchestrator_worker.py:8408-8413`](../../backend/workers/trader_orchestrator_worker.py) | log-only: cycle silently skipped |
+
+#### Indirect consumers
+
+Жодних.
+
+#### Set via
+
+- `POST /api/workers/{worker}/start` → `is_enabled=true, is_paused=false`
+- `POST /api/workers/{worker}/pause` → `is_paused=true`
+- `PUT /api/orchestrator/control` для finer fields
+  ([`routes_workers.py:420-467`](../../backend/api/routes_workers.py))
+
+#### Compound with
+
+- **`traders.is_paused`:** orchestrator-cycle skip має
+  пріоритет. Якщо worker_control disabled — окремі
+  `traders.is_paused=false` нічого не дають.
+- **Auto-resume on startup (Plan 0021):** при запуску
+  backend orchestrator default-flips на
+  `is_enabled=true, is_paused=false` у shadow mode. Якщо
+  ви ставите паузу в production, перезапуск backend може її
+  скинути.
+
+---
+
+### CRITICAL — `allow_taker_limit_buy_above_signal`
+
+**Default:** False ([`strategy_sdk.py:413`](../../backend/services/strategy_sdk.py); також `order_manager.py:215`).
+
+#### Direct consumers
+
+| Path | Формула | File:line | Effect |
+|---|---|---|---|
+| `_allow_taker_limit_buy_above_signal` resolver | strategy_params alias check first; then `risk_limits.allow_taker_limit_buy_above_signal`; default `False` | [`order_manager.py:263-271`](../../backend/services/trader_orchestrator/order_manager.py) | Returns boolean |
+| `_resolve_execution_price_bounds` (shadow path only) | when `True` and BUY: lift shadow simulator limit-price ceiling above signal `entry_price` (use 1.0 fallback) | [`order_manager.py:315-360, 893-940`](../../backend/services/trader_orchestrator/order_manager.py) | Shadow simulator may fill BUY at price > signal |
+
+#### Indirect consumers
+
+Жодних. Live mode price discipline не зачіпається — тільки
+shadow simulator behavior.
+
+#### Compound with
+
+- **`max_entry_drift_pct`:** if `allow_taker_limit_buy_above_signal=true`
+  but `max_entry_drift_pct` стиснуто (e.g. 2%), drift gate
+  спрацює перед order_manager — chase-up не активується.
+- **Shadow vs live:** **критично пам'ятати** — live mode
+  ігнорує цей knob. Перемикаючи `mode=shadow → live`,
+  стратегія почне rejected-ить orders, які раніше fill-ились.
+- **`limit_price_not_executable` symptom:** дефолт `False`
+  спричиняє цей reject коли market moved up since signal.
+  Знаходиться в Step 7 trader-pipeline footguns.
+
+---
+
+### How to use this matrix
+
+The walkthrough template is now live in
+[`runtime-tweaks.md` — Walkthrough template for CRITICAL knob
+changes](../operational/runtime-tweaks.md#walkthrough-template-for-critical-knob-changes).
+Every new entry that touches a CRITICAL-tier knob from this
+matrix must fill the 5-step skeleton (direct gate impact,
+indirect-metric impact, live-data SQL simulation,
+compound-effect checklist, < 30 s rollback). Prose-only
+sections (`"no impact expected"`) are rejected at audit;
+numeric values or `n/a — verified against matrix` answers are
+required, and `n/a` is acceptable **only when this matrix
+entry confirms zero impact**.
+
+Phase 3 (agent memory rule) closes the loop by making the
+matrix consultation mandatory before any PUT/UPDATE on a
+CRITICAL field.
+
+**Plan-design layer.** When the change is wrapped in a
+Ralphex plan, the plan itself must satisfy the
+[CRITICAL knob touch policy](../plans/README.md#critical-knob-touch-policy)
+in `docs/plans/README.md` — link the relevant matrix entries
+from `## Context / References`, drop the walkthrough check-box
+into every applying Task, and disclose any HIGH/MEDIUM-tier
+knobs co-touched in `## Out of scope`. The `plan-validator`
+agent (`.claude/agents/plan-validator.md`) flags violations.
+
+---
+
+

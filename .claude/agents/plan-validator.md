@@ -55,6 +55,32 @@ listed.
     `docs/plans/plan-control-index.md` Index table, and the link
     target points at the same path the plan file is at (active /
     backlog / completed). Mismatches fail.
+11. **CRITICAL knob touch policy** (per `docs/plans/README.md`
+    § "CRITICAL knob touch policy", established 2026-05-10 by
+    plan 0028).  Scan the plan's `### Task N:` blocks for any
+    line that performs a `PUT`, `POST`, `psql UPDATE`, or UI
+    Save against a knob whose name matches the canonical
+    CRITICAL-tier list in
+    `docs/strategies/_common-bot-parameters.md`
+    § "Knob interaction matrix — CRITICAL tier" (15 knobs at
+    last verified date; do not hard-code the list — read it
+    fresh each run).  For every Task that touches a CRITICAL
+    knob:
+    - The Task must include a check-box pointing at the
+      walkthrough template
+      (`runtime-tweaks.md#walkthrough-template-for-critical-knob-changes`)
+      with the 5-step language from the README snippet.
+    - The plan's `## Context / References` section must link
+      the matrix entry for that knob
+      (`_common-bot-parameters.md#critical--<knob-name>`).
+    - The plan's `## Out of scope` should disclose any HIGH or
+      MEDIUM-tier knobs the same Tasks touch (so the reader
+      knows what was *not* walked through).
+
+    Flag any of those three sub-checks individually as FAIL
+    with the offending Task number.  If no Task touches a
+    CRITICAL knob, mark this rule PASS-by-default with a
+    one-line note "no CRITICAL-tier knob touches detected."
 
 ## Output format
 
