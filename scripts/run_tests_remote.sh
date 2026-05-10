@@ -77,12 +77,19 @@ ssh "$SSH_HOST" "cd ${REMOTE_PATH} && \
     docker compose run --rm --no-deps \
         -v ./backend/tests:/app/backend/tests:ro \
         -v ./backend/pyproject.toml:/app/backend/pyproject.toml:ro \
+        -v ./backend/alembic:/app/backend/alembic:ro \
+        -v ./backend/alembic.ini:/app/backend/alembic.ini:ro \
+        -v ./backend/alembic_helpers.py:/app/backend/alembic_helpers.py:ro \
         -e DATABASE_URL=postgresql+asyncpg://homerun:homerun@postgres:5432/homerun \
         -e PYTHONDONTWRITEBYTECODE=1 \
         backend pytest ${quoted_args}"
 
-# Why we also bind-mount pyproject.toml: the runtime image was built
-# at the time of last redeploy.  pytest config (markers, timeout,
-# asyncio_mode) lives in [tool.pytest.ini_options] in pyproject.toml,
-# and changes to it MUST take effect for test runs without forcing a
-# full image rebuild.  The bind mount is read-only for safety.
+# Why we bind-mount these specific paths: the runtime image was built
+# at the time of last redeploy and ships frozen copies.  Several
+# things must take effect for test runs without forcing a full image
+# rebuild:
+#   - pyproject.toml carries [tool.pytest.ini_options] (markers,
+#     timeout, asyncio_mode).
+#   - alembic/, alembic.ini, alembic_helpers.py carry the migration
+#     chain that the alembic round-trip + replay tests exercise.
+# All bind mounts are read-only for safety.

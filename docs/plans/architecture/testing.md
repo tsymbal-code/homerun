@@ -286,25 +286,24 @@ tests ran", not "missing file").
 | Mock an external HTTP service | Inline `FakeResponse` class or `AsyncMock` against the client. Don't introduce VCR / cassettes — the project hasn't adopted that pattern. |
 | Add a long-running test | Mark it `@pytest.mark.slow`. The global timeout (60 s) still applies; if the test legitimately needs longer, decompose it. |
 | Add a test that needs the FastAPI app to boot end-to-end | Follow the subprocess pattern in [`test_main_lifespan_smoke.py`](../../../backend/tests/test_main_lifespan_smoke.py). The engine in `models.database` is created at import time, so overriding `DATABASE_URL` mid-test does nothing — the smoke test launches a fresh `python -c` subprocess with the throwaway URL in its env. |
-| Add a test for a new alembic migration | Extend [`test_alembic_roundtrip.py`](../../../backend/tests/test_alembic_roundtrip.py) or model after it — the test stamps a throwaway DB at head, downgrades one revision, re-upgrades, and asserts revision state at each step. |
+| Add a test for a new alembic migration | Extend [`test_alembic_roundtrip.py`](../../../backend/tests/test_alembic_roundtrip.py) or model after it. Two cases run automatically: (a) `test_head_migration_downgrade_upgrade_roundtrip` stamps at head, downgrades one revision, re-upgrades; (b) `test_alembic_replay_base_to_head_on_empty_db` runs the full chain from base on a fresh DB. |
+| Add a new alembic migration | Use `safe_add_column` / `safe_create_table` / `safe_create_index` from [`alembic_helpers`](../../../backend/alembic_helpers.py) instead of the raw `op.*` variants — the baseline's lazy `Base.metadata.create_all` already materialises every current ORM-mapped table/column, so non-idempotent ops would break the replay test. For raw `op.execute("CREATE …")`, add `IF NOT EXISTS` (or guard with `column_names()` for ALTER patterns). |
 | Add frontend tests | Out of band — this requires its own plan to choose a runner (Vitest is the obvious default in a Vite project), wire it into CI, and seed the first batch of tests. |
 | Add coverage reporting | Out of band — there is no coverage tool configured today. |
 
 ## Known footguns
 
-- **The migration chain is not replayable from `base`.** Plan 0019's
-  alembic round-trip surfaced that
-  [`202602130001_baseline_schema.py`](../../../backend/alembic/versions/202602130001_baseline_schema.py)
-  calls `Base.metadata.create_all(bind=op.get_bind())`, which
-  materialises *every* current ORM column at revision 1 — including
-  columns added by later `op.add_column(...)` migrations. Running
-  `alembic upgrade base→head` against a fresh DB therefore fails
-  with `DuplicateColumnError` the moment a later migration tries to
-  add one of those columns. Production was originally stamped at
-  baseline before any of those columns existed, so the operator
-  has never hit this. The round-trip test sidesteps it by stamping
-  the throwaway DB at head and only round-tripping the latest
-  migration. Replayability is a separate planned cleanup.
+- **Idempotent migrations: use the `safe_*` helpers.** Plan 0020
+  made the chain replayable from `base` by retrofitting ~13
+  schema-additive migrations to use
+  [`alembic_helpers.safe_add_column`](../../../backend/alembic_helpers.py)
+  / `safe_create_table` / `safe_create_index`, which skip
+  no-op'ed when the baseline's lazy `Base.metadata.create_all`
+  already materialised the target. New migrations should use
+  these helpers, not raw `op.add_column` / `op.create_table` /
+  `op.create_index` — `safe_*` is the canonical pattern.
+  Verified by [`test_alembic_replay_base_to_head_on_empty_db`](../../../backend/tests/test_alembic_roundtrip.py),
+  which runs the entire chain against a fresh empty DB.
 - **The 60 s global timeout is not negotiable in-tree.** A test that
   hits it doesn't fail with "timeout" in CI logs; it fails with the
   test framework killing the worker, which can leak DB sessions.
@@ -333,4 +332,4 @@ tests ran", not "missing file").
   fixture should be done with care; prefer named fixtures opted
   into per test.
 
-Last verified: 2026-05-10 (Plan 0019: registered `unit`/`db`/`slow` markers in `pyproject.toml`, added `pytest-cov`/`pytest-xdist`/`hypothesis`/`asgi-lifespan` to `requirements.txt`, shipped `test_main_lifespan_smoke.py` (4 tests; full subprocess lifespan startup verified on `polyhome-1` against throwaway DB) and `test_alembic_roundtrip.py` (head migration `stamp → downgrade → upgrade` verified), shipped `scripts/run_tests_remote.sh` operator helper, added coverage report + artifact upload to `ci.yml`. Round-trip surfaced the chronic baseline-`create_all` anti-pattern documented under Known footguns. Test count: 197 files (up from 195 in Plan 0017).)
+Last verified: 2026-05-10 (Plan 0020: extended `test_alembic_roundtrip.py` with `test_alembic_replay_base_to_head_on_empty_db` (full chain replay; verified passing on polyhome-1 — 16 s wall-clock against fresh throwaway DB). Added `safe_add_column` / `safe_create_table` / `safe_create_index` to `alembic_helpers.py`, retrofitted ~13 unguarded migrations + the raw-SQL `search_index` migration. The "migration chain not replayable from base" footgun is now resolved; bind-mounts in `scripts/run_tests_remote.sh` extended to include `alembic/` and `alembic_helpers.py` so migration changes take effect without an image rebuild. Plan 0019 baseline still verified: 4 lifespan smoke tests + head-only round-trip pass.)
