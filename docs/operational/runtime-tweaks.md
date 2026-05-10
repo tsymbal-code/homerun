@@ -50,7 +50,9 @@ matrix — CRITICAL tier** section of
 [`docs/strategies/_common-bot-parameters.md`](../strategies/_common-bot-parameters.md#knob-interaction-matrix--critical-tier),
 the entry in this journal is **incomplete** without a 5-step
 walkthrough — see the [Walkthrough template](#walkthrough-template-for-critical-knob-changes)
-below. The list of CRITICAL knobs covered today (2026-05-10):
+below. The list of 21 CRITICAL knobs covered today (per-entry
+**audited per Plan 0034 on 2026-05-10** — read each entry's
+`<!-- audited YYYY-MM-DD: <verdict> -->` marker before applying):
 
 `max_position_notional_usd` · `max_trade_notional_usd` ·
 `max_gross_exposure_usd` · `min_exit_notional` (gate, not knob;
@@ -61,7 +63,11 @@ matrix) · `halt_on_consecutive_losses` ·
 `max_consecutive_losses` · `circuit_breaker_safe_exit` (event,
 not knob) · `block_new_orders` · `traders.is_paused/is_enabled`
 · `worker_control.is_paused/is_enabled` ·
-`allow_taker_limit_buy_above_signal`.
+`allow_taker_limit_buy_above_signal` ·
+`max_per_market_exposure_usd` · `live_risk_clamps.*` (umbrella,
+9 fields) · `MAX_TRADE_SIZE_USD/MAX_DAILY_TRADE_VOLUME/MIN_ACCOUNT_BALANCE_USD`
+· `MAX_PER_MARKET_USD` · `worker_control.kill_switch` ·
+`runtime_metadata.resume_policy`.
 
 Without the walkthrough, a "tighten the loss cap" tweak can
 silently kill the copy-trade bot via the
