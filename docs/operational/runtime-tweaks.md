@@ -2450,3 +2450,138 @@ ssh polyhome-1 'curl -fsS -X PUT http://127.0.0.1:8888/api/traders/61dcbeb2b9bc4
 - **Status**: SHIPPED — verified 2026-05-10. Cascade-failure
   root cause from the 10:12 entry is now fully closed.
 
+### 2026-05-10 ~13:24 UTC — Sandbox bot: raise `max_consecutive_losses` 4 → 12 (operator-applied)
+
+**Surface**: `traders.risk_limits_json.max_consecutive_losses` for
+trader `61dcbeb2b9bc42bd9e9635a09ae5e0c3` (Sandbox - Traders Copy
+Trade, mode=shadow).
+
+**Applied via**: UI (operator-driven). Audit recorded as
+`trader_config_revisions` row created `2026-05-10 13:24:27.727054`,
+no `operator` set (UI does not pass operator name yet).
+
+**Why**: Post Plan 0024 the IntegrityError-as-loss source is gone,
+so `halt_on_consecutive_losses=true` now reflects only **real**
+P&L losses. With Sandbox's measured win rate of 44.2% (per the
+217-order audit), the probability of 4 losses in a row is
+`(1 - 0.442)^4 = 9.7 %`. At ~30 cycles/h with one trip
+realising losses on every open position via
+`circuit_breaker_safe_exit`, this triggered the breaker ~3 times
+per hour and produced large force-flatten cascades each time
+(observed: 68 positions flattened in the 13:00:08 trip). Operator
+chose to raise the streak threshold rather than disable the
+breaker entirely; this is a CRITICAL knob — full walkthrough
+below.
+
+#### Step 1 — Direct gate impact
+
+| Field | Before | After | Direct gate(s) | Pre threshold | Post threshold |
+|---|---:|---:|---|---|---|
+| `max_consecutive_losses` | 4 | 12 | `trader_loss_streak` ([`risk_manager.py:119-130`](../../backend/services/trader_orchestrator/risk_manager.py)) | `trader_consecutive_losses < 4 → pass` | `trader_consecutive_losses < 12 → pass` |
+| `max_consecutive_losses` | 4 | 12 | Auto-pause + `circuit_breaker_safe_exit` ([`trader_orchestrator_worker.py:5155-5240`](../../backend/workers/trader_orchestrator_worker.py)) | Trip when `streak ≥ 4` | Trip when `streak ≥ 12` |
+
+Trip probability at 44.2 % win rate:
+- Pre: `(1 - 0.442)^4 = 9.7 %` per 4-trade window
+- Post: `(1 - 0.442)^12 = 0.27 %` per 12-trade window
+- Reduction factor: **~36×**
+
+#### Step 2 — Indirect-metric impact
+
+`n/a — matrix confirms zero indirect consumers` (the streak
+counter feeds only the `trader_loss_streak` gate plus the
+auto-pause path; no derived metrics anywhere else).
+
+#### Step 3 — Live data simulation
+
+```sql
+-- Recent trip frequency on Sandbox bot (last 24h, before this change):
+SELECT count(*) AS trips_24h
+FROM trader_events
+WHERE trader_id = '61dcbeb2b9bc42bd9e9635a09ae5e0c3'
+  AND event_type = 'circuit_breaker_pause'
+  AND created_at > now() - interval '24 hours';
+-- Result: ~5 trips/24h pre-change (mostly clustered post Phase 0
+-- cap experiments). The math above predicts trip frequency drops
+-- to <1/12-13h post-change at steady-state win rate.
+```
+
+#### Step 4 — Compound-effect checklist
+
+- [ ] `max_position_notional_usd` — n/a; per-position size unchanged.
+- [ ] `max_trade_notional_usd` — n/a; per-trade cap unchanged.
+- [ ] `max_gross_exposure_usd` — n/a; gross cap unchanged.
+- [x] **`max_open_orders` / `max_open_positions`** — **COMPOUND BIG**.
+  When the breaker eventually does trip, `circuit_breaker_safe_exit`
+  force-flattens **all** currently-open positions at market
+  prices. Higher streak threshold = more cycles between trips =
+  more positions accumulated before each trip. Observed at
+  4-limit: ~68 positions per trip. At 12-limit: extrapolated
+  to ~150-200 positions per trip. Per-trip realized loss could
+  be 2-3× larger even if frequency drops 36×. **Bounded by**
+  `max_open_positions=500` (current cap). Worth lowering this to
+  ~100-150 in a separate walkthrough to bound safe_exit blast
+  radius.
+- [x] **`max_daily_loss_usd`** — **COMPOUND**. Larger per-trip
+  flatten could blow daily cap in ONE event: 150 positions ×
+  $5 unfavorable closing = $750. Daily cap is $1000 → trip
+  consumes 75 % of daily budget instantly → bot is paused for
+  the rest of the UTC day even if trip itself is rare. Net
+  daily exposure: per-day expected losses likely LOWER than
+  4-limit baseline (3 trips × ~$340 = $1020/h vs 0.077 trips ×
+  ~$750 = $58/h), but **single worst-case is closer to the
+  cap**. Acceptable for shadow mode; revisit if flipping live.
+- [ ] `circuit_breaker_drawdown_pct` — DEAD CODE per matrix; ignore.
+- [x] **`halt_on_consecutive_losses`** — **direct sibling**, both
+  knobs read together at the gate. Currently `true` (restored
+  after Plan 0024). Change is meaningful only because halt is
+  enabled. If operator later sets halt=false, this number
+  becomes informational only.
+- [x] **`circuit_breaker_safe_exit`** — see compound notes
+  above; this is the trigger event whose blast radius scales
+  with open-position count.
+- [ ] `block_new_orders` — n/a.
+- [ ] `traders.is_paused` / `traders.is_enabled` — n/a (operator
+  also resumed the bot in the same UI step; bot is now
+  `is_paused=false`).
+- [ ] `worker_control.is_paused` / `worker_control.is_enabled` — n/a.
+- [ ] `allow_taker_limit_buy_above_signal` — n/a.
+
+Strategy-param compound (outside matrix scope):
+- **`max_position_size`** (Copy Trade strategy_param, default
+  1000.0): no effect (orchestrator-level
+  `max_position_notional_usd=100` already dominates).
+- **`max_copy_drawdown_pct`** (Copy Trade strategy_param,
+  default 100.0): no effect (no derived `trader_drawdown_pct`
+  metric depends on streak).
+
+#### Step 5 — Rollback (< 30 s)
+
+```bash
+ssh polyhome-1 'curl -fsS -X PUT http://127.0.0.1:8888/api/traders/61dcbeb2b9bc42bd9e9635a09ae5e0c3 \
+  -H "Content-Type: application/json" \
+  -d "{\"requested_by\":\"operator\",\"reason\":\"Rollback max_consecutive_losses 12 → 4\",\"risk_limits\":{...full dict with max_consecutive_losses: 4...}}"'
+```
+
+Pre-change full dict is in `trader_config_revisions` (latest row
+where `created_at < 2026-05-10 13:24:27`,
+`trader_before_json -> 'risk_limits'`).
+
+#### Status
+
+APPLIED + bot resumed. Operator decision; my recommendation
+agreed with this direction (option A from the diagnostic
+conversation).
+
+**Operational watch-items**:
+1. Monitor `circuit_breaker_pause` event frequency over next
+   24h. Expected: ≤1 trip vs pre-change ~3-5/h.
+2. When the next trip does fire, record how many positions
+   `circuit_breaker_safe_exit` flattens and the resulting
+   daily P&L delta. If ≥ $750 in one trip, consider lowering
+   `max_open_positions` to bound blast radius (would be its
+   own walkthrough).
+3. Before flipping the bot to `live` mode, revisit this knob —
+   12-loss streak at $5 live position size = $60 worst-case
+   streak (acceptable), but the safe_exit-blast compound
+   becomes more material with real money.
+
