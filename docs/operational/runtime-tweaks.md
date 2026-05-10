@@ -1958,3 +1958,104 @@ OPEN — fix deployed and verified.  Remaining work:
 - **Status**: SHIPPED — verified 2026-05-10. Plan 0018's
   shadow_ledger_backfill_failed stream is now fully silenced.
 
+### 2026-05-10 ~10:08 UTC — conservative live-risk limits on Sandbox Traders Copy Trade
+
+- **Surface**: `traders.risk_limits_json` for trader
+  `61dcbeb2b9bc42bd9e9635a09ae5e0c3` (Sandbox - Traders Copy Trade,
+  mode=shadow).
+- **Applied via**: `PUT /api/traders/{id}` through loopback
+  (basic-auth bypassed). Audit recorded as
+  `trader_config_revisions.operator='operator-claude'`,
+  `reason='Phase 0 conservative live-risk limits — Sandbox
+  copy-trade prep'`.
+- **Why**: Operator wants to flip the Sandbox bot to `mode=live`
+  in the near future. The 217-terminal-order audit on the same
+  date showed the bot is barely profitable (+$12 net P&L, 44%
+  win rate) with losses concentrated in ~5 leader wallets and
+  the sports/esports prop-bet market topic. Conservative caps
+  applied **now in shadow** to observe how often each cap fires
+  before the live flip. Pruning the leader pool itself is parked
+  in plan 0024 (backlog) — needs ≥ 200 more terminal orders to
+  be statistically firm.
+- **Changes** (5 fields, all in `risk_limits`):
+
+  | field | before | after |
+  |---|---:|---:|
+  | `max_position_notional_usd` | 100 | **5** |
+  | `max_trade_notional_usd` | 100 | **5** |
+  | `max_gross_exposure_usd` | 2000 | **100** |
+  | `max_daily_loss_usd` | 1000 | **100** |
+  | `max_daily_spend_usd` | 5000 | **200** |
+
+  All other risk fields preserved (max_open_orders=500,
+  max_open_positions=500, allow_averaging=false,
+  halt_on_consecutive_losses=true, max_consecutive_losses=4,
+  circuit_breaker_drawdown_pct=12, max_entry_drift_pct=15,
+  portfolio.enabled=false). Strategy params untouched.
+
+- **Interaction analysis** (so no surprises):
+  - **Effective per-position cap = $5** (orchestrator
+    `max_position_notional_usd=5` dominates strategy
+    `max_position_size=1000`).
+  - **Max simultaneous open positions ≈ 20** (`gross / per-position
+    = 100 / 5 = 20`). The trader still has
+    `max_open_orders=500` / `max_open_positions=500` but the
+    gross-exposure cap is now the single binding constraint.
+  - **Sandbox currently has 49 open positions** (from the same
+    audit). Risk manager does NOT close them; it blocks NEW
+    orders until existing drain to ≤ 20. Expect a multi-hour
+    "frozen on new entries" period as positions resolve naturally.
+    This is intended.
+  - **Daily-loss cap = $100** is tighter than the global
+    `app_settings.global_risk.max_daily_loss_usd=500` — the
+    tighter wins, so the trader-level value is what fires.
+  - **`circuit_breaker_drawdown_pct=12`** is now mostly theoretical
+    on this scale: 12% of $100 = $12, but daily loss cap of $100
+    will fire long before that on a sustained losing streak.
+  - **`portfolio.min_order_notional_usd=10`** is dormant
+    (`portfolio.enabled=false`). DO NOT enable portfolio mode
+    without lowering this to ≤ 5, otherwise every order will be
+    rejected as below the portfolio min-order floor.
+  - **`proportional_multiplier=1.0`** in strategy params still
+    tries to copy 1:1 with leader, but final size clamps to $5
+    for any leader trade > $5 (i.e. almost all). Sizing-edge
+    information is lost but the cap correctly enforces. May
+    revisit and switch to a smaller multiplier if operator wants
+    fixed-size bets visible as such.
+  - **No global `live_risk_clamps` for this trader** — `max_open_orders_cap`
+    etc. are absent from `app_settings.global_runtime.live_risk_clamps`,
+    so trader-level values pass through unchanged.
+
+- **Verification**:
+  ```
+  max_pos | max_trade | max_gross | max_daily_loss | max_daily_spend
+       5  |    5      |   100     |     100        |     200
+  ```
+  Updated_at: `2026-05-10 10:08:34`. Audit row in
+  `trader_config_revisions` (id=`edb50a24...`).
+
+- **Rollback** (if monitoring shows the caps are too tight or
+  some unexpected interaction surfaces):
+  ```bash
+  ssh polyhome-1 'curl -fsS -X PUT http://127.0.0.1:8888/api/traders/61dcbeb2b9bc42bd9e9635a09ae5e0c3 \
+    -H "Content-Type: application/json" \
+    -d "{\"requested_by\":\"operator\",\"reason\":\"Rollback Phase 0 caps\",\"risk_limits\":{...PRE-CHANGE FULL DICT...}}"'
+  ```
+  Pre-change full dict is recorded in `trader_config_revisions.trader_before_json`
+  for revision id `edb50a24fd8f4a90b7335b6242a15beb` —
+  copy-paste from there to restore exactly.
+
+- **Status**: APPLIED — bot continues cycling in shadow. Operator
+  to monitor over the next 24-48 h: how often each cap fires,
+  whether the cap-induced "frozen on entries" period collapses
+  cleanly as positions drain, whether realised P&L stabilises
+  with the smaller per-position notional.
+
+- **Related backlog plans**:
+  - [`backlog/0024-blacklist-losing-leaders-on-sandbox-traders-copy-trade.md`](../plans/backlog/0024-blacklist-losing-leaders-on-sandbox-traders-copy-trade.md)
+    — manual leader pruning, activate after ≥ 200 fresh terminal
+    orders.
+  - [`backlog/0025-per-leader-analytics-endpoint-and-ui-tile.md`](../plans/backlog/0025-per-leader-analytics-endpoint-and-ui-tile.md)
+    — per-leader/per-market analytics API + UI tile for ongoing
+    decisions.
+
