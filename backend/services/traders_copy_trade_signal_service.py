@@ -786,6 +786,30 @@ class TradersCopyTradeSignalService:
                     outcome = str(raw_token.get("outcome") or "").strip()
                     break
 
+            # Binary-market normalisation: most "categorical" Polymarket
+            # events are actually N separate binary markets (each
+            # candidate gets its own conditionId with [Yes, No] tokens).
+            # Gamma sometimes returns these with a non-canonical outcome
+            # label (e.g. "Arsenal" instead of "Yes"), which then breaks
+            # the downstream `buy_yes`/`buy_no` direction resolver. When
+            # the resolved market is unambiguously binary (exactly two
+            # tokens and exactly two outcomes, one of which is Yes or No),
+            # force the canonical "Yes"/"No" label by token index.
+            # True multi-outcome single-market structures (rare — UFC
+            # outright, LoL series) skip this normalisation and pass the
+            # original label through unchanged.
+            if (
+                len(token_ids_list) == 2
+                and len(outcomes_list) == 2
+            ):
+                lowered = {str(o or "").strip().lower() for o in outcomes_list}
+                if {"yes", "no"} & lowered:
+                    canonical = ["Yes", "No"]
+                    for idx, tid in enumerate(token_ids_list):
+                        if str(tid or "").strip() == token_id and idx < len(canonical):
+                            outcome = canonical[idx]
+                            break
+
         snapshot = _TokenMarketSnapshot(
             market_id=market_id,
             market_question=market_question,

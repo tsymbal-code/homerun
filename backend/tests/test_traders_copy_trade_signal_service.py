@@ -152,6 +152,88 @@ async def test_on_wallet_trade_ignores_execution_wallet():
 
 
 @pytest.mark.asyncio
+async def test_resolve_market_snapshot_normalises_binary_market_outcome_to_canonical_yes_no(monkeypatch):
+    service = TradersCopyTradeSignalService()
+    token_id = "token-no-1"
+
+    async def _fake_lookup(_token_id: str, **_kwargs):
+        return {
+            "condition_id": "cond-1",
+            "question": "Will Arsenal win EPL 2026?",
+            "slug": "arsenal-epl-2026",
+            "event_slug": "epl-champion-2026",
+            "token_ids": ["token-yes-0", token_id],
+            "outcomes": ["Yes", "No"],
+            "liquidity": 1234.0,
+        }
+
+    monkeypatch.setattr(
+        copy_trade_signal_service_module.polymarket_client,
+        "get_market_by_token_id",
+        _fake_lookup,
+    )
+
+    snapshot = await service._resolve_market_snapshot(token_id)
+
+    assert snapshot.market_id == "cond-1"
+    assert snapshot.outcome == "No"
+
+
+@pytest.mark.asyncio
+async def test_resolve_market_snapshot_normalises_binary_market_with_non_canonical_label(monkeypatch):
+    service = TradersCopyTradeSignalService()
+    token_id = "token-arsenal-yes"
+
+    async def _fake_lookup(_token_id: str, **_kwargs):
+        return {
+            "condition_id": "cond-arsenal",
+            "question": "Will Arsenal win EPL 2026?",
+            "slug": "arsenal-epl-2026",
+            "event_slug": "epl-champion-2026",
+            "token_ids": [token_id, "token-arsenal-no"],
+            "outcomes": ["Arsenal", "No"],
+            "liquidity": 555.0,
+        }
+
+    monkeypatch.setattr(
+        copy_trade_signal_service_module.polymarket_client,
+        "get_market_by_token_id",
+        _fake_lookup,
+    )
+
+    snapshot = await service._resolve_market_snapshot(token_id)
+
+    assert snapshot.outcome == "Yes"
+
+
+@pytest.mark.asyncio
+async def test_resolve_market_snapshot_passes_through_true_multi_outcome_label(monkeypatch):
+    service = TradersCopyTradeSignalService()
+    token_id = "token-fighter-b"
+
+    async def _fake_lookup(_token_id: str, **_kwargs):
+        return {
+            "condition_id": "cond-ufc",
+            "question": "UFC outright winner",
+            "slug": "ufc-outright",
+            "event_slug": "ufc-outright",
+            "token_ids": ["token-fighter-a", token_id, "token-fighter-c"],
+            "outcomes": ["Fighter A", "Fighter B", "Fighter C"],
+            "liquidity": 100.0,
+        }
+
+    monkeypatch.setattr(
+        copy_trade_signal_service_module.polymarket_client,
+        "get_market_by_token_id",
+        _fake_lookup,
+    )
+
+    snapshot = await service._resolve_market_snapshot(token_id)
+
+    assert snapshot.outcome == "Fighter B"
+
+
+@pytest.mark.asyncio
 async def test_process_wallet_trade_skips_unresolved_token_outcome(monkeypatch):
     service = TradersCopyTradeSignalService()
 

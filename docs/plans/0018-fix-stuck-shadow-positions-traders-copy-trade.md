@@ -228,7 +228,7 @@ When the leader trade lands on a binary market (most common
 arrays from gamma to map back from `token_id` to the canonical
 binary outcome label.
 
-- [ ] In [`backend/services/traders_copy_trade_signal_service.py`](../../backend/services/traders_copy_trade_signal_service.py)
+- [x] In [`backend/services/traders_copy_trade_signal_service.py`](../../backend/services/traders_copy_trade_signal_service.py)
       `_resolve_market_snapshot` (the function that gathers
       `market.outcome` for a given `token_id`): when the resolved
       market has exactly two `tokens[]` and exactly two
@@ -237,7 +237,7 @@ binary outcome label.
       `"Yes"`/`"No"` matching the index of the trader's `token_id`
       in `tokens[]`. Otherwise (true multi-outcome single-market),
       pass the original outcome label through unchanged.
-- [ ] Add regression test in existing
+- [x] Add regression test in existing
       [`backend/tests/test_traders_copy_trade_signal_service.py`](../../backend/tests/test_traders_copy_trade_signal_service.py)
       (next to `test_process_wallet_trade_skips_unresolved_token_outcome`
       at line 155): `test_resolve_market_snapshot_normalises_binary_market_outcome_to_canonical_yes_no`
@@ -245,15 +245,15 @@ binary outcome label.
       and `tokens=[t0,t1]`; the leader trade's `token_id=t1`
       should resolve to `outcome="No"` (not lowercase, not
       capitalized as "NO" pre-normalisation).
-- [ ] Add a sister regression test in the same file:
+- [x] Add a sister regression test in the same file:
       `test_resolve_market_snapshot_passes_through_true_multi_outcome_label`
       — feed a snapshot with `outcomes=["Fighter A","Fighter B","Fighter C"]`
       and `tokens=[t0,t1,t2]`; leader's `token_id=t1` should
       resolve to the unchanged `outcome="Fighter B"`. Pins that
       we don't accidentally over-normalise the rare true
       multi-outcome case.
-- [ ] Run validation: `cd backend && pytest tests/test_traders_copy_trade_signal_service.py -q`.
-- [ ] Mark completed
+- [x] Run validation: `cd backend && pytest tests/test_traders_copy_trade_signal_service.py -q`.
+- [x] Mark completed
 
 ### Task 3: defensive widening in shadow simulator and position lifecycle
 
