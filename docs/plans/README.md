@@ -337,6 +337,7 @@ Active plans (canonical order, prerequisites and categories live in
 - [0034 — Per-entry audit of the CRITICAL-tier knob matrix](0034-critical-knob-matrix-per-entry-audit.md)
 - [0035 — Split entry-band cap from execution-price cap in shadow chase-up](0035-split-entry-band-from-execution-price-cap.md)
 - [0036 — Per-entry audit of the HIGH-tier knob matrix](0036-high-knob-matrix-per-entry-audit.md)
+- [0037 — Verify Plan 0035 chase-cap drop on 2026-05-11](0037-verify-plan-0035-chase-cap-drop-2026-05-11.md)
 
 Architecture notes:
 
