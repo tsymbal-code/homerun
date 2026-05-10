@@ -58,20 +58,27 @@ type WalletFallbackMetrics = {
 
 const SCORE_DELTA_HIDE_THRESHOLD = 0.0025
 
+// Theme-agnostic tone palette: semi-transparent fills + saturated 400-level
+// text/borders so the pills read clearly against both the dark page surface
+// and any light-mode override.  The previous `bg-amber-100 dark:bg-amber-500/18`
+// pair relied on the `dark:` variant activating reliably; in practice some
+// users saw the light-mode pastel fill (cream/pink/lavender) come through with
+// dark-mode foreground text, leaving labels unreadable.  Single-source
+// classes that work everywhere remove that failure mode.
 const METRIC_TONE_CLASSES: Record<MetricTone, string> = {
-  good: 'border-sky-300 bg-sky-100 text-sky-900 dark:border-sky-400/35 dark:bg-sky-500/15 dark:text-sky-100',
-  warn: 'border-amber-300 bg-amber-100 text-amber-900 dark:border-amber-400/40 dark:bg-amber-500/18 dark:text-amber-100',
-  bad: 'border-rose-300 bg-rose-100 text-rose-900 dark:border-rose-400/45 dark:bg-rose-500/18 dark:text-rose-100',
-  neutral: 'border-slate-300 bg-slate-100 text-slate-800 dark:border-border/85 dark:bg-muted/55 dark:text-foreground/90',
-  info: 'border-indigo-300 bg-indigo-100 text-indigo-900 dark:border-indigo-400/40 dark:bg-indigo-500/16 dark:text-indigo-100',
+  good: 'border-sky-400/50 bg-sky-500/15 text-sky-400',
+  warn: 'border-amber-400/55 bg-amber-500/18 text-amber-400',
+  bad: 'border-rose-400/55 bg-rose-500/18 text-rose-400',
+  neutral: 'border-border/85 bg-muted/55 text-foreground/85',
+  info: 'border-indigo-400/50 bg-indigo-500/16 text-indigo-400',
 }
 
 const METRIC_BAR_CLASSES: Record<MetricTone, string> = {
-  good: 'bg-sky-600 dark:bg-sky-300/95',
-  warn: 'bg-amber-600 dark:bg-amber-300/95',
-  bad: 'bg-rose-600 dark:bg-rose-300/95',
-  neutral: 'bg-slate-500 dark:bg-muted-foreground/80',
-  info: 'bg-indigo-600 dark:bg-indigo-300/95',
+  good: 'bg-sky-400/85',
+  warn: 'bg-amber-400/85',
+  bad: 'bg-rose-400/85',
+  neutral: 'bg-muted-foreground/70',
+  info: 'bg-indigo-400/85',
 }
 
 function shortAddress(address: string): string {
