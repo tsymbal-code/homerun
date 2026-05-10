@@ -74,6 +74,7 @@ notes.
 | 0026 | [Walkthrough template for CRITICAL knob changes](completed/0026-runtime-tweaks-walkthrough-template-critical.md) | D        | 0025          |
 | 0027 | [Agent memory rule — CRITICAL knob walkthrough enforcement](completed/0027-agent-memory-rule-critical-knob-walkthrough.md) | D        | 0025, 0026    |
 | 0028 | [Default Ralphex plan rule — CRITICAL knob touch policy](completed/0028-ralphex-plan-rule-critical-knob-touch.md) | D        | 0025, 0026, 0027 |
+| 0029 | [Knob interaction matrix — HIGH tier expansion + 4 dead-code findings](completed/0029-knob-matrix-high-tier-expansion.md) | D        | 0025          |
 
 When adding a row: keep this table sorted by ID ascending. Don't
 re-number plans — gaps in IDs are normal and expected (deleted or
