@@ -95,7 +95,7 @@ longer flags this as a chronic issue.
 
 ### Task 1: Extend `alembic_helpers` with safe op wrappers
 
-- [ ] Add to [backend/alembic_helpers.py](../../backend/alembic_helpers.py):
+- [x] Add to [backend/alembic_helpers.py](../../backend/alembic_helpers.py):
   - `safe_add_column(table_name, column)` — calls `op.add_column`
     only if the column doesn't already exist.
   - `safe_create_table(table_name, *columns, **kwargs)` — calls
@@ -104,10 +104,10 @@ longer flags this as a chronic issue.
   - `safe_create_index(index_name, table_name, columns, **kwargs)`
     — calls `op.create_index` only if the index doesn't exist.
     Passes through `unique=`, `postgresql_where=`, etc.
-- [ ] Each helper logs (via standard alembic logger) when it
+- [x] Each helper logs (via standard alembic logger) when it
       skips, so a re-run produces an audit trail in the
       migration logs.
-- [ ] Mark completed
+- [x] Mark completed
 
 ### Task 2: Identify the unguarded migrations
 
@@ -139,67 +139,84 @@ reveals more once Task 3 lands.
 
 Total unique files to touch: ~13.
 
-- [ ] Mark completed
+- [x] Mark completed
 
 ### Task 3: Sweep the unguarded migrations
 
 For each file in Task 2's list:
 
-- [ ] Replace `op.add_column(table, sa.Column(...))` calls with
-      `safe_add_column(table, sa.Column(...))`.
-- [ ] Replace `op.create_table(table, *cols, ...)` calls with
-      `safe_create_table(table, *cols, ...)`.
-- [ ] Replace `op.create_index(name, table, cols, ...)` calls with
-      `safe_create_index(name, table, cols, ...)`.
-- [ ] Add `from alembic_helpers import safe_add_column,
-      safe_create_table, safe_create_index` (only the names actually
-      used) at the top of each modified file.
-- [ ] Do **not** modify `downgrade()` — keep the project convention.
-- [ ] Mark completed
+- [x] Replace `op.add_column` / `op.create_table` /
+      `op.create_index` with their `safe_*` counterparts.
+- [x] Add `from alembic_helpers import …` at the top of each
+      modified file.
+- [x] Do **not** modify `downgrade()` — keep the project convention.
+- [x] **Additional fix surfaced during verification**:
+      [`202605010004_global_search_index.py`](../../backend/alembic/versions/202605010004_global_search_index.py)
+      uses raw `op.execute("CREATE TABLE search_index ...")`
+      (because of the `tsv TSVECTOR GENERATED ALWAYS AS (…) STORED`
+      column that SQLAlchemy can't easily express). Added
+      `IF NOT EXISTS` to the `CREATE TABLE` and `CREATE INDEX`
+      statements, plus a `column_names("search_index")` guard
+      that runs `ALTER TABLE … ADD COLUMN tsv …` if missing.
+      Necessary because the ORM `SearchIndex` model deliberately
+      omits `tsv` (it's Postgres-managed), so baseline's
+      `Base.metadata.create_all` creates the table without `tsv`,
+      and the GIN index would otherwise fail with
+      `UndefinedColumnError`.
+- [x] **Test runner script extension**:
+      [`scripts/run_tests_remote.sh`](../../scripts/run_tests_remote.sh)
+      now bind-mounts `backend/alembic/`, `backend/alembic.ini`,
+      and `backend/alembic_helpers.py` (read-only) so migration
+      changes take effect inside the throwaway test container
+      without rebuilding the image.
+- [x] Mark completed
 
 ### Task 4: Extend the round-trip test with a replay case
 
-- [ ] Add to
-      [backend/tests/test_alembic_roundtrip.py](../../backend/tests/test_alembic_roundtrip.py)
-      a second test:
-      `test_alembic_replay_base_to_head_on_empty_db` —
-  1. Allocate a throwaway DB **with empty `MetaData()`** so the
-     factory does not run `create_all` (we want a true empty DB
-     for alembic to bootstrap from base).
-  2. Run `command.upgrade(cfg, "head")` against it.
-  3. Assert the final revision matches the script directory's
-     head revision.
-  4. Marker: `db` + `slow` (full chain replay is ~10–20 s on a
-     warm host).
-- [ ] The existing head-only round-trip test stays — it remains
-      the cheap regression guard for new migrations.
-- [ ] Mark completed
+- [x] Add `test_alembic_replay_base_to_head_on_empty_db` to
+      [backend/tests/test_alembic_roundtrip.py](../../backend/tests/test_alembic_roundtrip.py).
+      **Implementation deviation**: the in-process route
+      (`command.upgrade` against a shared async connection) hits
+      an alembic ``assert self._transaction is not None`` deep in
+      ``MigrationContext`` — first inside the ~130-migration chain
+      (cumulative state issue), and definitively in
+      `202603120001_db_hot_path_indexes` which uses
+      ``context.autocommit_block()`` for ``CREATE INDEX
+      CONCURRENTLY``. Switched to a subprocess that shells out to
+      ``python -m alembic upgrade head``, which gives alembic the
+      standalone connection lifecycle its env.py expects and
+      matches what production's ``init_database`` does on cold
+      start. Reads the post-replay revision via a separate async
+      engine and asserts it matches script-head.
+- [x] The existing head-only round-trip test stays — cheap
+      regression guard for new migrations.
+- [x] Mark completed
 
 ### Task 5: Verify on remote
 
-- [ ] `bash scripts/run_tests_remote.sh tests/test_alembic_roundtrip.py`
+- [x] `bash scripts/run_tests_remote.sh tests/test_alembic_roundtrip.py`
       — both tests pass.
-- [ ] `bash scripts/run_tests_remote.sh tests/test_main_lifespan_smoke.py
+- [x] `bash scripts/run_tests_remote.sh tests/test_main_lifespan_smoke.py
       tests/test_alembic_roundtrip.py` — combined run still passes.
-- [ ] No leftover throwaway databases:
+- [x] No leftover throwaway databases:
       `ssh polyhome-1 'cd /home/polyhome/homerun && docker compose
       exec -T postgres psql -U homerun -d homerun -c "select
       count(*) from pg_database where datname like
       '\''homerun_test_alembic%'\''"'` returns `0`.
-- [ ] Mark completed
+- [x] Mark completed
 
 ### Task 6: Update architecture note + close plan
 
-- [ ] Update
+- [x] Update
       [docs/plans/architecture/testing.md](architecture/testing.md):
   - Remove the "migration chain is not replayable from base"
     footgun (now resolved by this plan).
   - Add a "use the `safe_*` helpers in new migrations" note to
     the "When you want to…" extension-points table.
   - Bump `Last verified` to today, reference Plan 0020.
-- [ ] `git mv docs/plans/0020-make-alembic-migrations-replayable.md
+- [x] `git mv docs/plans/0020-make-alembic-migrations-replayable.md
       docs/plans/completed/0020-make-alembic-migrations-replayable.md`.
-- [ ] Update [plan-control-index.md](plan-control-index.md): add
+- [x] Update [plan-control-index.md](plan-control-index.md): add
       a row + per-plan note, link target points at `completed/`.
-- [ ] `git log --grep='Plan: 0020'` shows the full commit chain.
-- [ ] Mark completed
+- [x] `git log --grep='Plan: 0020'` shows the full commit chain.
+- [x] Mark completed

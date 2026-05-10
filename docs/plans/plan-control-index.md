@@ -65,6 +65,7 @@ notes.
 | 0017 | [Real-diff audit of `<unverified>` architecture notes](completed/0017-audit-unverified-arch-notes.md) | D        | 0013, 0014    |
 | 0018 | [Fix stuck shadow positions on `traders_copy_trade`](completed/0018-fix-stuck-shadow-positions-traders-copy-trade.md) | B        | —             |
 | 0019 | [Test suite hardening — coverage, markers, smoke tests, remote runner](completed/0019-test-suite-hardening.md) | D        | —             |
+| 0020 | [Make Alembic migrations replayable from base on a fresh DB](completed/0020-make-alembic-migrations-replayable.md) | R        | 0019          |
 | 0021 | [Auto-resume orchestrator in shadow mode on application startup](completed/0021-orchestrator-auto-resume-shadow-on-startup.md) | B        | —             |
 
 When adding a row: keep this table sorted by ID ascending. Don't
