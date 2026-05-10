@@ -189,3 +189,329 @@ async def _drive() -> int:
 
 sys.exit(asyncio.run(_drive()))
 """
+
+
+# ---------------------------------------------------------------------------
+# _reset_orchestrator_boot_state branch tests (plan 0021)
+# ---------------------------------------------------------------------------
+#
+# The boot-state hook in main.py decides whether to hard-reset the
+# trader orchestrator (default safety) or auto-resume in shadow mode.
+# The branch picked is a function of the prior persisted control row:
+# shadow + enabled + unpaused → auto-resume, everything else (live,
+# stopped, or paused) → hard reset.  These tests pin both branches
+# plus the "always clear live_preflight / live_arm" invariant.
+
+
+@pytest.mark.asyncio
+async def test_reset_orchestrator_boot_state_auto_resumes_shadow_when_previously_running(monkeypatch):
+    import main
+
+    update_calls: list[dict] = []
+    snapshot_calls: list[dict] = []
+    runtime_calls: list[dict] = []
+
+    async def _fake_read(_session):
+        return {
+            "mode": "shadow",
+            "is_enabled": True,
+            "is_paused": False,
+            "run_interval_seconds": 5,
+            "requested_run_at": "2026-05-10T05:34:00+00:00",
+            "settings_json": {
+                "selected_account_id": "acc-1",
+                "shadow_account_id": "acc-1",
+                "live_arm": {"armed_until": "stale"},
+                "live_preflight": {"checks": []},
+            },
+        }
+
+    async def _fake_update(_session, **kwargs):
+        update_calls.append(kwargs)
+        return {
+            "mode": "shadow",
+            "is_enabled": True,
+            "is_paused": False,
+            "run_interval_seconds": 5,
+            "requested_run_at": "2026-05-10T05:34:00+00:00",
+            "settings_json": {
+                "selected_account_id": "acc-1",
+                "shadow_account_id": "acc-1",
+                "live_arm": None,
+                "live_preflight": None,
+            },
+        }
+
+    async def _fake_snapshot(_session, **kwargs):
+        snapshot_calls.append(kwargs)
+        return {}
+
+    def _fake_runtime(**kwargs):
+        runtime_calls.append(kwargs)
+
+    monkeypatch.setattr(main, "AsyncSessionLocal", _AsyncSessionContext)
+    monkeypatch.setattr(main, "read_orchestrator_control", _fake_read)
+    monkeypatch.setattr(main, "update_orchestrator_control", _fake_update)
+    monkeypatch.setattr(main, "write_orchestrator_snapshot", _fake_snapshot)
+    monkeypatch.setattr(main.runtime_status, "update_orchestrator", _fake_runtime)
+
+    await main._reset_orchestrator_boot_state()
+
+    assert len(update_calls) == 1
+    assert set(update_calls[0].keys()) == {"settings_json"}, (
+        "auto-resume branch must not pass is_enabled/is_paused/mode/requested_run_at"
+    )
+    assert update_calls[0]["settings_json"] == {
+        "live_preflight": None,
+        "live_arm": None,
+    }
+
+    assert len(snapshot_calls) == 1
+    assert snapshot_calls[0]["enabled"] is True
+    assert snapshot_calls[0]["current_activity"] == "Resumed in shadow on application startup"
+
+    assert len(runtime_calls) == 1
+    assert runtime_calls[0]["enabled"] is True
+    assert runtime_calls[0]["control"] == {
+        "is_enabled": True,
+        "is_paused": False,
+        "interval_seconds": 5,
+        "requested_run_at": "2026-05-10T05:34:00+00:00",
+    }
+
+
+@pytest.mark.asyncio
+async def test_reset_orchestrator_boot_state_hard_resets_when_prior_mode_was_live(monkeypatch):
+    import main
+
+    update_calls: list[dict] = []
+
+    async def _fake_read(_session):
+        return {
+            "mode": "live",
+            "is_enabled": True,
+            "is_paused": False,
+            "run_interval_seconds": 5,
+            "requested_run_at": "2026-05-10T05:34:00+00:00",
+            "settings_json": {
+                "selected_account_id": "live:wallet-1",
+                "shadow_account_id": None,
+                "live_arm": {"armed_until": "..."},
+                "live_preflight": {"checks": []},
+            },
+        }
+
+    async def _fake_update(_session, **kwargs):
+        update_calls.append(kwargs)
+        return {"run_interval_seconds": 5}
+
+    async def _fake_snapshot(_session, **kwargs):
+        _fake_snapshot.last = kwargs
+        return {}
+    _fake_snapshot.last = {}
+
+    def _fake_runtime(**kwargs):
+        _fake_runtime.last = kwargs
+    _fake_runtime.last = {}
+
+    monkeypatch.setattr(main, "AsyncSessionLocal", _AsyncSessionContext)
+    monkeypatch.setattr(main, "read_orchestrator_control", _fake_read)
+    monkeypatch.setattr(main, "update_orchestrator_control", _fake_update)
+    monkeypatch.setattr(main, "write_orchestrator_snapshot", _fake_snapshot)
+    monkeypatch.setattr(main.runtime_status, "update_orchestrator", _fake_runtime)
+
+    await main._reset_orchestrator_boot_state()
+
+    assert len(update_calls) == 1
+    assert update_calls[0]["is_enabled"] is False
+    assert update_calls[0]["is_paused"] is True
+    assert update_calls[0]["mode"] == "shadow"
+    assert update_calls[0]["requested_run_at"] is None
+    assert update_calls[0]["settings_json"] == {
+        "selected_account_id": None,
+        "shadow_account_id": None,
+        "live_preflight": None,
+        "live_arm": None,
+    }
+    assert _fake_snapshot.last["enabled"] is False
+    assert _fake_snapshot.last["current_activity"] == "Paused on application startup"
+    assert _fake_runtime.last["control"]["is_enabled"] is False
+    assert _fake_runtime.last["control"]["is_paused"] is True
+
+
+@pytest.mark.asyncio
+async def test_reset_orchestrator_boot_state_hard_resets_when_previously_stopped(monkeypatch):
+    import main
+
+    update_calls: list[dict] = []
+
+    async def _fake_read(_session):
+        return {
+            "mode": "shadow",
+            "is_enabled": False,
+            "is_paused": True,
+            "run_interval_seconds": 5,
+            "settings_json": {},
+        }
+
+    async def _fake_update(_session, **kwargs):
+        update_calls.append(kwargs)
+        return {"run_interval_seconds": 5}
+
+    async def _fake_snapshot(_session, **kwargs):
+        return {}
+
+    def _fake_runtime(**kwargs):
+        pass
+
+    monkeypatch.setattr(main, "AsyncSessionLocal", _AsyncSessionContext)
+    monkeypatch.setattr(main, "read_orchestrator_control", _fake_read)
+    monkeypatch.setattr(main, "update_orchestrator_control", _fake_update)
+    monkeypatch.setattr(main, "write_orchestrator_snapshot", _fake_snapshot)
+    monkeypatch.setattr(main.runtime_status, "update_orchestrator", _fake_runtime)
+
+    await main._reset_orchestrator_boot_state()
+
+    assert len(update_calls) == 1
+    assert update_calls[0]["is_enabled"] is False
+    assert update_calls[0]["is_paused"] is True
+    assert update_calls[0]["mode"] == "shadow"
+
+
+@pytest.mark.asyncio
+async def test_reset_orchestrator_boot_state_hard_resets_when_previously_paused(monkeypatch):
+    import main
+
+    update_calls: list[dict] = []
+
+    async def _fake_read(_session):
+        return {
+            "mode": "shadow",
+            "is_enabled": True,
+            "is_paused": True,
+            "run_interval_seconds": 5,
+            "settings_json": {"selected_account_id": "acc-1"},
+        }
+
+    async def _fake_update(_session, **kwargs):
+        update_calls.append(kwargs)
+        return {"run_interval_seconds": 5}
+
+    async def _fake_snapshot(_session, **kwargs):
+        return {}
+
+    def _fake_runtime(**kwargs):
+        pass
+
+    monkeypatch.setattr(main, "AsyncSessionLocal", _AsyncSessionContext)
+    monkeypatch.setattr(main, "read_orchestrator_control", _fake_read)
+    monkeypatch.setattr(main, "update_orchestrator_control", _fake_update)
+    monkeypatch.setattr(main, "write_orchestrator_snapshot", _fake_snapshot)
+    monkeypatch.setattr(main.runtime_status, "update_orchestrator", _fake_runtime)
+
+    await main._reset_orchestrator_boot_state()
+
+    assert len(update_calls) == 1
+    assert update_calls[0]["is_enabled"] is False
+    assert update_calls[0]["mode"] == "shadow"
+    assert update_calls[0]["settings_json"]["selected_account_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_reset_orchestrator_boot_state_always_clears_live_flags_in_auto_resume(monkeypatch):
+    import main
+
+    update_calls: list[dict] = []
+
+    async def _fake_read(_session):
+        return {
+            "mode": "shadow",
+            "is_enabled": True,
+            "is_paused": False,
+            "run_interval_seconds": 5,
+            "settings_json": {
+                "selected_account_id": "acc-1",
+                "live_arm": {"armed_until": "2026-05-10T06:00:00+00:00"},
+                "live_preflight": {"checks": [{"id": "kill_switch", "ok": True}]},
+            },
+        }
+
+    async def _fake_update(_session, **kwargs):
+        update_calls.append(kwargs)
+        return {"run_interval_seconds": 5}
+
+    async def _fake_snapshot(_session, **kwargs):
+        return {}
+
+    def _fake_runtime(**kwargs):
+        pass
+
+    monkeypatch.setattr(main, "AsyncSessionLocal", _AsyncSessionContext)
+    monkeypatch.setattr(main, "read_orchestrator_control", _fake_read)
+    monkeypatch.setattr(main, "update_orchestrator_control", _fake_update)
+    monkeypatch.setattr(main, "write_orchestrator_snapshot", _fake_snapshot)
+    monkeypatch.setattr(main.runtime_status, "update_orchestrator", _fake_runtime)
+
+    await main._reset_orchestrator_boot_state()
+
+    assert update_calls[0]["settings_json"]["live_preflight"] is None
+    assert update_calls[0]["settings_json"]["live_arm"] is None
+
+
+@pytest.mark.asyncio
+async def test_reset_orchestrator_boot_state_runtime_status_mirrors_branch(monkeypatch):
+    import main
+
+    runtime_calls_resume: list[dict] = []
+    runtime_calls_reset: list[dict] = []
+
+    async def _fake_update(_session, **_kwargs):
+        return {"run_interval_seconds": 5}
+
+    async def _fake_snapshot(_session, **_kwargs):
+        return {}
+
+    monkeypatch.setattr(main, "AsyncSessionLocal", _AsyncSessionContext)
+    monkeypatch.setattr(main, "update_orchestrator_control", _fake_update)
+    monkeypatch.setattr(main, "write_orchestrator_snapshot", _fake_snapshot)
+
+    async def _read_resume(_session):
+        return {"mode": "shadow", "is_enabled": True, "is_paused": False, "run_interval_seconds": 5, "settings_json": {}}
+
+    def _runtime_resume(**kwargs):
+        runtime_calls_resume.append(kwargs)
+
+    monkeypatch.setattr(main, "read_orchestrator_control", _read_resume)
+    monkeypatch.setattr(main.runtime_status, "update_orchestrator", _runtime_resume)
+    await main._reset_orchestrator_boot_state()
+
+    async def _read_reset(_session):
+        return {"mode": "live", "is_enabled": True, "is_paused": False, "run_interval_seconds": 5, "settings_json": {}}
+
+    def _runtime_reset(**kwargs):
+        runtime_calls_reset.append(kwargs)
+
+    monkeypatch.setattr(main, "read_orchestrator_control", _read_reset)
+    monkeypatch.setattr(main.runtime_status, "update_orchestrator", _runtime_reset)
+    await main._reset_orchestrator_boot_state()
+
+    assert runtime_calls_resume[0]["enabled"] is True
+    assert runtime_calls_resume[0]["control"]["is_enabled"] is True
+    assert runtime_calls_resume[0]["control"]["is_paused"] is False
+
+    assert runtime_calls_reset[0]["enabled"] is False
+    assert runtime_calls_reset[0]["control"]["is_enabled"] is False
+    assert runtime_calls_reset[0]["control"]["is_paused"] is True
+
+
+class _AsyncSessionContext:
+    """Minimal async context manager stand-in for AsyncSessionLocal so the
+    boot-state hook can `async with AsyncSessionLocal() as session:` without
+    touching a real database. Returns a sentinel object that the patched
+    helpers ignore."""
+
+    async def __aenter__(self):
+        return object()
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
