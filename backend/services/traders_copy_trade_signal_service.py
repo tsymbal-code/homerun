@@ -786,29 +786,30 @@ class TradersCopyTradeSignalService:
                     outcome = str(raw_token.get("outcome") or "").strip()
                     break
 
-            # Binary-market normalisation: most "categorical" Polymarket
-            # events are actually N separate binary markets (each
-            # candidate gets its own conditionId with [Yes, No] tokens).
-            # Gamma sometimes returns these with a non-canonical outcome
-            # label (e.g. "Arsenal" instead of "Yes"), which then breaks
-            # the downstream `buy_yes`/`buy_no` direction resolver. When
-            # the resolved market is unambiguously binary (exactly two
-            # tokens and exactly two outcomes, one of which is Yes or No),
-            # force the canonical "Yes"/"No" label by token index.
-            # True multi-outcome single-market structures (rare — UFC
-            # outright, LoL series) skip this normalisation and pass the
-            # original label through unchanged.
+            # Binary-market normalisation: any Polymarket market with
+            # exactly two tokens is binary by construction in the data
+            # model — the two tokens are the YES and NO sides of a
+            # single condition, regardless of the label vocabulary
+            # gamma returns. Plan 0018's normalisation only fired when
+            # the labels included literal "Yes"/"No"; that left
+            # crypto up/down markets, candidate/field markets, and any
+            # other binary vocabulary stuck with a non-canonical label
+            # that broke the downstream `buy_yes`/`buy_no` direction
+            # resolver and forced the simulator widening to bail.
+            # Plan 0023 broadens the rule: every 2-token market gets
+            # canonical "Yes"/"No" labels by token index. True
+            # multi-outcome single-market structures (>2 tokens — rare
+            # UFC outright, LoL series) still skip normalisation and
+            # pass the original label through unchanged.
             if (
                 len(token_ids_list) == 2
                 and len(outcomes_list) == 2
             ):
-                lowered = {str(o or "").strip().lower() for o in outcomes_list}
-                if {"yes", "no"} & lowered:
-                    canonical = ["Yes", "No"]
-                    for idx, tid in enumerate(token_ids_list):
-                        if str(tid or "").strip() == token_id and idx < len(canonical):
-                            outcome = canonical[idx]
-                            break
+                canonical = ["Yes", "No"]
+                for idx, tid in enumerate(token_ids_list):
+                    if str(tid or "").strip() == token_id and idx < len(canonical):
+                        outcome = canonical[idx]
+                        break
 
         snapshot = _TokenMarketSnapshot(
             market_id=market_id,

@@ -207,6 +207,74 @@ async def test_resolve_market_snapshot_normalises_binary_market_with_non_canonic
 
 
 @pytest.mark.asyncio
+async def test_resolve_market_snapshot_normalises_up_down_binary_to_yes_no(monkeypatch):
+    """Crypto BTC up/down markets are 2-token binary by construction
+    even though gamma returns ["Up","Down"] labels (no Yes or No
+    string anywhere). Plan 0018's normalisation guarded on
+    `{"yes","no"} & lowered` and skipped this case, leaving
+    `direction='buy'` to leak through and stall the shadow-ledger
+    backfill loop. Plan 0023 drops the guard so any 2-token market
+    canonicalises by token-position regardless of label vocabulary."""
+    service = TradersCopyTradeSignalService()
+    token_id = "token-down-1"
+
+    async def _fake_lookup(_token_id: str, **_kwargs):
+        return {
+            "condition_id": "cond-btc-5min",
+            "question": "Will BTC go up in next 5 min?",
+            "slug": "btc-5min-up",
+            "event_slug": "btc-5min",
+            "token_ids": ["token-up-0", token_id],
+            "outcomes": ["Up", "Down"],
+            "liquidity": 5000.0,
+        }
+
+    monkeypatch.setattr(
+        copy_trade_signal_service_module.polymarket_client,
+        "get_market_by_token_id",
+        _fake_lookup,
+    )
+
+    snapshot = await service._resolve_market_snapshot(token_id)
+
+    assert snapshot.outcome == "No", (
+        "the second token of a 2-token binary market must canonicalise "
+        "to 'No' regardless of gamma's label vocabulary"
+    )
+
+
+@pytest.mark.asyncio
+async def test_resolve_market_snapshot_normalises_candidate_field_binary_to_yes_no(monkeypatch):
+    """Some categorical-style binary markets carry candidate/field
+    labels with no Yes or No string anywhere (e.g. ["Arsenal","Field"]).
+    Same root cause as up/down — the previous {yes,no} guard skipped
+    them. Pin the broader rule covers this vocabulary too."""
+    service = TradersCopyTradeSignalService()
+    token_id = "token-arsenal"
+
+    async def _fake_lookup(_token_id: str, **_kwargs):
+        return {
+            "condition_id": "cond-arsenal-cl",
+            "question": "Will Arsenal win the Champions League?",
+            "slug": "arsenal-cl",
+            "event_slug": "champions-league",
+            "token_ids": [token_id, "token-field"],
+            "outcomes": ["Arsenal", "Field"],
+            "liquidity": 800.0,
+        }
+
+    monkeypatch.setattr(
+        copy_trade_signal_service_module.polymarket_client,
+        "get_market_by_token_id",
+        _fake_lookup,
+    )
+
+    snapshot = await service._resolve_market_snapshot(token_id)
+
+    assert snapshot.outcome == "Yes"
+
+
+@pytest.mark.asyncio
 async def test_resolve_market_snapshot_passes_through_true_multi_outcome_label(monkeypatch):
     service = TradersCopyTradeSignalService()
     token_id = "token-fighter-b"
