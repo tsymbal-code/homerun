@@ -2585,3 +2585,137 @@ conversation).
    streak (acceptable), but the safe_exit-blast compound
    becomes more material with real money.
 
+### 2026-05-10 ~16:30 UTC — Tail-End cancelled-order verdict (Plan 0033)
+
+- **Surface**: `traders.strategy_params_json.max_probability` for trader
+  `388da687054c4b4a858ea152fff04900` (`Sandbox - Tail-End`, mode=shadow).
+- **Applied via**: nothing — this is a **measurement-only** journal
+  entry, no knob was touched by this plan. The recommendation below is
+  for the operator to apply later (or not).
+- **Why**: 14-day audit (2026-04-26..2026-05-10): 33 `cancelled` vs 9
+  `executed` `trader_orders`. **All 33** carried
+  `payload_json#>>'{leg,reason}' = 'limit_price_not_executable'` from
+  the Cox-PH ensemble. Entry-price boundary at 0.900 / 0.905 was
+  perfectly sharp — the 9 executed orders all had
+  `entry_price ≤ 0.8865`, the 33 cancellations all had
+  `entry_price ∈ {0.85, 0.865, …, 0.9035, 0.905}` with 16 stacked at
+  exactly the cap. Plan 0033 was opened to determine whether the
+  simulator was wrong (recommendation: tune Cox-PH) or whether the
+  config was the gate (recommendation: tune `max_probability`).
+
+#### Cap reduction in code (the `min(...)` line that does the damage)
+
+From [`backend/services/trader_orchestrator/order_manager.py:962-980`](../../backend/services/trader_orchestrator/order_manager.py:962):
+
+```python
+explicit_buy_caps = [
+    _valid_execution_bound(leg.get("max_execution_price")),
+    _valid_execution_bound(metadata_for_caps.get("max_execution_price")),
+    _valid_execution_bound(params.get("max_execution_price")),
+    _valid_execution_bound(params.get("max_entry_price")),
+    _valid_execution_bound(params.get("max_probability")),
+    _derive_min_upside_price_cap(params.get("min_upside_percent")),
+]
+tightest_explicit_cap = min(
+    (cap for cap in explicit_buy_caps if cap is not None),
+    default=None,
+)
+```
+
+For Tail-End's config (`max_probability=0.905`, `min_upside_percent=6`,
+others None) the cap collapses to `min(0.905, 100/(100+6)=0.9434) =
+0.905`. Effective `shadow_limit_price` fed to the Cox-PH ensemble is
+0.905 — even though `strategy_context.max_entry_price` (the chase-up
+target) is `0.94775`.
+
+#### Bucket counts (Task 3 output)
+
+Bucket definitions and full per-row classification live in
+[`docs/plans/work-artifacts/0033-bucket-classification.md`](../plans/work-artifacts/0033-bucket-classification.md).
+
+| Bucket | Count | Share of evidenced rows | Share of all 33 |
+|---|---:|---:|---:|
+| **A — config-driven** (book ask in `(max_probability, ctx_max_entry]` window) | 25 | 92.6 % | 75.8 % |
+| **B — simulator pessimism** (book ask ≤ shadow_limit, but Cox-PH said no) | 0 | 0.0 % | 0.0 % |
+| **C — book really wasn't there** (book ask > ctx_max_entry; chase-up wouldn't help) | 2 | 7.4 % | 6.1 % |
+| **Indeterminate** (no microstructure snapshot ±15s, no public CLOB taker BUY in window) | 6 | — | 18.2 % |
+
+Per-band slice (entry-price clustering at the cap):
+
+| Entry band | Total | A | B | C | Indet. |
+|---|---:|---:|---:|---:|---:|
+| 0.85 – 0.870 | 3 | 0 | 0 | 0 | 3 |
+| 0.871 – 0.890 | 6 | 1 | 0 | 0 | 5 |
+| 0.891 – 0.900 | 8 | 8 | 0 | 0 | 0 |
+| 0.901 – 0.905 | 16 | 16 | 0 | 2 | 0 |
+
+The 6 Indeterminate rows are all from the 2026-05-07 10:02 batch
+(market-microstructure recorder hadn't been provisioned for those
+tokens yet) plus one isolated row from 2026-05-09 06:50; CLOB
+post-hoc trades didn't cover them either. They are not informative
+about either simulator or config — they're observability gaps, not
+verdict-relevant data.
+
+The 2 Bucket-C rows are momentary spread blowouts (425 bps and 1538
+bps wide), where even a 5 % chase-up wouldn't have crossed; nothing
+to do.
+
+The single CLOB-corroborated case (id `70515907...`, market 2125964
+"BTC > $80k", 2026-05-07 10:03:39) saw a real public taker BUY at
+exactly `0.91` inside the 6-second FAK window — matching the
+microstructure snapshot's `best_ask=0.91` and confirming Bucket A:
+`shadow_limit=0.895` < ask < `ctx_max_entry=0.94225`.
+
+#### Verdict — Verdict 1: simulator is correct, config is the gate
+
+> 25 of 27 evidenced cancellations (92.6 %, well above the 70 %
+> threshold) had `book_best_ask` strictly inside the chase-up
+> window `(max_probability, ctx_max_entry_price]`. The Cox-PH
+> ensemble correctly returned `fill_probability=0` for the
+> `shadow_limit_price=0.905` it was handed. The `min(...)` cap
+> reduction at line 970 collapsed the chase-up target down onto
+> the entry-band cap, which is the actual block.
+
+#### Recommendation (operator action — no follow-up plan needed)
+
+Two equivalent fixes; both eliminate the same pathology:
+
+1. **Operator config (one-line tweak via Bots UI):** raise
+   `max_probability` for `Sandbox - Tail-End` from `0.905` to
+   something that does not collide with the `+5 %` chase-up
+   target — e.g. `0.97`. This restores the original intent
+   (`max_probability` was meant as a "signal-too-good-to-be-true"
+   guard at signal-emission time, not as an execution-price cap).
+   **`max_probability` is a CRITICAL-tier knob per the matrix** —
+   the change itself requires the
+   [walkthrough template](#walkthrough-template-for-critical-knob-changes).
+2. **Code refactor (separate plan if pursued):** split the entry-
+   band cap (`max_probability`, evaluated at signal-emission time
+   in the strategy) from the execution-price cap (`max_execution_price`,
+   evaluated at order-submit time in `order_manager._resolve_execution_price_bounds`
+   and the chase-up branch). Today they share the same `min(...)`
+   reduction at lines 329-336 and 962-980, so any operator setting
+   one knob unintentionally tightens the other.
+
+Per Plan 0033 / Task 5 close-out: **no follow-up plan opened**. Per
+the plan's decision rule, Verdict 1 is satisfied by an operator
+config tweak. If the operator instead chooses path (2) — the code
+refactor — that decision should be recorded as a new plan with the
+CRITICAL-knob walkthrough.
+
+#### Forensic artefacts (kept under git)
+
+- [`docs/plans/work-artifacts/0033-tailend-cancelled-orders-2026-05-10.csv`](../plans/work-artifacts/0033-tailend-cancelled-orders-2026-05-10.csv) — Task 1 raw dump.
+- [`docs/plans/work-artifacts/0033-tailend-clob-window-trades.csv`](../plans/work-artifacts/0033-tailend-clob-window-trades.csv) — Task 2 CLOB-window join.
+- [`docs/plans/work-artifacts/0033-book-snapshot-join.csv`](../plans/work-artifacts/0033-book-snapshot-join.csv) — book microstructure join (the canonical evidence; CLOB trades only corroborated 1 of 33 because Tail-End markets are too thin for organic taker activity).
+- [`docs/plans/work-artifacts/0033-bucket-classification.md`](../plans/work-artifacts/0033-bucket-classification.md) — Task 3 narrative.
+- [`docs/plans/work-artifacts/0033-bucket-classification.sql`](../plans/work-artifacts/0033-bucket-classification.sql) — re-runnable join.
+- [`docs/plans/work-artifacts/0033-fetch-clob-window.py`](../plans/work-artifacts/0033-fetch-clob-window.py) — re-runnable CLOB scraper (gamma + data-api, no auth).
+
+#### Status
+
+VERDICT FILED, no knob changed. Operator may apply the
+`max_probability` tweak via the Bots UI at their discretion; that
+tweak — when made — will be its own runtime-tweaks entry with the
+full CRITICAL walkthrough.
+
