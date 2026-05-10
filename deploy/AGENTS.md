@@ -229,6 +229,38 @@ Healthy = all services `Up (healthy)` except `migrate` (which is `Exited (0)` �
 
 ---
 
+## Running tests against the live stack
+
+Pytest can't run locally — there is no Postgres, no Redis, no
+backend image (see [CLAUDE.md](../CLAUDE.md)). The runtime image
+also excludes `tests/` from the build context (see
+[backend/.dockerignore](../backend/.dockerignore)), so
+`docker compose exec backend pytest` fails with
+`file or directory not found`.
+
+The recipe is [scripts/run_tests_remote.sh](../scripts/run_tests_remote.sh):
+it SSHes to `polyhome-1` and starts a throwaway `backend` container
+with `--no-deps` (does not touch the long-lived stack), bind-mounts
+the rsynced `backend/tests/` and `backend/pyproject.toml` into the
+image's expected paths, and points `DATABASE_URL` at the running
+`postgres` service. Tests that need a real DB allocate throwaway
+databases via `build_postgres_session_factory` and drop them on
+teardown.
+
+```bash
+bash scripts/run_tests_remote.sh                                # full suite
+bash scripts/run_tests_remote.sh tests/test_passwords.py        # one file
+bash scripts/run_tests_remote.sh -k 'lifespan or alembic'       # by name
+bash scripts/run_tests_remote.sh -m 'not slow'                  # fast subset
+```
+
+Marker filtering (`unit` / `db` / `slow`) is registered in
+`backend/pyproject.toml`; only the two Plan 0019 smoke tests
+(`test_main_lifespan_smoke.py`, `test_alembic_roundtrip.py`) are
+marked today — the existing 195 files predate the registry.
+
+---
+
 ## Things to be aware of
 
 1. **`sync_remote.sh` does NOT exclude `.env`, `data/`, or

@@ -64,6 +64,7 @@ notes.
 | 0016 | [Documentation hygiene for the shadow-execution commit fix](completed/0016-document-shadow-commit-fix.md) | R        | 0014, 0015    |
 | 0017 | [Real-diff audit of `<unverified>` architecture notes](completed/0017-audit-unverified-arch-notes.md) | D        | 0013, 0014    |
 | 0018 | [Fix stuck shadow positions on `traders_copy_trade`](0018-fix-stuck-shadow-positions-traders-copy-trade.md) | B        | —             |
+| 0019 | [Test suite hardening — coverage, markers, smoke tests, remote runner](completed/0019-test-suite-hardening.md) | D        | —             |
 
 When adding a row: keep this table sorted by ID ascending. Don't
 re-number plans — gaps in IDs are normal and expected (deleted or
@@ -329,6 +330,25 @@ Only notes that aren't obvious from the title. All plans must follow
   `/sync-docs 5` audit surfaced for future plans. No runtime
   code changes — the patch is already shipped; this plan moves
   documentation only.
+- **Plan 0019 — Test suite hardening.** Documentation / tooling
+  (D, secondary R). Closes four structural gaps in the backend
+  test suite that let real regressions through despite ~1 990
+  passing tests: no coverage report, no `lifespan` startup smoke,
+  no Alembic round-trip, no marker categorisation, and no
+  operator-friendly recipe to run pytest on the remote stack
+  (the runtime image excludes `tests/` via `.dockerignore`).
+  Adds `pytest-cov`/`hypothesis`/`pytest-xdist`, registers
+  `unit`/`db`/`slow` markers, ships two smoke tests
+  (`test_main_lifespan_smoke.py`, `test_alembic_roundtrip.py`),
+  and a `scripts/run_tests_remote.sh` helper that bind-mounts
+  `backend/tests/` into the live backend image and runs pytest
+  against the live Postgres (the `homerun` DB user is superuser
+  + CREATEDB-able, so `build_postgres_session_factory` allocates
+  throwaway databases without disturbing prod). Explicitly **not**
+  in scope: mass marker sweep across the existing 195 files,
+  CI job split (unit-fast / db-slow), Hypothesis property tests
+  for FIFO/Kelly/Cox-PH, `respx` cassettes, mutation testing.
+  Each is a follow-up.
 
 ## Ordering decision tree (for agents picking the next plan)
 

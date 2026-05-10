@@ -27,11 +27,14 @@ plans.
 
 | Path | What it holds |
 |---|---|
-| [backend/pyproject.toml](../../../backend/pyproject.toml) | `[tool.pytest.ini_options]` — `asyncio_mode = "strict"`, `timeout = 60` |
+| [backend/pyproject.toml](../../../backend/pyproject.toml) | `[tool.pytest.ini_options]` — `asyncio_mode = "strict"`, `timeout = 60`, registered markers `unit` / `db` / `slow` (Plan 0019) |
 | [backend/tests/conftest.py](../../../backend/tests/conftest.py) | 364 lines: two autouse fixtures + ~14 domain fixtures |
 | [backend/tests/postgres_test_db.py](../../../backend/tests/postgres_test_db.py) | `build_postgres_session_factory()` — per-test isolated DB via asyncpg |
-| [backend/tests/test_*.py](../../../backend/tests/) | 186 test files, all `test_<subsystem>.py` |
-| [.github/workflows/ci.yml](../../../.github/workflows/ci.yml) | Backend lint + tests + frontend tsc + frontend build |
+| [backend/tests/test_main_lifespan_smoke.py](../../../backend/tests/test_main_lifespan_smoke.py) | Plan 0019 — verifies `import main`, `app` shape, full `lifespan` startup/shutdown via subprocess against a throwaway DB |
+| [backend/tests/test_alembic_roundtrip.py](../../../backend/tests/test_alembic_roundtrip.py) | Plan 0019 — head migration `downgrade → upgrade` round-trip on a stamped DB |
+| [backend/tests/test_*.py](../../../backend/tests/) | 197 test files, all `test_<subsystem>.py` |
+| [scripts/run_tests_remote.sh](../../../scripts/run_tests_remote.sh) | Plan 0019 — operator helper: `bash scripts/run_tests_remote.sh [pytest-args...]` runs the suite on `polyhome-1` against the live Postgres |
+| [.github/workflows/ci.yml](../../../.github/workflows/ci.yml) | Backend lint + tests (with `pytest-cov` summary, Plan 0019) + frontend tsc + frontend build |
 | [.github/workflows/sloppy.yml](../../../.github/workflows/sloppy.yml) | Code quality scan, fail-below threshold 60 |
 | [.github/workflows/greencheck.yml](../../../.github/workflows/greencheck.yml) | Auto-fix attempt on CI failure |
 | [Makefile](../../../Makefile) | Top-level test targets (backend pytest, frontend tsc) |
@@ -67,9 +70,24 @@ All backend tests live flat in `backend/tests/`:
   (`test_trader_orchestrator_decision_gates.py`,
   `test_trader_orchestrator_worker.py`).
 
-There are **no test markers** in use (`@pytest.mark.slow`,
-`@pytest.mark.integration`, etc.). Filtering test subsets is done
-by file path, not category.
+**Markers (Plan 0019).** Three markers are registered in
+[`pyproject.toml`](../../../backend/pyproject.toml):
+
+- `unit` — pure logic, no external IO. Default for unmarked tests
+  once the marker sweep lands.
+- `db` — requires real Postgres; uses `build_postgres_session_factory`
+  or hits the live engine.
+- `slow` — wall-clock > 5 s under normal load.
+
+Only the two new smoke tests
+([`test_main_lifespan_smoke.py`](../../../backend/tests/test_main_lifespan_smoke.py),
+[`test_alembic_roundtrip.py`](../../../backend/tests/test_alembic_roundtrip.py))
+are marked today. The existing 195 files predate the marker registry;
+applying markers across them is a separate planned sweep. Once that
+lands, CI can split into a fast `unit` job and a slow `db`/`slow`
+job. Filtering subsets in the meantime: `pytest -m "not slow"` runs
+everything except the explicitly-marked slow tests, useful for fast
+local feedback.
 
 The two largest files are
 [`test_trader_orchestrator_worker.py`](../../../backend/tests/test_trader_orchestrator_worker.py)
@@ -123,11 +141,31 @@ contract under test *is* the SQL.
 
 In CI these tests work because
 [ci.yml:45-58](../../../.github/workflows/ci.yml) starts a
-`postgres:16-alpine` service container with health checks. Locally,
-the operator must already have Postgres running on `127.0.0.1:5432`
-with credentials matching `DATABASE_URL`. No automatic docker hook
-in pytest itself — if Postgres isn't reachable, the test fails with
-a connection error, not a skip.
+`postgres:16-alpine` service container with health checks.
+
+**Locally there is no Postgres** (see [CLAUDE.md](../../../CLAUDE.md)
+"single most important fact"). The operator-facing recipe for
+running pytest against the live remote stack is
+[`scripts/run_tests_remote.sh`](../../../scripts/run_tests_remote.sh)
+(Plan 0019): SSH into `polyhome-1`, `docker compose run --rm --no-deps`
+a throwaway backend container with `backend/tests/` and
+`backend/pyproject.toml` bind-mounted in (the runtime image excludes
+`tests/` by `.dockerignore`), pointed at the running Postgres
+service. Throwaway databases are created by
+`build_postgres_session_factory` using the `homerun` DB user (which
+is superuser + CREATEDB-able on the deployed instance) and dropped
+at teardown — they cannot affect operator data.
+
+```bash
+bash scripts/run_tests_remote.sh                                # full suite
+bash scripts/run_tests_remote.sh tests/test_passwords.py        # one file
+bash scripts/run_tests_remote.sh -m 'not slow' tests/           # fast subset
+bash scripts/run_tests_remote.sh -k 'lifespan or alembic'       # by name
+```
+
+Tests that bypass the helper (an editor running pytest locally with
+no DB) fail with `ConnectionRefusedError`, not skip — this is
+intentional, see "Known footguns" below.
 
 ### Mocking patterns
 
@@ -246,12 +284,27 @@ tests ran", not "missing file").
 | Add a test for a new service module | New `backend/tests/test_<module>.py`, lean on existing fixtures in `conftest.py`, mark async tests with `@pytest.mark.asyncio`. |
 | Add a test that needs a real DB | Use `build_postgres_session_factory()` from `postgres_test_db.py`. Don't connect to the operator's DB directly. |
 | Mock an external HTTP service | Inline `FakeResponse` class or `AsyncMock` against the client. Don't introduce VCR / cassettes — the project hasn't adopted that pattern. |
-| Add a long-running test | Reconsider — there are no slow markers and the global timeout is 60 s. If genuinely needed, the plan must also introduce a marker and a CI job split. |
+| Add a long-running test | Mark it `@pytest.mark.slow`. The global timeout (60 s) still applies; if the test legitimately needs longer, decompose it. |
+| Add a test that needs the FastAPI app to boot end-to-end | Follow the subprocess pattern in [`test_main_lifespan_smoke.py`](../../../backend/tests/test_main_lifespan_smoke.py). The engine in `models.database` is created at import time, so overriding `DATABASE_URL` mid-test does nothing — the smoke test launches a fresh `python -c` subprocess with the throwaway URL in its env. |
+| Add a test for a new alembic migration | Extend [`test_alembic_roundtrip.py`](../../../backend/tests/test_alembic_roundtrip.py) or model after it — the test stamps a throwaway DB at head, downgrades one revision, re-upgrades, and asserts revision state at each step. |
 | Add frontend tests | Out of band — this requires its own plan to choose a runner (Vitest is the obvious default in a Vite project), wire it into CI, and seed the first batch of tests. |
 | Add coverage reporting | Out of band — there is no coverage tool configured today. |
 
 ## Known footguns
 
+- **The migration chain is not replayable from `base`.** Plan 0019's
+  alembic round-trip surfaced that
+  [`202602130001_baseline_schema.py`](../../../backend/alembic/versions/202602130001_baseline_schema.py)
+  calls `Base.metadata.create_all(bind=op.get_bind())`, which
+  materialises *every* current ORM column at revision 1 — including
+  columns added by later `op.add_column(...)` migrations. Running
+  `alembic upgrade base→head` against a fresh DB therefore fails
+  with `DuplicateColumnError` the moment a later migration tries to
+  add one of those columns. Production was originally stamped at
+  baseline before any of those columns existed, so the operator
+  has never hit this. The round-trip test sidesteps it by stamping
+  the throwaway DB at head and only round-tripping the latest
+  migration. Replayability is a separate planned cleanup.
 - **The 60 s global timeout is not negotiable in-tree.** A test that
   hits it doesn't fail with "timeout" in CI logs; it fails with the
   test framework killing the worker, which can leak DB sessions.
@@ -280,4 +333,4 @@ tests ran", not "missing file").
   fixture should be done with care; prefer named fixtures opted
   into per test.
 
-Last verified: 2026-05-09 (Plan 0017: real-diff against `backend/tests/` (195 pytest files, was 186), `backend/tests/conftest.py` (364 lines and 14 domain fixtures + 2 autouse, was 365/~10), pytest config + 60 s timeout in `pyproject.toml`, CI postgres:16-alpine in `.github/workflows/ci.yml`. Frontend has no test runner (confirmed via `frontend/package.json`: only `dev`/`build`/`preview` scripts; no Vitest/Jest configs). The "never test by strategy slug" rule still matches `agents.md` § What NOT to Do.)
+Last verified: 2026-05-10 (Plan 0019: registered `unit`/`db`/`slow` markers in `pyproject.toml`, added `pytest-cov`/`pytest-xdist`/`hypothesis`/`asgi-lifespan` to `requirements.txt`, shipped `test_main_lifespan_smoke.py` (4 tests; full subprocess lifespan startup verified on `polyhome-1` against throwaway DB) and `test_alembic_roundtrip.py` (head migration `stamp → downgrade → upgrade` verified), shipped `scripts/run_tests_remote.sh` operator helper, added coverage report + artifact upload to `ci.yml`. Round-trip surfaced the chronic baseline-`create_all` anti-pattern documented under Known footguns. Test count: 197 files (up from 195 in Plan 0017).)
