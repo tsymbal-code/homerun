@@ -69,8 +69,6 @@ notes.
 | 0021 | [Auto-resume orchestrator in shadow mode on application startup](completed/0021-orchestrator-auto-resume-shadow-on-startup.md) | B        | —             |
 | 0022 | [Quiet `missing_polymarket_credentials` reseeder warn spam](completed/0022-quiet-missing-polymarket-credentials-warn-spam.md) | R        | 0018          |
 | 0023 | [Broaden binary-market outcome normalisation beyond literal Yes/No](completed/0023-broaden-binary-outcome-normalisation-beyond-yes-no.md) | B        | 0018          |
-| 0024 | [Blacklist losing leader wallets on Sandbox copy-trade bot](backlog/0024-blacklist-losing-leaders-on-sandbox-traders-copy-trade.md) | D        | —             |
-| 0025 | [Per-leader / per-market analytics endpoint and Performance-tab tile](backlog/0025-per-leader-analytics-endpoint-and-ui-tile.md) | B        | —             |
 
 When adding a row: keep this table sorted by ID ascending. Don't
 re-number plans — gaps in IDs are normal and expected (deleted or

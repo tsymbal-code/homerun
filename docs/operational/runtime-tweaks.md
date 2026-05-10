@@ -2051,11 +2051,34 @@ OPEN — fix deployed and verified.  Remaining work:
   cleanly as positions drain, whether realised P&L stabilises
   with the smaller per-position notional.
 
-- **Related backlog plans**:
-  - [`backlog/0024-blacklist-losing-leaders-on-sandbox-traders-copy-trade.md`](../plans/backlog/0024-blacklist-losing-leaders-on-sandbox-traders-copy-trade.md)
-    — manual leader pruning, activate after ≥ 200 fresh terminal
-    orders.
-  - [`backlog/0025-per-leader-analytics-endpoint-and-ui-tile.md`](../plans/backlog/0025-per-leader-analytics-endpoint-and-ui-tile.md)
-    — per-leader/per-market analytics API + UI tile for ongoing
-    decisions.
+- **Pruning losing leaders — already shipped in the UI** (corrected
+  2026-05-10 after operator pointed out duplicate-functionality
+  plans 0024/0025 were redundant; both deleted):
+  - **Pool tab**
+    ([`frontend/src/components/DiscoveryPanel.tsx:1552-1605`](../../frontend/src/components/DiscoveryPanel.tsx))
+    has per-wallet **Blacklist**, **Manual exclude**, and
+    **Unblacklist** buttons. Clicking sets
+    `discovered_wallets.source_flags.pool_blacklisted` (or
+    `pool_manual_exclude`) and triggers
+    `smart_wallet_pool.recompute_pool()` within ~60 s. Pool view
+    is sortable by `total_pnl` and filterable by min P&L /
+    win-rate, so the operator can find losers visually.
+    Backend route:
+    `POST /api/discovery/pool/members/{address}/blacklist` /
+    `DELETE` for unset
+    ([`backend/api/routes_discovery.py:2471-2500`](../../backend/api/routes_discovery.py)).
+  - **Tracked → Groups tab** has a "Manual Group" creator
+    ([`frontend/src/components/RecentTradesPanel.tsx:880-960`](../../frontend/src/components/RecentTradesPanel.tsx)).
+    A bot's `traders_scope.modes` can be set to `["group"]` with
+    `group_ids=[<UUID>]` to scope copy-trade to ONLY a curated
+    set of trusted leaders. Cleaner than "blacklist N losers"
+    when the operator already knows who the good ones are.
+  - **Caveat**: the Pool tab shows wallet-**global** P&L (across
+    all of Polymarket), not per-bot scoped. For our 217-order
+    audit the global vs bot-specific signals correlated well
+    enough that the existing UI is sufficient. If operator
+    notices systematic mismatch later (e.g. a wallet good
+    globally but consistently bad for our specific bot), revisit
+    whether a per-bot analytics tile is justified — but only
+    after that pattern actually shows up in production data.
 
