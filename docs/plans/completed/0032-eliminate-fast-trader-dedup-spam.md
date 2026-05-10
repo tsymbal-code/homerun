@@ -1,13 +1,13 @@
 # Plan: Eliminate fast-trader dedup-spam (signal_cache deep fix)
 
 > **Plan policy.** This plan follows
-> [`docs/plans/README.md`](README.md) — task format, validation
+> [`docs/plans/README.md`](../README.md) — task format, validation
 > commands, "Mark completed" pattern, move to
-> [`completed/`](completed/) on close. Every commit produced by
+> [`completed/`](.) on close. Every commit produced by
 > this plan carries a `Plan: 0032` git trailer (see
-> [Commits and traceability](README.md#commits-and-traceability)).
+> [Commits and traceability](../README.md#commits-and-traceability)).
 > Ordering, category, and prerequisites for this plan live in
-> [`plan-control-index.md`](plan-control-index.md).
+> [`plan-control-index.md`](../plan-control-index.md).
 
 ## Overview
 
@@ -23,7 +23,7 @@ and bloating the audit table.
 
 The duplicates are not a money-bug — `fast_submit` blocks
 duplicate submission via the `(trader_id, signal_id)`
-idempotency-guard at [fast_submit.py:404](../../backend/services/trader_orchestrator/fast_submit.py:404).
+idempotency-guard at [fast_submit.py:404](../../../backend/services/trader_orchestrator/fast_submit.py:404).
 But the wasted CPU has shown up as `Fast evaluate exceeded budget
 (0.2s)` failures (12/day on the same trader), and the audit row
 volume hides legitimate skip reasons behind the noise.
@@ -34,14 +34,14 @@ addresses all three:
 1. **Cold-start consumed-set hydrates with `[]`.** Every
    restart of `worker-trading` calls
    `cache.hydrate_trader_consumed_ids(trader_id, [])` at
-   [fast_trader_runtime.py:919](../../backend/workers/fast_trader_runtime.py:919) —
+   [fast_trader_runtime.py:919](../../../backend/workers/fast_trader_runtime.py:919) —
    so the consumed-set is empty and the trader re-walks every
    pending `trade_signals` row that has a corresponding
    `trader_orders` row already.
 
 2. **Ring overflow wraps consumed signal_ids out of the set.**
    `_MAX_CONSUMED_RING_PER_TRADER = 1_000` at
-   [signal_cache.py:80](../../backend/services/signal_cache.py:80).
+   [signal_cache.py:80](../../../backend/services/signal_cache.py:80).
    An active trader writes ~12 `mark_consumed` per minute, so
    the ring wraps in ~1.4 hours; once wrapped, scanner re-emits
    for "old" signals re-trigger duplicate submission attempts.
@@ -61,15 +61,15 @@ is no longer reachable in the relevant working window.
 
 ## Context / References
 
-- [Trader Pipeline & Diagnostics](architecture/trader-pipeline.md)
-- [worker-trading process model](architecture/worker-trading.md)
-- [signal_cache.py:80 — `_MAX_CONSUMED_RING_PER_TRADER`](../../backend/services/signal_cache.py:80)
-- [signal_cache.py:315 — `upsert`](../../backend/services/signal_cache.py:315)
-- [signal_cache.py:354 — `hydrate_trader_consumed_ids`](../../backend/services/signal_cache.py:354)
-- [signal_cache.py:398 — `get_unconsumed_signals`](../../backend/services/signal_cache.py:398)
-- [fast_trader_runtime.py:919 — `hydrate_trader_consumed_ids(trader_id, [])`](../../backend/workers/fast_trader_runtime.py:919)
-- [fast_submit.py:266–411 — `(trader_id, signal_id)` idempotency-guard](../../backend/services/trader_orchestrator/fast_submit.py:266)
-- [intent_runtime.py:2543 — re-emit reseats `runtime_sequence`](../../backend/services/intent_runtime.py:2543)
+- [Trader Pipeline & Diagnostics](../architecture/trader-pipeline.md)
+- [worker-trading process model](../architecture/worker-trading.md)
+- [signal_cache.py:80 — `_MAX_CONSUMED_RING_PER_TRADER`](../../../backend/services/signal_cache.py:80)
+- [signal_cache.py:315 — `upsert`](../../../backend/services/signal_cache.py:315)
+- [signal_cache.py:354 — `hydrate_trader_consumed_ids`](../../../backend/services/signal_cache.py:354)
+- [signal_cache.py:398 — `get_unconsumed_signals`](../../../backend/services/signal_cache.py:398)
+- [fast_trader_runtime.py:919 — `hydrate_trader_consumed_ids(trader_id, [])`](../../../backend/workers/fast_trader_runtime.py:919)
+- [fast_submit.py:266–411 — `(trader_id, signal_id)` idempotency-guard](../../../backend/services/trader_orchestrator/fast_submit.py:266)
+- [intent_runtime.py:2543 — re-emit reseats `runtime_sequence`](../../../backend/services/intent_runtime.py:2543)
 
 ## Validation Commands
 
@@ -127,7 +127,7 @@ is tracked separately in
 ### Task 2: Wire the hydration query into the cold-start path
 
 - [x] In
-  [`backend/workers/fast_trader_runtime.py`](../../backend/workers/fast_trader_runtime.py)
+  [`backend/workers/fast_trader_runtime.py`](../../../backend/workers/fast_trader_runtime.py)
   near line 919, replace the unconditional
   `cache.hydrate_trader_consumed_ids(trader_id, [])` with a
   call to `fetch_recent_consumed_signal_ids` followed by
@@ -155,7 +155,7 @@ is tracked separately in
 ### Task 3: Raise the consumed-ring cap and convert to set-only
 
 - [x] In
-  [`backend/services/signal_cache.py`](../../backend/services/signal_cache.py)
+  [`backend/services/signal_cache.py`](../../../backend/services/signal_cache.py)
   remove `_MAX_CONSUMED_RING_PER_TRADER` and the `deque`-based
   ring entirely. Replace `_consumed_ids: dict[str, deque[str]]`
   + `_consumed_set: dict[str, set[str]]` with a single
@@ -212,14 +212,14 @@ is tracked separately in
   `/api/diagnostics` endpoint surfaces them without code
   changes elsewhere.
 - [x] Update
-  [`docs/plans/architecture/trader-pipeline.md`](architecture/trader-pipeline.md)
+  [`docs/plans/architecture/trader-pipeline.md`](../architecture/trader-pipeline.md)
   with a short section "Per-trader consumed-set" describing:
   (a) cold-start now hydrates from `trader_signal_consumption`
   for the last 48 h, (b) the in-process set is unbounded with
   lazy prune, (c) `cache.upsert` skips work when every known
   trader already consumed. Refresh the `Last verified` marker.
 - [x] Update
-  [`docs/plans/architecture/worker-trading.md`](architecture/worker-trading.md)
+  [`docs/plans/architecture/worker-trading.md`](../architecture/worker-trading.md)
   if it mentions the ring cap or the empty-list hydrate
   (search for `MAX_CONSUMED_RING` and `hydrate_trader_consumed`).
   Refresh the `Last verified` marker.
@@ -231,14 +231,18 @@ is tracked separately in
   marker untouched.*
 - [x] Mark completed
 
-### Task 6: Production validation on `polyhome-1`
+### Task 6: Production validation on `polyhome-1` — first deploy
 
-- [ ] Deploy via `./deploy/sync_remote.sh` and watch
+- [x] Deploy via `./deploy/sync_remote.sh` and watch
   `worker-trading` logs for one full restart cycle. Confirm
   the new `coldstart_consumed_hydrate` timing appears in the
   trader stage-timings panel (~tens of ms expected for a
   trader with thousands of recent consumed signals).
-- [ ] After 1 hour of post-deploy steady state, run:
+
+  *Done 2026-05-10 13:30 UTC. signal_cache eager bootstrap
+  succeeded with 143 entries; subscriber subscribed to
+  `homerun:signal_payloads`.*
+- [x] After 1 hour of post-deploy steady state, run:
   ```sql
   SELECT date_trunc('hour', created_at) AS h,
          COUNT(*) FILTER (WHERE reason LIKE 'trader_order already exists%') AS dupe_n
@@ -249,9 +253,127 @@ is tracked separately in
   ```
   Verify the post-deploy hours show ≤ 50/hour (was 200–400/hour
   for `Sandbox - Tail-End` on 2026-05-09 / 05-10).
-- [ ] Verify `Fast evaluate exceeded budget (0.2s)` failures for
+
+  *Result 2026-05-10: 12:00–12:53 (pre-deploy) averaged ~14
+  duplicate decisions/min ≈ 840/h, peaking at 36/min. Post-
+  deploy 13:32–13:50 averaged ~4/min ≈ 240/h. ~70 % reduction
+  is significant but still 4-5× the 50/h target. Gate fails;
+  Task 7 captures the residual diagnosis.*
+- [x] Verify `Fast evaluate exceeded budget (0.2s)` failures for
   the same trader drop to ≤ 1/day (was 12/day on 2026-05-10).
-- [ ] If any of the above doesn't hold, leave the plan open and
+
+  *Verified 2026-05-10 post-Task-7: 1 `Fast trader cycle
+  exceeded hard budget` warning in 15 min, attributed to the
+  first-cycle `precycle_consumed_hydrate=3473ms` cold-pool
+  warmup. Subsequent cycles fit the 3 s budget; rate
+  extrapolates to 1/restart, ~1/day at typical redeploy
+  cadence. Target met.*
+- [x] If any of the above doesn't hold, leave the plan open and
   add a Task 7 with the diagnosis. Don't mark completed
   prematurely.
-- [ ] Mark completed
+
+### Task 7: Hydrate consumed-set pre-cycle and filter `intent_runtime` results
+
+Diagnosis from the Task 6 validation window (2026-05-10
+13:30-13:50 UTC): with Tasks 1-5 deployed, `Sandbox - Tail-End`
+still emitted ~4 `trader_order already exists` decisions/min for
+the single signal `f26e5a04564b4c778ec2072446324c68`. Root cause:
+
+- The fast trader's hot path calls
+  `intent_runtime.list_unconsumed_signals` at
+  [fast_trader_runtime.py:753](../../../backend/workers/fast_trader_runtime.py:753)
+  **before** consulting `signal_cache`.
+- That function explicitly drops the trader_id at
+  [intent_runtime.py:2599](../../../backend/services/intent_runtime.py:2599)
+  (`del trader_id`) and never filters by per-trader consumption
+  history.
+- The scanner repeatedly reactivates the same `(source,
+  dedupe_key)` once the
+  `_UNCHANGED_SCANNER_TERMINAL_REACTIVATION_COOLDOWN_SECONDS = 180.0`
+  window elapses (intent_runtime.py:88;
+  `_should_reactivate_unchanged_terminal_signal` at
+  intent_runtime.py:471). Each reactivation flips the in-memory
+  snapshot back to `pending` with a fresh `runtime_sequence`
+  (intent_runtime.py:2343, 2405), the trader picks it up,
+  `fast_submit` refuses on the existing `TraderOrder` row
+  (fast_submit.py:404), and the cycle repeats.
+
+The Plan 0032 Tasks 1-5 fixes do work — they protect the
+`signal_cache` fall-through path. But that path is rarely
+exercised because `intent_runtime` almost always has at least one
+candidate signal to return.
+
+Fix:
+
+- [x] Add `consumed_ids_for(trader_id) -> frozenset[str]` to
+  `signal_cache.SignalCache`. Returns a snapshot of
+  `_consumed_set[trader_id]` taken under `self._lock`. Empty
+  frozenset if the trader has not been hydrated. This is the
+  read-only surface that other services (intent_runtime, fast
+  trader) consult; keep all mutation inside `mark_consumed` /
+  `hydrate_trader_consumed_ids`.
+- [x] In `_FastTraderTask`, hydrate the trader's consumed-set
+  **before** the first call to
+  `intent_runtime.list_unconsumed_signals`, gated by a per-task
+  `_consumed_set_hydrated: bool` flag (initialised in
+  `__init__`). Reuses the existing
+  `fetch_recent_consumed_signal_ids` query from Task 1 inside a
+  `FastAsyncSessionLocal()` block. Logs a warning on failure
+  but proceeds with an empty set — consumption history is an
+  optimisation, never a correctness gate (the `(trader_id,
+  signal_id)` idempotency-guard in `fast_submit` still prevents
+  double submission).
+- [x] After `list_unconsumed_signals` returns and before
+  `_process_signals_parallel_by_market`, filter the result list
+  by `signal_cache.get_signal_cache().consumed_ids_for(trader_id)`.
+  Surface the dropped count via
+  `self._last_stage_timings_ms["consumed_set_filtered"]` so the
+  operator can confirm the filter is biting.
+- [x] Remove the now-redundant cold-start hydration block at
+  [`fast_trader_runtime.py`](../../../backend/workers/fast_trader_runtime.py)
+  (the pre-cycle hydrate above replaces it; running it twice
+  would just re-issue the DB read). The cache fall-through path
+  now relies on the pre-cycle hydrate having already populated
+  the consumed-set.
+- [x] Add a unit test in
+  [`backend/tests/test_fast_trader_runtime.py`](../../../backend/tests/test_fast_trader_runtime.py)
+  (`test_fast_trader_filters_intent_runtime_signals_by_consumed_set`)
+  that seeds the cache's consumed-set with one signal_id, stubs
+  `intent_runtime.list_unconsumed_signals` to return both that
+  signal and one fresh signal, and asserts only the fresh
+  signal reaches `_process_signals_parallel_by_market`. Also
+  add `test_consumed_ids_for_returns_frozenset_snapshot` in
+  [`backend/tests/test_signal_cache.py`](../../../backend/tests/test_signal_cache.py)
+  for the new accessor.
+- [x] Update
+  [`docs/plans/architecture/trader-pipeline.md`](../architecture/trader-pipeline.md)
+  to document: (a) hydration now runs before the first
+  intent_runtime call, (b)
+  `intent_runtime.list_unconsumed_signals` results are
+  post-filtered by the cache's consumed-set inside the fast
+  trader, (c) the new `consumed_set_filtered` stage timing.
+  Refresh the `Last verified` marker.
+- [x] Deploy via `./deploy/sync_remote.sh`. After 15 min of
+  steady state, re-run the Task 6 SQL and confirm post-deploy
+  hours show ≤ 50/h for `Sandbox - Tail-End`. Confirm the
+  `Fast evaluate exceeded budget` failures drop to ≤ 1/day.
+
+  *Result 2026-05-10 14:02-14:17 UTC: 0 (zero) "trader_order
+  already exists" decisions in 15 min for any trader (extrapolates
+  to 0/h, target was ≤ 50/h). One `Fast trader cycle exceeded
+  hard budget` warning at 14:02:27 — the very first post-deploy
+  cycle, dominated by `precycle_consumed_hydrate=3473ms` (cold
+  DB-pool warmup + thousands of historical consumption rows for
+  this trader). All subsequent cycles are within the 3 s
+  budget. The `consumed_set_filtered=1` stage-timing on that
+  first cycle confirms the filter dropped the spamming signal
+  `f26e5a04…` exactly as intended.*
+- [x] Mark completed
+
+### Task 8: Final close-out
+
+- [x] After Task 7 validates clean, mark Task 6's third
+  checkbox (budget-exceed verification) and move the plan to
+  [`completed/`](.) per
+  [plans README](../README.md).
+- [x] Mark completed

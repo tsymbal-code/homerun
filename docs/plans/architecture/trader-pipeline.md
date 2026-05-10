@@ -546,7 +546,7 @@ Search hints:
   |---|---|---|---|
   | `max_entry_drift_pct` | 10.0 | `decision_gates.apply_platform_decision_gates` ([decision_gates.py](../../../backend/services/trader_orchestrator/decision_gates.py)) | Symmetric tolerance: `|live_price − signal_entry_price| / signal_entry_price · 100`. Lower → strategies skip when market moves; higher → more fills at worse prices. |
   | `max_market_data_age_ms` | `None` | `decision_gates._resolve_market_data_age_budget_ms` ([decision_gates.py:212-217](../../../backend/services/trader_orchestrator/decision_gates.py)) | Per-bot ceiling for live quote staleness at gate-time. Empty → fall back to `strategy_params.max_market_data_age_ms` then env `EXECUTION_MARKET_DATA_MAX_AGE_MS`. |
-  | `allow_taker_limit_buy_above_signal` | `False` | `order_manager._allow_taker_limit_buy_above_signal` ([order_manager.py:267-274](../../../backend/services/trader_orchestrator/order_manager.py)) | When ON, **shadow** simulator may fill BUY legs at prices above signal `entry_price` (chase-up). Default OFF rejects whenever the book moved up since signal — the dominant cause of `Execution submission: limit_price_not_executable` rejections seen in Step 7. Live-mode price discipline is unaffected. |
+  | `allow_taker_limit_buy_above_signal` | `False` | `order_manager._allow_taker_limit_buy_above_signal` ([order_manager.py:267-274](../../../backend/services/trader_orchestrator/order_manager.py)) | When ON, **shadow** simulator may fill BUY legs at prices above signal `entry_price` (chase-up). Default OFF rejects whenever the book moved up since signal — the dominant cause of `Execution submission: limit_price_not_executable` rejections seen in Step 7. Live-mode price discipline is unaffected. The chase-up ceiling is reduced via [`_chase_up_execution_caps`](../../../backend/services/trader_orchestrator/order_manager.py) over **execution-price caps only** (`max_execution_price`, `max_entry_price`); entry-band guards (`max_probability`, `min_upside_percent`-derived) are excluded — see [Plan 0035](../0035-split-entry-band-from-execution-price-cap.md) and the "Chase-up cap reduction" subsection in [`execution-and-fills.md`](execution-and-fills.md). |
 
   These are passed end-to-end through the cascade
   `submit_execution_leg(strategy_params, risk_limits)` →
@@ -627,17 +627,26 @@ Search hints:
 The fast trader runtime maintains an in-process per-trader consumed-set
 inside [`backend/services/signal_cache.py`](../../../backend/services/signal_cache.py)
 to skip signals this trader has already handled without paying for the
-DB query each cycle. After Plan 0032 the bookkeeping has three rules:
+DB query each cycle. After Plan 0032 the bookkeeping has four rules:
 
-1. **Cold-start hydration from the DB ledger.** On the first cycle
-   after a worker restart the trader's set is hydrated via
+1. **Pre-cycle hydration from the DB ledger (Task 7).** The first
+   cycle of every `_FastTraderTask` opens a `FastAsyncSessionLocal()`
+   session and calls
    `trader_orchestrator_state.fetch_recent_consumed_signal_ids` —
    the last 48 h of `trader_signal_consumption` rows for that
-   `trader_id`, capped at 50 000 entries, newest-first. Without this
-   hydrate, every restart re-walks every pending signal that already
-   has a `trader_orders` row and emits a "trader_order already exists"
-   skip (200–400 / hour observed on `Sandbox - Tail-End` before the
-   fix).
+   `trader_id`, capped at 50 000 entries, newest-first. The hydrate
+   runs **before** the first
+   `intent_runtime.list_unconsumed_signals` call so the post-fetch
+   filter (rule 4 below) has authoritative consumption history;
+   without this, every worker-trading restart leaks the entire
+   pending-signal backlog as "trader_order already exists" decisions
+   for the duration of the
+   `_UNCHANGED_SCANNER_TERMINAL_REACTIVATION_COOLDOWN_SECONDS = 180`
+   cooldown window (200–400 / hour observed on `Sandbox - Tail-End`
+   before the fix). The hydrate is gated by the per-task
+   `_consumed_set_hydrated` flag and soft-fails on DB errors —
+   `fast_submit`'s `(trader_id, signal_id)` idempotency-guard
+   continues to absorb duplicates when hydrate is degraded.
 
 2. **Unbounded set with lazy prune.** The pre-Plan 0032 implementation
    used a `deque(maxlen=1_000)` ring; on a busy trader the ring
@@ -660,11 +669,27 @@ DB query each cycle. After Plan 0032 the bookkeeping has three rules:
    trader (no consumed-set yet) is treated as interested, so the
    snapshot is upserted and stays available for hydration.
 
+4. **`intent_runtime` post-filter (Task 7).**
+   `IntentRuntime.list_unconsumed_signals` is the **first** signal
+   source the fast trader consults each cycle, but it explicitly
+   does `del trader_id` and never filters by per-trader consumption
+   history — without an extra gate the scanner's 180 s reactivation
+   cooldown for unchanged terminal signals re-presents every signal
+   whose `TraderOrder` already exists on every trader cycle. After
+   `list_unconsumed_signals` returns, the fast trader looks up
+   `signal_cache.get_signal_cache().consumed_ids_for(trader_id)`
+   (frozen-set snapshot, sub-microsecond, no DB) and drops any
+   signal whose id is in the consumed-set before forwarding to
+   `_process_signals_parallel_by_market`. The dropped count is
+   surfaced via `_last_stage_timings_ms["consumed_set_filtered"]`
+   for operator visibility.
+
 Operator-visible counters surfaced via `signal_cache.status_snapshot`
 (folded into `/api/diagnostics`): `consumed_set_size_per_trader`,
 `consumed_set_lazy_prunes_total`,
-`upserts_skipped_consumed_overlap`. Cold-start hydrate cost is
-captured per-trader at `_last_stage_timings_ms["coldstart_consumed_hydrate"]`.
+`upserts_skipped_consumed_overlap`. Pre-cycle hydrate cost is
+captured per-trader at `_last_stage_timings_ms["precycle_consumed_hydrate"]`;
+post-fetch drop count at `_last_stage_timings_ms["consumed_set_filtered"]`.
 
 ## Extension points
 
@@ -690,13 +715,25 @@ captured per-trader at `_last_stage_timings_ms["coldstart_consumed_hydrate"]`.
 | Submission-side defence layer (9 modules between decision and fill) | [execution-defense.md](execution-defense.md) |
 | Operator-applied runtime knob-twists (rollback recipes) | [`../../operational/runtime-tweaks.md`](../../operational/runtime-tweaks.md) |
 
-Last verified: 2026-05-10 (added "Per-trader consumed-set" section
-for Plan 0032 — cold-start hydrate from
-`trader_signal_consumption`, unbounded `_consumed_set` with lazy
-prune, `cache.upsert` skip when every known trader already
-consumed; documents the new diagnostics counters and the
-`coldstart_consumed_hydrate` per-stage timing. Prior same-date
-verification: footgun added for plan 0024 —
+Last verified: 2026-05-10 (Plan 0035: amended the
+`allow_taker_limit_buy_above_signal` row in the Step 5 risk-limit
+table to point at `_chase_up_execution_caps` and the
+entry-band-vs-execution-price split. Real-diff against
+`order_manager.py` confirms the helper exists at line ~239 and
+both reduction sites delegate to it.); previously 2026-05-10 (Plan 0032 Task 7: documented the
+pre-cycle consumed-set hydrate before the first
+`intent_runtime.list_unconsumed_signals` call and the post-fetch
+filter that drops signals already in the trader's consumed-set
+before forwarding to `_process_signals_parallel_by_market`;
+diagnosis cited the scanner's 180 s reactivation cooldown for
+unchanged terminal signals as the residual cause of the dedup
+spam after Tasks 1-5 deployed. Earlier same-date verification:
+"Per-trader consumed-set" section for Plan 0032 — cold-start
+hydrate from `trader_signal_consumption`, unbounded
+`_consumed_set` with lazy prune, `cache.upsert` skip when every
+known trader already consumed; documents the new diagnostics
+counters and the `coldstart_consumed_hydrate` per-stage timing.
+Prior same-date verification: footgun added for plan 0024 —
 `sync_trader_position_inventory` UPSERT eliminating the
 `uq_trader_position_identity` race that fed false losses into
 `halt_on_consecutive_losses`; footgun added for plan 0021's
