@@ -622,6 +622,50 @@ Search hints:
   `halt_on_consecutive_losses=true` restored, no
   `circuit_breaker_pause` events in 30 min observation window.
 
+## Per-trader consumed-set (post-Plan 0032)
+
+The fast trader runtime maintains an in-process per-trader consumed-set
+inside [`backend/services/signal_cache.py`](../../../backend/services/signal_cache.py)
+to skip signals this trader has already handled without paying for the
+DB query each cycle. After Plan 0032 the bookkeeping has three rules:
+
+1. **Cold-start hydration from the DB ledger.** On the first cycle
+   after a worker restart the trader's set is hydrated via
+   `trader_orchestrator_state.fetch_recent_consumed_signal_ids` —
+   the last 48 h of `trader_signal_consumption` rows for that
+   `trader_id`, capped at 50 000 entries, newest-first. Without this
+   hydrate, every restart re-walks every pending signal that already
+   has a `trader_orders` row and emits a "trader_order already exists"
+   skip (200–400 / hour observed on `Sandbox - Tail-End` before the
+   fix).
+
+2. **Unbounded set with lazy prune.** The pre-Plan 0032 implementation
+   used a `deque(maxlen=1_000)` ring; on a busy trader the ring
+   wrapped after ~1.4 h and old `signal_id`s rolled out, re-triggering
+   duplicate-submit attempts when the scanner re-emitted the same
+   signal. Plan 0032 retired the ring and made the set unbounded.
+   Long-term memory is capped by a lazy prune triggered inside
+   `mark_consumed` once the set crosses 50 000 entries: any
+   `signal_id` no longer in the snapshot cache, OR whose snapshot is
+   older than 24 h (terminal-state cutoff), is dropped. Prune is
+   O(N) over the trader's set — sub-millisecond at the cap.
+
+3. **`cache.upsert` skips when every known trader has consumed.**
+   Before writing a fresh snapshot, `signal_cache.SignalCache.upsert`
+   checks `_consumed_set` keys (process-wide, < 100 traders) and
+   skips outright when every trader's consumed-set already contains
+   the signal_id. Re-emitting would only bump `runtime_sequence` and
+   pay for filter cycles every trader will short-circuit on the
+   consumed-set lookup anyway. The skip is strict: a brand-new
+   trader (no consumed-set yet) is treated as interested, so the
+   snapshot is upserted and stays available for hydration.
+
+Operator-visible counters surfaced via `signal_cache.status_snapshot`
+(folded into `/api/diagnostics`): `consumed_set_size_per_trader`,
+`consumed_set_lazy_prunes_total`,
+`upserts_skipped_consumed_overlap`. Cold-start hydrate cost is
+captured per-trader at `_last_stage_timings_ms["coldstart_consumed_hydrate"]`.
+
 ## Extension points
 
 | When you want to… | Touch |
@@ -646,11 +690,17 @@ Search hints:
 | Submission-side defence layer (9 modules between decision and fill) | [execution-defense.md](execution-defense.md) |
 | Operator-applied runtime knob-twists (rollback recipes) | [`../../operational/runtime-tweaks.md`](../../operational/runtime-tweaks.md) |
 
-Last verified: 2026-05-10 (footgun added for plan 0024 —
+Last verified: 2026-05-10 (added "Per-trader consumed-set" section
+for Plan 0032 — cold-start hydrate from
+`trader_signal_consumption`, unbounded `_consumed_set` with lazy
+prune, `cache.upsert` skip when every known trader already
+consumed; documents the new diagnostics counters and the
+`coldstart_consumed_hydrate` per-stage timing. Prior same-date
+verification: footgun added for plan 0024 —
 `sync_trader_position_inventory` UPSERT eliminating the
 `uq_trader_position_identity` race that fed false losses into
-`halt_on_consecutive_losses`. Prior verification same date:
-footgun added for plan 0021's conditional boot-state reset.
+`halt_on_consecutive_losses`; footgun added for plan 0021's
+conditional boot-state reset.
 Earlier 2026-05-09: Step 7 + footguns updated for the
 `_persist_execution_projection` commit-missing failure mode
 introduced by commit `936f96a4`; corresponds to plan 0016.
