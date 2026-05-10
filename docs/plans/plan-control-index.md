@@ -82,6 +82,7 @@ notes.
 | 0035 | [Split entry-band cap from execution-price cap in shadow chase-up](completed/0035-split-entry-band-from-execution-price-cap.md) | R        | 0033          |
 | 0036 | [Per-entry audit of the HIGH-tier knob matrix](completed/0036-high-knob-matrix-per-entry-audit.md) | D        | 0029          |
 | 0037 | [Verify Plan 0035 chase-cap drop on 2026-05-11](0037-verify-plan-0035-chase-cap-drop-2026-05-11.md) | D        | 0035          |
+| 0038 | [Flag three additional `TRADER_RISK_DEFAULTS` knobs as dead-code in the UI](completed/0038-flag-three-trader-risk-knobs-as-dead.md) | U        | 0031, 0036    |
 
 When adding a row: keep this table sorted by ID ascending. Don't
 re-number plans — gaps in IDs are normal and expected (deleted or
@@ -460,3 +461,26 @@ Only notes that aren't obvious from the title. All plans must follow
   [`.claude/commands/sync-docs.md`](../../.claude/commands/sync-docs.md)
   audits this directory's architecture notes against the code.
 - Completed plans archive: [`completed/`](completed/)
+
+## Follow-up plan proposals (drafts; not yet IDed)
+
+- **Promote 3-4 HIGH knobs to CRITICAL.** Plan 0036 (HIGH-tier
+  audit, 2026-05-10) surfaced four state-flipping knobs that the
+  current tier-walkthrough policy does not cover:
+  `pending_live_exit_guard.*` (race-condition fix; dual gate),
+  `live_provider_health.*` (halts ALL live entries on rolling-window
+  errors), `TradingProxySettings.require_vpn` (binary VPN gate that
+  blocks all live trades when VPN unreachable), and arguably
+  `live_risk_clamps_explicit` (flips legacy-vs-explicit override
+  semantics for the CRITICAL `live_risk_clamps.*` umbrella). Tier
+  promotion changes the walkthrough policy footprint and was
+  out-of-scope for plan 0036 — this is a candidate for a successor
+  plan to evaluate the four candidates and either move them or
+  document why HIGH stays correct.
+- **Wire or move scanner_max_opportunities_*.** Plan 0036
+  confirmed `scanner_max_opportunities_total` and
+  `scanner_max_opportunities_per_strategy` have zero runtime
+  consumers (currently in HIGH/Group D with `confirmed dead`
+  marker). Either wire them into `scanner.py` top-N cut OR move
+  to the `Dead code in config.py` subsection of the matrix —
+  pick one. Operator-facing settings UI exposes both knobs today.

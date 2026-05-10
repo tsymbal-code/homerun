@@ -1175,16 +1175,18 @@ agent (`.claude/agents/plan-validator.md`) flags violations.
 ### Group A — `TRADER_RISK_DEFAULTS` (per-trader, alive)
 
 #### HIGH — `max_orders_per_cycle`
+<!-- audited 2026-05-10: clean -->
 
 **Default:** 6 ([`strategy_sdk.py:391`](../../backend/services/strategy_sdk.py))
 
 | Gate | Формула | File:line | reason-string |
 |---|---|---|---|
-| `trader_orders_per_cycle` | `(cycle_orders_placed + 1) <= max_orders_per_cycle → pass` | [`risk_manager.py:140-148`](../../backend/services/trader_orchestrator/risk_manager.py) | `Risk blocked: trader_orders_per_cycle (next=X max=Y)` |
+| `trader_orders_per_cycle` | `(cycle_orders_placed + 1) <= max_orders_per_cycle → pass` | [`risk_manager.py:141-148`](../../backend/services/trader_orchestrator/risk_manager.py) | `Risk blocked: trader_orders_per_cycle (next=X max=Y)` |
 
 **Compound:** з `global_risk.max_orders_per_cycle` (orchestrator-wide cap, default 50). Менший з двох — binding.
 
 #### HIGH — `position_cap_scope`
+<!-- audited 2026-05-10: clean -->
 
 **Default:** `"market_direction"` ([`strategy_sdk.py:394`](../../backend/services/strategy_sdk.py))
 
@@ -1197,37 +1199,36 @@ Enum: `market_direction` | `market` | `asset_timeframe`. Контролює як
 **Compound:** перемикання scope міняє ефективну кількість слотів; з `market` half розміру cap-лімітів повертається оператору (BUY+SELL = 1 cap-slot замість 2).
 
 #### HIGH — `cooldown_seconds`
+<!-- audited 2026-05-10: clean -->
 
 **Default:** 0 ([`strategy_sdk.py:400`](../../backend/services/strategy_sdk.py))
 
 | Gate | Формула | File:line | reason-string |
 |---|---|---|---|
-| `trader_cooldown` | `not bool(cooldown_active) → pass` (cooldown триває після loss event протягом `cooldown_seconds`) | [`risk_manager.py:133-138`](../../backend/services/trader_orchestrator/risk_manager.py) | `Risk blocked: trader_cooldown (resume_at=…)` |
+| `trader_cooldown` | `not bool(cooldown_active) → pass` (cooldown триває після loss event протягом `cooldown_seconds`) | [`risk_manager.py:132-138`](../../backend/services/trader_orchestrator/risk_manager.py) | `Risk blocked: trader_cooldown (resume_at=…)` |
 
 **Compound:** з `halt_on_consecutive_losses` (CRITICAL) — cooldown stagger-ить recovery після streak. Якщо обидва активні: streak hit → halt → resume → cooldown → first new entry.
 
 #### HIGH — `slippage_bps`
+<!-- audited 2026-05-10: confirmed dead -->
 
 **Default:** 35.0 bps ([`strategy_sdk.py:402`](../../backend/services/strategy_sdk.py))
 
-| Consumer | Формула | File:line |
-|---|---|---|
-| Order submission gate | `estimated_slippage_bps <= slippage_bps → submit; else reject "Execution submission: slippage_too_high"` | [`order_manager.py:1025-1026`](../../backend/services/trader_orchestrator/order_manager.py) |
+**Status:** Schema-only поле у `TRADER_RISK_DEFAULTS` (`strategy_sdk.py:402, 444, 1943`). Жоден runtime gate не читає `risk_limits["slippage_bps"]`. Поле, що знаходиться у [`order_manager.py:1047`](../../backend/services/trader_orchestrator/order_manager.py), — це лише **обчислений** Cox-PH slippage_bps на shadow-payload, не acceptance-cap. Реальний live slippage cap — це Group F `MAX_SLIPPAGE_PERCENT` (різний pipeline, у відсотках, default 2.0%); per-trader bps-cap відсутній. Якщо потрібен — додати consumer у `risk_manager` або `order_manager` через окремий план.
 
-**Compound:** з `max_spread_bps` — обидва gate-и читаються паралельно. Tight slippage + wide spread → майже нічого не fill-иться (ринок не дає достатньо тісного spread). Loose slippage + tight spread → багато fills, але по поганих цінах.
+**Compound:** жодного — gate не існує. Розрахунковий `estimate.slippage_bps` (Cox PH) → пишеться у `shadow_simulation_payload` лише для звіту/UI, не блокує submit.
 
 #### HIGH — `max_spread_bps`
+<!-- audited 2026-05-10: confirmed dead -->
 
 **Default:** 75.0 bps ([`strategy_sdk.py:403`](../../backend/services/strategy_sdk.py))
 
-| Consumer | Формула | File:line |
-|---|---|---|
-| Spread gate (decision-level) | `bid_ask_spread_bps <= max_spread_bps → pass` | [`decision_gates.py`](../../backend/services/trader_orchestrator/decision_gates.py) (через `live_market_context.spread_bps`) |
-| Spread gate (submit-level) | те саме повторюється на submit, бо книга може зміститися | [`order_manager.py`](../../backend/services/trader_orchestrator/order_manager.py) |
+**Status:** Schema-only поле у `TRADER_RISK_DEFAULTS` (`strategy_sdk.py:403, 447, 1944`). У `decision_gates.py` та `order_manager.py` жодного `risk_limits["max_spread_bps"]` consumer **не існує** (grep'нуто 2026-05-10). Окремі **per-strategy** params з тим самим іменем живі (наприклад, [`sports_overreaction_fader.py:80, 354`](../../backend/services/strategies/sports_overreaction_fader.py) — там default 200.0, не 75.0; гейт `if spread_bps > max_spread_bps`), але ті — інший шар (`strategy_params`, не `risk_limits`). Per-trader risk_limit version не плагнуто у жоден gate.
 
-**Compound:** з `slippage_bps` (вище). Спред — *джерело* slippage; обидва ефективно описують одну й ту саму liquidity-вимогу під різними кутами.
+**Compound:** немає (gate не існує). Якщо потрібен per-trader spread-cap незалежний від strategy_params — додати consumer окремим планом.
 
 #### HIGH — `allow_averaging`
+<!-- audited 2026-05-10: clean -->
 
 **Default:** False ([`strategy_sdk.py:406`](../../backend/services/strategy_sdk.py))
 
@@ -1238,26 +1239,27 @@ Enum: `market_direction` | `market` | `asset_timeframe`. Контролює як
 **Compound:** з `max_position_notional_usd` (CRITICAL) і `position_cap_scope`. Коли `False` (default) — один market = одна позиція, незалежно від cap-розміру. `True` дозволяє DCA-стиль кілька entry на тому ж ринку, але обмежений `position_cap_scope` aggregation.
 
 #### HIGH — `use_dynamic_sizing`
+<!-- audited 2026-05-10: confirmed dead -->
 
 **Default:** True ([`strategy_sdk.py:407`](../../backend/services/strategy_sdk.py))
 
-| Consumer | Behaviour | File:line |
-|---|---|---|
-| `_trader_size_limits` sizing | `True` → розмір scaled by signal `confidence` / `score`; `False` → mechanical fixed `max_trade_notional_usd` | [`decision_gates.py`](../../backend/services/trader_orchestrator/decision_gates.py), `_trader_size_limits` helper in [`strategies/base.py`](../../backend/services/strategies/base.py) |
+**Status:** Schema-only поле у `TRADER_RISK_DEFAULTS` (`strategy_sdk.py:407, 457, 1948`). `_trader_size_limits` ([`strategies/base.py:219-245`](../../backend/services/strategies/base.py)) **жодного разу не звертається** до `risk_limits["use_dynamic_sizing"]` — base_size hardcoded як `max(1.0, max_trade * 0.40)`. У `decision_gates.py` consumer відсутній. Цей флаг ніяк не змінює sizing-logic.
 
-**Compound:** з `max_trade_notional_usd` (CRITICAL) — той знов binding як ceiling; dynamic sizing тільки **scales below** the ceiling.
+**Compound:** немає (gate не існує). Sizing ефективно завжди працює як `max_trade_notional_usd × 0.40` для base_size та `max_trade_notional_usd` як ceiling, незалежно від цього флага.
 
 #### HIGH — `max_entry_drift_pct`
+<!-- audited 2026-05-10: file:line drift corrected -->
 
 **Default:** 10.0 % ([`strategy_sdk.py:411`](../../backend/services/strategy_sdk.py))
 
 | Gate | Формула | File:line | reason-string |
 |---|---|---|---|
-| `entry_drift` | `abs(live_price - signal_entry_price) / signal_entry_price * 100 <= max_entry_drift_pct → pass` | [`decision_gates.py`](../../backend/services/trader_orchestrator/decision_gates.py) | `Risk blocked: entry_drift (drift=X.X% max=Y.Y%)` |
+| `live_entry_drift` | `drift_score is None or abs(drift_score) <= max_drift → pass`, де `drift_score = live_context["entry_price_delta_pct"]` (per-trader limit, fallback 10.0%) | [`trader_orchestrator_worker.py:6648-6671`](../../backend/workers/trader_orchestrator_worker.py) | `drift={drift_score:.2f}%` (check_label "Entry drift from signal") |
 
 **Compound:** з `allow_taker_limit_buy_above_signal` (CRITICAL). Якщо drift gate fail-ить раніше — chase-up shadow toggle вже не доходить до своєї логіки. Тобто строгий drift = chase-up де-факто disabled.
 
 #### HIGH — `max_market_data_age_ms`
+<!-- audited 2026-05-10: clean -->
 
 **Default:** None (fall-through на env `EXECUTION_MARKET_DATA_MAX_AGE_MS`) ([`strategy_sdk.py:412`](../../backend/services/strategy_sdk.py))
 
@@ -1268,6 +1270,7 @@ Enum: `market_direction` | `market` | `asset_timeframe`. Контролює як
 **Compound:** з `live_market_context.max_market_data_age_ms` (orchestrator-global) — той ставить ceiling; per-bot може ТІЛЬКИ робити tight-er, не loose-r. Подивитись який реально active під час debugging — через resolution chain у логах.
 
 #### HIGH — `portfolio.*` (nested)
+<!-- audited 2026-05-10: clean -->
 
 **Defaults:** `enabled=False, target_utilization_pct=100.0, max_source_exposure_pct=100.0, min_order_notional_usd=10.0`
 ([`strategy_sdk.py:414-419`](../../backend/services/strategy_sdk.py))
@@ -1281,41 +1284,46 @@ Enum: `market_direction` | `market` | `asset_timeframe`. Контролює як
 ### Group B — Orchestrator global_runtime / global_risk / live_market_context
 
 #### HIGH — `run_interval_seconds`
+<!-- audited 2026-05-10: file:line drift corrected -->
 
 **Default:** 30 ([`trader_orchestrator_state.py:101`](../../backend/services/trader_orchestrator_state.py))
 **API min/max:** [1, 300] ([`routes_trader_orchestrator.py:164`](../../backend/api/routes_trader_orchestrator.py))
 
 | Consumer | Behaviour | File:line |
 |---|---|---|
-| Orchestrator main loop | `await sleep(run_interval_seconds)` між cycle-ами | [`trader_orchestrator_worker.py`](../../backend/workers/trader_orchestrator_worker.py) |
+| Orchestrator main loop sleep | `int(control.get("run_interval_seconds") or ORCHESTRATOR_DEFAULT_RUN_INTERVAL_SECONDS)` визначає інтервал між циклами | [`trader_orchestrator_worker.py:8644, 9140`](../../backend/workers/trader_orchestrator_worker.py) |
 
 **Compound:** з `trader_cycle_timeout_seconds` (cycle hard-stop) — interval **повинен** бути ≥ typical cycle duration, інакше overlapping cycles. Якщо interval < typical cycle: orchestrator entering "always-busy" state, signal lag накопичується.
 
 #### HIGH — `trader_cycle_timeout_seconds`
+<!-- audited 2026-05-10: file:line drift corrected -->
 
 **Default:** None (60s ефективно) ([`routes_trader_orchestrator.py:159`](../../backend/api/routes_trader_orchestrator.py))
-**API range:** [30, 180]
+**API range:** [30, 180]; orchestrator-state clamps to [3, 120] ([`trader_orchestrator_state.py:386`](../../backend/services/trader_orchestrator_state.py))
 
 | Consumer | Behaviour | File:line |
 |---|---|---|
-| Per-trader cycle wrapper | `asyncio.wait_for(... timeout=trader_cycle_timeout_seconds)` | [`trader_orchestrator_worker.py:8273`](../../backend/workers/trader_orchestrator_worker.py) |
+| Per-trader cycle wrapper (per-trader override) | `_run_trader_once_with_timeout` зчитує `trader_limits["trader_cycle_timeout_seconds"]` (або з `source_configs[*].strategy_params`) і використовує як `effective_timeout` для `_run_trader_once`; пропагується далі як `cycle_timeout_seconds` budget у внутрішні `asyncio.wait_for` (4615, 4644, 5564, 6610) та `SET LOCAL statement_timeout` (4335-4336) | [`trader_orchestrator_worker.py:8107-8131, 8260`](../../backend/workers/trader_orchestrator_worker.py) |
 
 **Footgun:** UI declares `min=3, max=120` ([`TradingPanel.tsx:12751`](../../frontend/src/components/TradingPanel.tsx)) ≠ API `[30, 180]`. Safe range: `[30, 120]`. Documented у trader-pipeline.md footguns.
 
 **Compound:** з `runtime_trigger_cycle_timeout_seconds` (sibling, для lightweight cycles).
 
 #### HIGH — `runtime_trigger_cycle_timeout_seconds`
+<!-- audited 2026-05-10: clean -->
 
 **Default:** None (10s ефективно) ([`routes_trader_orchestrator.py:160`](../../backend/api/routes_trader_orchestrator.py))
 **API range:** [3, 60] (matches UI)
 
 | Consumer | Behaviour | File:line |
 |---|---|---|
-| Lightweight runtime-trigger cycle | окремий `asyncio.wait_for` для event-driven re-entry без maintenance | [`trader_orchestrator_state.py:387-390`](../../backend/services/trader_orchestrator_state.py) |
+| Lightweight runtime-trigger cycle clamp/normalize | normalize у [3.0, 60.0] | [`trader_orchestrator_state.py:387-390`](../../backend/services/trader_orchestrator_state.py) |
+| Worker timeout vector | зчитується як final timeout для runtime-triggered cycle (clamped to [3.0, 60.0]) | [`trader_orchestrator_worker.py:8435-8440`](../../backend/workers/trader_orchestrator_worker.py) |
 
 **Compound:** з `trader_cycle_timeout_seconds` — два різні timeout-и для двох різних cycle-types. Cyclical maintenance vs reactive event handling.
 
 #### HIGH — `global_risk.max_gross_exposure_usd`
+<!-- audited 2026-05-10: clean -->
 
 **Default:** 5000.0 USD ([`templates.py:7`](../../backend/services/trader_orchestrator/templates.py))
 
@@ -1326,6 +1334,7 @@ Enum: `market_direction` | `market` | `asset_timeframe`. Контролює як
 **Compound:** з per-trader `max_gross_exposure_usd` (CRITICAL) — system-wide ceiling. Якщо сума всіх traders' caps > global cap → global stops them collectively. Дефолт 10× per-trader cap (2000), залишає room для 5 active traders.
 
 #### HIGH — `global_risk.max_daily_loss_usd`
+<!-- audited 2026-05-10: clean -->
 
 **Default:** 500.0 USD ([`templates.py:8`](../../backend/services/trader_orchestrator/templates.py))
 
@@ -1336,35 +1345,39 @@ Enum: `market_direction` | `market` | `asset_timeframe`. Контролює як
 **Compound:** з per-trader `max_daily_loss_usd` (CRITICAL) і всіх derived `trader_drawdown_pct`. Global cap зрабить раніше якщо ∑ losses across traders → cascading silence для всіх ботів. Reset у midnight UTC.
 
 #### HIGH — `global_risk.max_orders_per_cycle`
+<!-- audited 2026-05-10: clean -->
 
 **Default:** 50 ([`templates.py:9`](../../backend/services/trader_orchestrator/templates.py))
 
-Те саме порівняння що per-trader `max_orders_per_cycle`, але summed across traders ([`risk_manager.py:140-148`](../../backend/services/trader_orchestrator/risk_manager.py)). Менший з двох — binding.
+Те саме порівняння що per-trader `max_orders_per_cycle`, але summed across traders ([`risk_manager.py:141-148`](../../backend/services/trader_orchestrator/risk_manager.py)). Менший з двох — binding.
 
 #### HIGH — `live_market_context.enabled`
+<!-- audited 2026-05-10: file:line drift corrected -->
 
-**Default:** True ([`trader_orchestrator_state.py:325`](../../backend/services/trader_orchestrator_state.py))
+**Default:** True ([`trader_orchestrator_state.py:325, 137`](../../backend/services/trader_orchestrator_state.py))
 
 | Consumer | Behaviour | File:line |
 |---|---|---|
-| Decision-gate context | `False` → skip rolling history aggregation, use instant quote only | [`live_market_context.py`](../../backend/services/live_market_context.py) |
+| Worker per-cycle gate | `enable_live_market_context = bool(live_market_context_settings.get("enabled", True))` — `False` пропускає аґрегацію rolling history (`backend/services/trader_orchestrator/live_market_context.py`), залишаючи лише instant quote | [`trader_orchestrator_worker.py:5037`](../../backend/workers/trader_orchestrator_worker.py) |
 
 **Compound:** з усіма `live_market_context.*` нижче — глобальний switch. Disable означає всі sub-knobs ефективно ignored.
 
 #### HIGH — `live_market_context.history_window_seconds` / `.history_fidelity_seconds`
+<!-- audited 2026-05-10: file:line drift corrected -->
 
-**Defaults:** window=7200 (2h), fidelity=300 (5min) ([`trader_orchestrator_state.py:326-339`](../../backend/services/trader_orchestrator_state.py))
+**Defaults:** window=7200 (2h), fidelity=300 (5min) ([`trader_orchestrator_state.py:326-342`](../../backend/services/trader_orchestrator_state.py); ranges `window ∈ [300, 21600]`, `fidelity ∈ [30, 1800]`)
 
 | Consumer | Behaviour | File:line |
 |---|---|---|
-| VWAP / momentum aggregation | sample price points at `fidelity` interval over `window` span | [`live_market_context.py:1154-1155, 1523-1527`](../../backend/services/live_market_context.py) |
+| VWAP / rolling history aggregation | sample price points at `fidelity` interval over `window` span | [`backend/services/trader_orchestrator/live_market_context.py:1154-1155, 1523-1527`](../../backend/services/trader_orchestrator/live_market_context.py) |
 
 **Compound:** менший window = reactive signals (миттєвий VWAP); більший = smoothed. Fidelity tight (60s) = більше CPU/memory; loose (1800s) = sparse rolling.
 
 #### HIGH — `live_market_context.max_history_points` / `.timeout_seconds` / `.strict_ws_pricing_only`
+<!-- audited 2026-05-10: clean -->
 
 **Defaults:** max_history_points=120, timeout_seconds=4.0, strict_ws_pricing_only=True
-([`trader_orchestrator_state.py:343-352`](../../backend/services/trader_orchestrator_state.py))
+([`trader_orchestrator_state.py:343-353`](../../backend/services/trader_orchestrator_state.py))
 
 | Consumer | Behaviour | File:line |
 |---|---|---|
@@ -1373,13 +1386,14 @@ Enum: `market_direction` | `market` | `asset_timeframe`. Контролює як
 **Compound:** strict-WS=True видобуває signal сорсі без WS feed (наприклад, REST-only data sources). Гарний guard для live mode, може блокувати dev signals у shadow.
 
 #### HIGH — `pending_live_exit_guard.max_pending_exits` / `.identity_guard_enabled` / `.terminal_statuses`
+<!-- audited 2026-05-10: clean -->
 
-**Defaults:** `0` (off) / `True` / sorted `PENDING_LIVE_EXIT_TERMINAL_STATUSES` ([`trader_orchestrator_state.py:131-134, 273-278`](../../backend/services/trader_orchestrator_state.py)). У global_runtime, normalize range `max_pending_exits ∈ [0, 1000]`.
+**Defaults:** `0` (off) / `True` / sorted `PENDING_LIVE_EXIT_TERMINAL_STATUSES` ([`trader_orchestrator_state.py:131-134, 270-278`](../../backend/services/trader_orchestrator_state.py)). У global_runtime, normalize range `max_pending_exits ∈ [0, 1000]`.
 
 | Consumer | Behaviour | File:line |
 |---|---|---|
-| `decision_gates.run_platform_gates` (count gate) | `if max_pending_exits>0 and pending_count > max_pending_exits → block "Pending live exit guard"` | [`decision_gates.py:2079-2128`](../../backend/services/trader_orchestrator/decision_gates.py) |
-| `decision_gates.run_platform_gates` (identity gate) | `if identity_guard_enabled and pending_exit on same (market_id, direction, signal_id) → block` | [`decision_gates.py:2145+`](../../backend/services/trader_orchestrator/decision_gates.py) |
+| `decision_gates.run_platform_gates` (count gate) | `if max_pending_exits>0 and pending_count > max_pending_exits → block "Pending live exit guard"` | [`decision_gates.py:2091-2139`](../../backend/services/trader_orchestrator/decision_gates.py) |
+| `decision_gates.run_platform_gates` (identity gate) | `if identity_guard_enabled and pending_exit on same (market_id, direction, signal_id) → block` | [`decision_gates.py:2145-2240`](../../backend/services/trader_orchestrator/decision_gates.py) |
 | Cycle context | використовує `terminal_statuses` для materialize `pending_live_exit_summary` (фільтрує: status NOT IN terminal) | [`trader_orchestrator_worker.py:4790-4838`](../../backend/workers/trader_orchestrator_worker.py) |
 
 **Compound:**
@@ -1387,13 +1401,14 @@ Enum: `market_direction` | `market` | `asset_timeframe`. Контролює як
 - **Race condition fix:** identity-guard з'явився після інциденту 2026-04-XX, де UPSERT race на uq_trader_position_identity створювала дві паралельні exits на одну позицію.
 
 #### HIGH — `live_provider_health.window_seconds` / `.min_errors` / `.block_seconds`
+<!-- audited 2026-05-10: clean -->
 
 **Defaults:** 180s / 2 / 120s ([`trader_orchestrator_state.py:145-149, 364-379`](../../backend/services/trader_orchestrator_state.py)). У global_runtime, ranges: `window_seconds ∈ [30, 900]`, `min_errors ∈ [1, 20]`, `block_seconds ∈ [15, 3600]`. Раніше явно out-of-scope у Plan 0029, тепер confirmed alive.
 
 | Consumer | Behaviour | File:line |
 |---|---|---|
 | Cycle context provider-failure projection | `_ctx_provider_window_seconds` контролює rolling window для `live_provider_failure_snapshot` | [`trader_orchestrator_worker.py:4799-4825`](../../backend/workers/trader_orchestrator_worker.py) |
-| Live-mode entries gate | `if snapshot.count >= min_errors: blocked_until = now + block_seconds` → `block_entries_event_type="live_provider_health_block"` | [`trader_orchestrator_worker.py:4882-4978`](../../backend/workers/trader_orchestrator_worker.py) |
+| Live-mode entries gate | `if snapshot.count >= min_errors: blocked_until = now + block_seconds` → `block_entries_event_type="live_provider_health_block"` | [`trader_orchestrator_worker.py:4882-4984`](../../backend/workers/trader_orchestrator_worker.py) |
 
 **Compound:**
 - **`TradingProxySettings.timeout`:** повторні timeouts → infra-failure events → провокують provider-health block. Tighter timeout → більше false positives → провадить block частіше.
@@ -1401,19 +1416,21 @@ Enum: `market_direction` | `market` | `asset_timeframe`. Контролює як
 - **Тільки live mode:** shadow ботів не зачіпає (gate всередині `if run_mode == "live"`).
 
 #### HIGH — `live_risk_clamps_explicit`
+<!-- audited 2026-05-10: clean -->
 
-**Default:** False ([`trader_orchestrator_state.py:296-299, 398`](../../backend/services/trader_orchestrator_state.py)). Bool flag у global_runtime.
+**Default:** False ([`trader_orchestrator_state.py:292-319, 396-398`](../../backend/services/trader_orchestrator_state.py)). Bool flag у global_runtime; також пропагується у reconciliation worker ([`trader_reconciliation_worker.py:311`](../../backend/workers/trader_reconciliation_worker.py)).
 
 | Consumer | Behaviour | File:line |
 |---|---|---|
-| `_normalize_live_risk_clamps` | `should_apply(key)` повертає True або коли source_is_explicit, або коли value ≠ legacy-implicit default | [`trader_orchestrator_state.py:295-299`](../../backend/services/trader_orchestrator_state.py) |
+| `_normalize_live_risk_clamps` | `should_apply(key)` повертає True або коли source_is_explicit, або коли value ≠ legacy-implicit default | [`trader_orchestrator_state.py:292-319`](../../backend/services/trader_orchestrator_state.py) |
 
 **Compound:**
 - **CRITICAL `live_risk_clamps.*`:** flag керує тим, чи legacy-defaults трактуються як override. False (default) — operator може встановити, наприклад, `max_open_orders_cap=6` (= legacy default), і це **не зарахується** як override → бот може мати ліберальніший `max_open_orders=20`. True — навіть legacy-значення primum override.
 
 #### HIGH — `live_market_context.max_market_data_age_ms`
+<!-- audited 2026-05-10: clean -->
 
-**Default:** 10000 ms ([`trader_orchestrator_state.py:354-360`](../../backend/services/trader_orchestrator_state.py))
+**Default:** 10000 ms ([`trader_orchestrator_state.py:354-360`](../../backend/services/trader_orchestrator_state.py); range `[25, 30000]`)
 
 | Consumer | Behaviour | File:line |
 |---|---|---|
@@ -1424,174 +1441,200 @@ Enum: `market_direction` | `market` | `asset_timeframe`. Контролює як
 ### Group C — `traders_copy_trade` strategy_params (source-config level)
 
 #### HIGH — `min_confidence`
+<!-- audited 2026-05-10: file:line drift corrected -->
 
-**Default:** 0.45 ([`traders_copy_trade.py:20`](../../backend/services/strategies/traders_copy_trade.py))
+**Default:** 0.45 ([`traders_copy_trade.py:21`](../../backend/services/strategies/traders_copy_trade.py))
 
 | Consumer | Формула | File:line |
 |---|---|---|
-| Signal validation | `signal.confidence >= min_confidence → keep` | [`traders_copy_trade.py:205`](../../backend/services/strategies/traders_copy_trade.py) |
+| `evaluate()` DecisionCheck "confidence" | `confidence >= safe_float(params.get("min_confidence"), 0.45) → pass`; reason `copy_trade_gate_failed:confidence` | [`traders_copy_trade.py:725-731`](../../backend/services/strategies/traders_copy_trade.py) |
 
 **Compound:** з `trader_tier` filter і wallet pool quality scoring. Високий поріг = fewer noisy copy-trades.
 
 #### HIGH — `max_signal_age_seconds` / `max_signal_age_seconds_hard_ceiling`
+<!-- audited 2026-05-10: file:line drift corrected -->
 
-**Defaults:** age=5, hard_ceiling=600 ([`traders_copy_trade.py:23, 28`](../../backend/services/strategies/traders_copy_trade.py))
+**Defaults:** age=5, hard_ceiling=600 ([`traders_copy_trade.py:24, 29`](../../backend/services/strategies/traders_copy_trade.py))
 
 | Consumer | Формула | File:line |
 |---|---|---|
-| Signal staleness gate | `(now - signal.created_at) <= max_signal_age_seconds → pass`; UI input clamped to `min(input, hard_ceiling)` | [`traders_copy_trade.py:208`](../../backend/services/strategies/traders_copy_trade.py) |
+| Compute effective max age | `max_signal_age_seconds = min(hard_ceiling, requested)`; `age_seconds = (now_utc - detected_at).total_seconds()` | [`traders_copy_trade.py:614-628`](../../backend/services/strategies/traders_copy_trade.py) |
+| `evaluate()` DecisionCheck "max_age" | `age_seconds <= max_signal_age_seconds → pass`; reason `copy_trade_gate_failed:max_age` | [`traders_copy_trade.py:777-786`](../../backend/services/strategies/traders_copy_trade.py) |
 
 **Compound:** з worker-trading event-loop latency. Tight age (5s) під 100% CPU → signals expire до того як cycle їх обробить. Документовано у `runtime-tweaks.md` 2026-05-07 entry — підняли з 5 до 60 саме тому.
 
 #### HIGH — `min_source_notional_usd`
+<!-- audited 2026-05-10: file:line drift corrected -->
 
-**Default:** 10.0 USD ([`traders_copy_trade.py:21`](../../backend/services/strategies/traders_copy_trade.py))
+**Default:** 10.0 USD ([`traders_copy_trade.py:22`](../../backend/services/strategies/traders_copy_trade.py))
 
 | Consumer | Формула | File:line |
 |---|---|---|
-| Source-trade size filter | `source_trade.notional_usd >= min_source_notional_usd → consider` | [`traders_copy_trade.py:206`](../../backend/services/strategies/traders_copy_trade.py) |
+| `evaluate()` DecisionCheck "min_notional" | `source_notional >= safe_float(params.get("min_source_notional_usd"), 10.0) → pass`; reason `copy_trade_gate_failed:min_notional` | [`traders_copy_trade.py:742-748`](../../backend/services/strategies/traders_copy_trade.py) |
 
 **Compound:** з `proportional_sizing` — фільтр невеликих source trades. Полігаркет leaders іноді делять малі трейди < $10 (тестові); high threshold (50) — тільки мажорні copies.
 
 #### HIGH — `copy_delay_seconds`
+<!-- audited 2026-05-10: file:line drift corrected -->
 
-**Default:** 0 ([`traders_copy_trade.py:31`](../../backend/services/strategies/traders_copy_trade.py))
+**Default:** 0 ([`traders_copy_trade.py:32`](../../backend/services/strategies/traders_copy_trade.py))
 
 | Consumer | Behaviour | File:line |
 |---|---|---|
-| Async copy delay | `await sleep(copy_delay_seconds)` перед entry | [`traders_copy_trade.py:211`](../../backend/services/strategies/traders_copy_trade.py) |
+| `evaluate()` DecisionCheck "copy_delay" | `age_seconds >= copy_delay_seconds → pass` (синхронний вік-чек на cycle, без `sleep`); reason `copy_trade_gate_failed:copy_delay` | [`traders_copy_trade.py:671, 787-793`](../../backend/services/strategies/traders_copy_trade.py) |
 
 **Compound:** з `max_signal_age_seconds`. Якщо `copy_delay > max_signal_age` — кожен signal expires до того як його обробити. UI повинен валідувати delay < age.
 
 #### HIGH — `proportional_sizing` / `proportional_multiplier`
+<!-- audited 2026-05-10: file:line drift corrected -->
 
-**Defaults:** sizing=True, multiplier=1.0 ([`traders_copy_trade.py:36-37`](../../backend/services/strategies/traders_copy_trade.py))
+**Defaults:** sizing=True, multiplier=1.0 ([`traders_copy_trade.py:37-38`](../../backend/services/strategies/traders_copy_trade.py))
 
 | Consumer | Behaviour | File:line |
 |---|---|---|
-| Position-size calculation | `True` → `our_size = source_size × multiplier` (clamp by max_position_size); `False` → fixed max_position_size | [`traders_copy_trade.py:216-217`](../../backend/services/strategies/traders_copy_trade.py) |
+| Position-size calculation | `True` + `source_notional > 0` → `target_size = source_notional * max(0.01, proportional_multiplier)`; `False` → fallback `source_notional` (>0) або `base_size = max_trade_notional_usd × 0.40`; завжди clamp `min(max_position_size, max_size_from_risk_limits)` | [`traders_copy_trade.py:864-880`](../../backend/services/strategies/traders_copy_trade.py) |
 
 **Compound:** з `max_position_size` (strategy_param) і CRITICAL `max_trade_notional_usd`. Risk-cap binding виграє над proportional, якщо source_size × multiplier > cap.
 
 #### HIGH — Inventory controls: `require_inventory_for_sells` / `allow_partial_inventory_sells` / `min_inventory_fraction`
+<!-- audited 2026-05-10: clean -->
 
-**Defaults:** require=True, allow_partial=True, min_fraction=0.25 ([`traders_copy_trade.py:45-47`](../../backend/services/strategies/traders_copy_trade.py))
+**Defaults:** require=True, allow_partial=True, min_fraction=0.25 ([`traders_copy_trade.py:46-48`](../../backend/services/strategies/traders_copy_trade.py))
 
 | Consumer | Формула | File:line |
 |---|---|---|
-| Sell-copy gate | `if require_inventory and current_inventory_fraction < min_inventory_fraction → block` | [`traders_copy_trade.py:918-948`](../../backend/services/strategies/traders_copy_trade.py) |
+| Sell-copy gate ladder | `if run_mode == "live" and side == "SELL" and require_inventory_for_sells:` додає DecisionCheck "sell_inventory" (`available_shares > 0`) і "sell_inventory_fraction" (`available_fraction >= min_inventory_fraction`); якщо `allow_partial_inventory_sells=False` і available < requested → "sell_inventory_partial" fail | [`traders_copy_trade.py:918-960`](../../backend/services/strategies/traders_copy_trade.py) |
 
 **Compound:** для sell-copy. `require=True, allow_partial=False` → must sell only full inventory; `True, True, 0.25` → must hold ≥ 25% intent-size to sell.
 
 #### HIGH — `default_leader_weight` / `leader_weights` (dict)
+<!-- audited 2026-05-10: file:line drift corrected -->
 
-**Defaults:** default=1.0, dict empty ([`traders_copy_trade.py:41-42`](../../backend/services/strategies/traders_copy_trade.py))
+**Defaults:** default=1.0, dict empty ([`traders_copy_trade.py:42-43`](../../backend/services/strategies/traders_copy_trade.py))
 
 | Consumer | Behaviour | File:line |
 |---|---|---|
-| Position-size weighting | `weight = leader_weights.get(wallet, default_leader_weight)`; sizing scaled by weight | [`traders_copy_trade.py:223-228`](../../backend/services/strategies/traders_copy_trade.py) |
+| Lookup leader weight | `default_leader_weight = safe_float(params.get("default_leader_weight"), 1.0)`; `leader_weight = safe_float(leader_weights.get(source_wallet), default_leader_weight)` | [`traders_copy_trade.py:592-598`](../../backend/services/strategies/traders_copy_trade.py) |
+| Apply weight to sizing | `target_size = target_size * max(0.0, leader_weight)` (після proportional sizing, перед leader_allocation cap) | [`traders_copy_trade.py:875`](../../backend/services/strategies/traders_copy_trade.py) |
+| DecisionCheck "leader_weight" | `leader_weight is not None and leader_weight > 0.0` → pass (weight=0 → fail з reason `copy_trade_gate_failed:leader_weight`) | [`traders_copy_trade.py:838-844`](../../backend/services/strategies/traders_copy_trade.py) |
 
-**Compound:** з `max_leader_exposure_usd` (per-leader cap), `leader_allocation_cap_pct`. Weight=0 повністю мутить leader без видалення з scope.
+**Compound:** з `max_leader_exposure_usd` (per-leader cap), `leader_allocation_cap_pct`. Weight=0 → leader gate fails (НЕ просто silently mute) — для повного muting без gate-fail треба прибрати wallet із scope.
 
 #### HIGH — `traders_scope.modes` / `.individual_wallets` / `.group_ids`
+<!-- audited 2026-05-10: file:line drift corrected -->
 
-**Defaults:** modes=`["tracked","pool"]`, individual=`[]`, groups=`[]` ([`traders_copy_trade.py:54-58`](../../backend/services/strategies/traders_copy_trade.py))
+**Defaults:** modes=`["tracked","pool"]`, individual=`[]`, groups=`[]` ([`traders_copy_trade.py:55-59`](../../backend/services/strategies/traders_copy_trade.py))
 
 | Consumer | Behaviour | File:line |
 |---|---|---|
-| Wallet-scope filter | визначає which wallets копіювати (tracked / pool / individual / group) | [`traders_copy_trade.py:238`](../../backend/services/strategies/traders_copy_trade.py) (`StrategySDK.validate_trader_scope_config`) |
+| `evaluate()` runtime scope match | `runtime_scope_context` (передається у context payload) → `StrategySDK.match_trader_signal_scope(signal, runtime_scope_context)`; fallback на explicit `params.get("traders_scope")` коли runtime context відсутній | [`traders_copy_trade.py:547-667`](../../backend/services/strategies/traders_copy_trade.py) |
+| DecisionCheck "traders_scope" | `scope_passed → pass`; reason `copy_trade_gate_failed:traders_scope` | [`traders_copy_trade.py:698-704`](../../backend/services/strategies/traders_copy_trade.py) |
+| Validation на configure | `cfg["traders_scope"] = StrategySDK.validate_trader_scope_config(...)` | [`traders_copy_trade.py:239`](../../backend/services/strategies/traders_copy_trade.py) |
 
 **Compound:** з `min_confidence` і `trader_tier`. Звужує signal pool. `["tracked"]` only = high-quality discovered wallets; `["pool"]` only = leaderboard pool; combos працюють як OR.
 
 ### Group D — Scanner app-settings
 
 #### HIGH — `scan_interval_seconds`
+<!-- audited 2026-05-10: file:line drift corrected -->
 
-**Default:** 60 ([`routes_settings.py:184`](../../backend/api/routes_settings.py))
+**Default:** 60 ([`routes_settings.py:184`](../../backend/api/routes_settings.py); AppSettings column [`database.py:1332`](../../backend/models/database.py))
 
 | Consumer | Behaviour | File:line |
 |---|---|---|
-| Scanner loop frequency | `await sleep(scan_interval_seconds)` між market scan-cycle-ами | [`scanner.py`](../../backend/services/scanner.py) |
+| Scanner loop frequency | `self._interval_seconds = settings_row.scan_interval_seconds` керує `await sleep(...)` між market scan-cycle-ами | [`scanner.py:2613, 2625, 2642`](../../backend/services/scanner.py) |
 
 **Compound:** з `max_markets_to_scan` — добуток ефективна throughput (markets/min).
 
 #### HIGH — `min_profit_threshold`
+<!-- audited 2026-05-10: file:line drift corrected -->
 
-**Default:** 2.5 % ([`routes_settings.py:185`](../../backend/api/routes_settings.py))
+**Default:** 2.5 % ([`routes_settings.py:185`](../../backend/api/routes_settings.py); ENV mirror `MIN_PROFIT_THRESHOLD=0.025` у [`config.py:148`](../../backend/config.py))
 
 | Consumer | Behaviour | File:line |
 |---|---|---|
-| Opportunity filter | edge < threshold → discard, не записувати в `trade_signals` | [`scanner.py`](../../backend/services/scanner.py) |
+| BaseStrategy `self.min_profit` | `self.min_profit = settings.MIN_PROFIT_THRESHOLD` — кожна стратегія через `create_opportunity` фільтрує по цьому полю; opportunities з `roi < min_profit` discarded | [`strategies/base.py:675`](../../backend/services/strategies/base.py) |
+| QualityFilter min_roi fallback | `min_roi → settings.MIN_PROFIT_THRESHOLD * 100` коли operator не задав override | [`quality_filter.py:162`](../../backend/services/quality_filter.py) |
 
 **Compound:** з per-strategy `min_upside_percent`. Strategy може tighten ще, не loosen.
 
 #### HIGH — `max_markets_to_scan`
+<!-- audited 2026-05-10: file:line drift corrected -->
 
-**Default:** 0 (no limit) ([`routes_settings.py:186-190`](../../backend/api/routes_settings.py))
+**Default:** 0 (no limit) ([`routes_settings.py:186-190`](../../backend/api/routes_settings.py); ENV mirror `MAX_MARKETS_TO_SCAN=0` у [`config.py:157`](../../backend/config.py))
 
 | Consumer | Behaviour | File:line |
 |---|---|---|
-| Scanner enumeration cap | `markets[:max_markets_to_scan]` per cycle | [`scanner.py`](../../backend/services/scanner.py) |
+| Scanner enumeration cap | `market_cap = int(getattr(settings, "MAX_MARKETS_TO_SCAN", 0) or 0)` — apply cap after universe enumeration | [`scanner.py:1225`](../../backend/services/scanner.py) |
+| Polymarket fetch cap | `cap = settings.MAX_MARKETS_TO_SCAN` — limit upstream pull when set | [`polymarket.py:607`](../../backend/services/polymarket.py) |
 
 **Compound:** з `market_filter_tags` (plan 0005). Filter знижує count перед cap; cap — fallback safety.
 
 #### HIGH — `min_liquidity`
+<!-- audited 2026-05-10: file:line drift corrected -->
 
-**Default:** 1000.0 USD ([`routes_settings.py:204`](../../backend/api/routes_settings.py))
+**Default:** 1000.0 USD ([`routes_settings.py:204`](../../backend/api/routes_settings.py); AppSettings column [`database.py:1338`](../../backend/models/database.py))
 
 | Consumer | Behaviour | File:line |
 |---|---|---|
-| Market filter | `market.liquidity >= min_liquidity → keep` | [`scanner.py`](../../backend/services/scanner.py) |
+| Opportunity filter (UI/list) | `if filter.min_liquidity > 0: opps = [o for o in opps if o.min_liquidity >= filter.min_liquidity]` | [`scanner.py:5083-5084`](../../backend/services/scanner.py) |
 
 **Compound:** з per-strategy `min_liquidity` strategy_param. Той може tighten ще per-bot.
 
 #### HIGH — `scanner_max_opportunities_total` / `scanner_max_opportunities_per_strategy`
+<!-- audited 2026-05-10: confirmed dead -->
 
-**Defaults:** 500 / 120 ([`database.py:1339-1340`](../../backend/models/database.py); ENV mirror `SCANNER_MAX_OPPORTUNITIES_TOTAL` / `SCANNER_MAX_OPPORTUNITIES_PER_STRATEGY` у [`config.py:146-147`](../../backend/config.py)).
+**Defaults:** 500 / 120 ([`database.py:1339-1340`](../../backend/models/database.py); ENV mirror `SCANNER_MAX_OPPORTUNITIES_TOTAL` / `SCANNER_MAX_OPPORTUNITIES_PER_STRATEGY` у [`config.py:146-147, 937-938`](../../backend/config.py); UI у [`routes_settings.py:205-211`](../../backend/api/routes_settings.py); persistence у [`settings_helpers.py:342-344, 825-826`](../../backend/api/settings_helpers.py)).
 
-| Consumer | Behaviour | File:line |
-|---|---|---|
-| Scanner top-N cut | hard caps на opportunities published per scan cycle | scanner.py (settings.SCANNER_MAX_OPPORTUNITIES_*) |
+**Status:** Schema-only поля у app_settings. Жоден consumer у `backend/services/` чи `backend/workers/` не читає `settings.SCANNER_MAX_OPPORTUNITIES_TOTAL` або `_PER_STRATEGY` (grep'нуто 2026-05-10 — нуль hits поза config translation/UI). Раніше задокументоване як «hard caps на opportunities published per scan cycle» — насправді не enforced. Якщо потрібен top-N cut — додати consumer у `scanner.py` через окремий план.
 
-**Compound:** з `min_profit_threshold` — нижчий threshold + цей cap = втрата частини opportunities якщо їх багато; вищий threshold знімає тиск.
+**Compound:** немає (gate не існує).
 
 #### HIGH — `scanner_skipped_signal_reactivation_cooldown_seconds`
+<!-- audited 2026-05-10: file:line drift corrected -->
 
-**Default:** 180s ([`database.py:1341`](../../backend/models/database.py)). UI label «Skipped Signal Reactivation Cooldown».
+**Default:** 180s ([`database.py:1341`](../../backend/models/database.py); ENV mirror `SCANNER_SKIPPED_SIGNAL_REACTIVATION_COOLDOWN_SECONDS=0` у [`config.py:93`](../../backend/config.py) — note: ENV default 0 ≠ DB default 180; AppSettings персистенс перекриває). UI label «Skipped Signal Reactivation Cooldown».
 
 | Consumer | Behaviour | File:line |
 |---|---|---|
-| Skipped-signal reactivator | мінімальний інтервал між повторною спробою signal-а, що раніше скіпнули у gates | scanner state |
+| Signal-bus reactivation cooldown | `raw = getattr(settings, "SCANNER_SKIPPED_SIGNAL_REACTIVATION_COOLDOWN_SECONDS", 0.0)` — мінімальний інтервал перед повторним publish скіпнутого сигналу (material price/quote-changes реактивують сигнали без cooldown) | [`signal_bus.py:45`](../../backend/services/signal_bus.py) |
 
 #### HIGH — `scanner_strict_ws_max_age_ms`
+<!-- audited 2026-05-10: file:line drift corrected -->
 
 **Default:** 30000ms ([`database.py:1342`](../../backend/models/database.py); ENV `SCANNER_STRICT_WS_MAX_AGE_MS` у [`config.py:92`](../../backend/config.py)). Окремий scanner-side counterpart до `EXECUTION_MARKET_DATA_MAX_AGE_MS`.
 
 | Consumer | Behaviour | File:line |
 |---|---|---|
-| Strict WS-only execution gate (scanner-source) | rejects opportunity якщо WS price tick старший за поріг | scanner.py |
+| Scanner WS staleness gate | `max(100.0, float(settings.SCANNER_STRICT_WS_MAX_AGE_MS) or 30000.0) / 1000.0` → seconds budget | [`scanner.py:828`](../../backend/services/scanner.py) |
+| Intent-runtime cross-check | `scanner_max_age_ms = float(settings.SCANNER_STRICT_WS_MAX_AGE_MS or 30000)` для validate-перед-execution | [`intent_runtime.py:117`](../../backend/services/intent_runtime.py) |
+| Live-market-context fallback | scanner-side counterpart fed into orchestrator's per-trader live context | [`live_market_context.py:109`](../../backend/services/trader_orchestrator/live_market_context.py) |
+| Worker fallback | `getattr(settings, "SCANNER_STRICT_WS_MAX_AGE_MS", 30000)` коли інші per-trader/strategy/global timestamps null | [`trader_orchestrator_worker.py:5066`](../../backend/workers/trader_orchestrator_worker.py) |
 
 **Compound:** з `EXECUTION_MARKET_DATA_MAX_AGE_MS` — на boundary scanner→execution два пороги стискаються AND. Якщо tick свіжий для scanner (≤30s) але вже застарів для execution (>10s) — opportunity ігнорується далі.
 
 ### Group E — Live-trading proxy
 
 #### HIGH — `TradingProxySettings.timeout`
+<!-- audited 2026-05-10: file:line drift corrected -->
 
-**Default:** 30.0 s ([`routes_settings.py:661`](../../backend/api/routes_settings.py))
+**Default:** 30.0 s, range [5, 120] ([`routes_settings.py:661`](../../backend/api/routes_settings.py); AppSettings column persisted у `trading_proxy_timeout`)
 
 | Consumer | Behaviour | File:line |
 |---|---|---|
-| Trading proxy HTTP timeout | submit timeout cap для proxy-routed orders | [`trading_proxy.py`](../../backend/services/trading_proxy.py) |
+| ProxyConfig load | `timeout = row.trading_proxy_timeout or 30.0` — наповнює клієнтську конфігурацію HTTP-проксі | [`trading_proxy.py:109`](../../backend/services/trading_proxy.py) |
 
 **Compound:** з `live_provider_health.window_seconds` — повторні timeouts тригерять provider-health blocker.
 
 #### HIGH — `TradingProxySettings.require_vpn`
+<!-- audited 2026-05-10: file:line drift corrected -->
 
-**Default:** True ([`routes_settings.py:662`](../../backend/api/routes_settings.py))
+**Default:** True ([`routes_settings.py:662`](../../backend/api/routes_settings.py); AppSettings column persisted у `trading_proxy_require_vpn`)
 
 | Consumer | Behaviour | File:line |
 |---|---|---|
-| Proxy VPN gate | `require_vpn=True` + VPN unreachable → block all live trades | [`trading_proxy.py`](../../backend/services/trading_proxy.py) (health check) |
+| ProxyConfig load | `require_vpn=row.trading_proxy_require_vpn if row.trading_proxy_require_vpn is not None else True` | [`trading_proxy.py:110`](../../backend/services/trading_proxy.py) |
+| VPN-gate (allowed/reason) | `if not cfg.require_vpn: return (True, "VPN check disabled")`; else викликає `verify_vpn_active(cfg)` і блокує live trades коли VPN не активний | [`trading_proxy.py:307-330`](../../backend/services/trading_proxy.py) |
 
 **Compound:** geo-location / compliance. Disable тільки в dev — production live trading **must** require VPN.
 
@@ -1600,6 +1643,7 @@ Enum: `market_direction` | `market` | `asset_timeframe`. Контролює як
 ### Group F — Live-execution / redeemer / fill-simulator (config.py + AppSettings)
 
 #### HIGH — `EXECUTION_MARKET_DATA_MAX_AGE_MS`
+<!-- audited 2026-05-10: clean -->
 
 **Default:** 10000ms ([`config.py:87`](../../backend/config.py)). ENV-overridable. Останній fallback freshness gate, коли per-trader `max_market_data_age_ms` і strategy_params version обидва null.
 
@@ -1610,17 +1654,19 @@ Enum: `market_direction` | `market` | `asset_timeframe`. Контролює як
 **Compound:** з CRITICAL `max_market_data_age_ms` (per-trader). Той перекриває цей як explicit override; цей — final ENV-fallback. Не плутати зі scanner `scanner_strict_ws_max_age_ms` (інший pipeline, інша AppSettings column).
 
 #### HIGH — `MAX_SLIPPAGE_PERCENT`
+<!-- audited 2026-05-10: clean -->
 
 **Default:** 2.0% ([`config.py:371`](../../backend/config.py); AppSettings column [`database.py:1401`](../../backend/models/database.py)).
 
 | Consumer | Behaviour | File:line |
 |---|---|---|
-| `PriceChaser` slippage cap | `chase_price` ніколи не виходить за `original_price ± MAX_SLIPPAGE_PERCENT/100` | [`price_chaser.py:71-126`](../../backend/services/price_chaser.py) |
-| LiveExecutionService chase invocation | passed as `max_slippage_percent=settings.MAX_SLIPPAGE_PERCENT` у chase loop | [`live_execution_service.py:5025`](../../backend/services/live_execution_service.py) |
+| `PriceChaser` slippage cap | `max_slippage = original_price * (max_slippage_percent / 100.0)` — `chase_price` ніколи не виходить за `original_price ± max_slippage` | [`price_chaser.py:71, 146`](../../backend/services/price_chaser.py) |
+| LiveExecutionService chase invocation | `max_slippage_percent=settings.MAX_SLIPPAGE_PERCENT` передається у chase loop | [`live_execution_service.py:5025`](../../backend/services/live_execution_service.py) |
 
-**Compound:** з `slippage_bps` (per-trader, у CRITICAL/HIGH вище) — abs vs relative. `slippage_bps=35` (per-trader) — для acceptance gate; `MAX_SLIPPAGE_PERCENT=2.0` — для chase ceiling. Різні pipelines.
+**Compound:** з per-trader `slippage_bps` (Group A — наразі `confirmed dead`, gate відсутній). На практиці `MAX_SLIPPAGE_PERCENT` — єдиний реально активний slippage cap. Якщо потрібен per-trader bps acceptance gate (поверх chase ceiling) — додати consumer окремим планом.
 
 #### HIGH — `MIN_ORDER_SIZE_USD`
+<!-- audited 2026-05-10: clean -->
 
 **Default:** 1.0 USD ([`config.py:313`](../../backend/config.py)).
 
@@ -1631,34 +1677,37 @@ Enum: `market_direction` | `market` | `asset_timeframe`. Контролює як
 **Compound:** з `portfolio.min_order_notional_usd` (per-trader, default 10.0 USD) — другий бере приоритет якщо trader має portfolio config; інакше падаємо у ENV-fallback.
 
 #### HIGH — `STALE_ORDER_AGE_HOURS` / `STALE_ORDER_PRICE_DRIFT_MULTIPLE` / `STALE_ORDER_RESIDUAL_SHARES`
+<!-- audited 2026-05-10: clean -->
 
-**Defaults:** 2.0h / 2.5× / 1.0 share ([`config.py:364-366`](../../backend/config.py)).
+**Defaults:** 2.0h / 2.5× / 1.0 share ([`config.py:364-366`](../../backend/config.py)). `STALE_ORDER_AGE_HOURS_NO_MID` (sibling, default 8h) — fallback hard cutoff коли mid lookup fails.
 
 | Consumer | Behaviour | File:line |
 |---|---|---|
-| Reconciliation worker stale-order sweep | старші за `STALE_ORDER_AGE_HOURS` ордери оцінюються; cancel якщо `limit ≥ STALE_ORDER_PRICE_DRIFT_MULTIPLE × current_mid` (BUY: інверс) або `residual_shares < STALE_ORDER_RESIDUAL_SHARES` | [`trader_reconciliation_worker.py:1005-1010`](../../backend/workers/trader_reconciliation_worker.py) |
+| Reconciliation worker stale-order sweep | старші за `STALE_ORDER_AGE_HOURS` ордери оцінюються; cancel якщо `limit ≥ STALE_ORDER_PRICE_DRIFT_MULTIPLE × current_mid` (BUY: інверс) або `residual_shares < STALE_ORDER_RESIDUAL_SHARES` | [`trader_reconciliation_worker.py:1005-1013`](../../backend/workers/trader_reconciliation_worker.py) |
 | LiveExecutionService stale-log header | `STALE_ORDER_AGE_HOURS=%.1fh` у sweep-cadence info log | [`live_execution_service.py:1418-1433`](../../backend/services/live_execution_service.py) |
 
 **Compound:** state-changing — sweep cancel-ить ордер. Зміна цих знобів **впливає на open-orders count** → опосередковано взаємодіє з CRITICAL `max_open_orders` (sweep звільняє слоти).
 
 #### HIGH — `REDEEMER_MIN_PAYOUT_USD` / `REDEEMER_MAX_GAS_PRICE_GWEI` / `redeemer_force_including_losers`
+<!-- audited 2026-05-10: clean -->
 
-**Defaults:** 0.10 USD / 200.0 gwei / null ([`config.py:323-324`](../../backend/config.py); AppSettings columns [`database.py:1405-1407`](../../backend/models/database.py)).
+**Defaults:** 0.10 USD / 200.0 gwei / null ([`config.py:323-324, 947-949`](../../backend/config.py); AppSettings columns [`database.py:1405-1407`](../../backend/models/database.py)). `REDEEMER_FORCE_INCLUDING_LOSERS` ENV mirror у [`config.py:949`](../../backend/config.py).
 
 | Consumer | Behaviour | File:line |
 |---|---|---|
-| CTF redemption policy | `if expected_payout_usd < min_payout_usd: skip`; `if gas_price_gwei > max_gas_price_gwei: defer`; `force_including_losers=True` — redeem навіть програшні позиції (default off — only winning legs) | [`ctf_execution.py:1428-1429+`](../../backend/services/ctf_execution.py) |
+| CTF redemption policy | `min_payout_usd = float(getattr(settings, "REDEEMER_MIN_PAYOUT_USD", 0.10) or 0.0)`; `max_gas_price_gwei = float(getattr(settings, "REDEEMER_MAX_GAS_PRICE_GWEI", 200.0) or 0.0)`; `if expected_payout_usd < min_payout_usd: skip`; `if gas_price_gwei > max_gas_price_gwei: defer`; `force_including_losers=True` — redeem навіть програшні позиції (default off — only winning legs) | [`ctf_execution.py:1428-1429`](../../backend/services/ctf_execution.py) |
 
 **Compound:** onchain blast — кожен redeem це onchain TX. Lowering `MIN_PAYOUT_USD` → більше gas spent на dust. Raising `MAX_GAS_PRICE_GWEI` → готовність redeem'ити при перегрітому network.
 
 #### HIGH — `latency_fallback_p50_ms` / `latency_fallback_p95_ms` / `latency_fallback_p99_ms`
+<!-- audited 2026-05-10: file:line drift corrected -->
 
 **Defaults:** null → module-level constants 200/600/1500 ms ([`database.py:1420-1422`](../../backend/models/database.py)).
 
 | Consumer | Behaviour | File:line |
 |---|---|---|
-| Cox-PH fill simulator latency envelope | коли real submit/cancel latency не виміряні за останні 15 хв, fall back на ці значення | fill simulator service |
-| BacktestStudio "Latency (defaults)" panel | UI presentation з тих самих values | backtest UI |
+| Cox-PH fill simulator latency envelope | `getattr(row, "latency_fallback_p50_ms"/p95/p99, None)` — використовується коли real submit/cancel latency не виміряні за останні 15 хв | [`fill_simulator/latency.py:76-78`](../../backend/services/fill_simulator/latency.py) |
+| Persistence (UI updates) | `row.latency_fallback_p50_ms = _coerce(p50_ms)` (and p95/p99) | [`routes_fill_model.py:293-297`](../../backend/api/routes_fill_model.py) |
 
 **Compound:** з shadow vs live divergence. Якщо fallback значення нижче real production latency, shadow-результати overestimate fill rate; навпаки — underestimate. Заломлення → calibration drift.
 
@@ -1671,9 +1720,11 @@ Enum: `market_direction` | `market` | `asset_timeframe`. Контролює як
 **UI marker.** З Plan 0031 (2026-05-10) форма Bot → Risk Limits
 рендерить ці поля з **red-tinted background** і `⚠ deprecated · no
 runtime effect` banner-ом над input-ом. Hover-tooltip каже коротку
-ту саму інформацію плюс посилання на цю секцію. Schema flag
-`"dead_code": True` лежить у
-[`backend/services/strategy_sdk.py:435+`](../../backend/services/strategy_sdk.py)
+ту саму інформацію плюс посилання на цю секцію. Plan 0038
+(2026-05-10) розширив список з 5 до 8 полів (додав `slippage_bps`,
+`max_spread_bps`, `use_dynamic_sizing` за результатами Plan 0036
+HIGH-tier audit). Schema flag `"dead_code": True` лежить у
+[`backend/services/strategy_sdk.py:437+`](../../backend/services/strategy_sdk.py)
 (в `TRADER_RISK_FIELDS_SCHEMA`); single source of truth — backend
 schema, frontend його тільки рендерить. Щоб **прибрати флаг**
 (тобто реально wire-нути consumer-а), видалити `dead_code: True`
@@ -1681,34 +1732,75 @@ schema, frontend його тільки рендерить. Щоб **прибра
 matrix-entry нижче.
 
 - **`circuit_breaker_drawdown_pct`** (default 12.0, schema-only) —
-  [`strategy_sdk.py:410, 447, 1934-1935`](../../backend/services/strategy_sdk.py).
+  [`strategy_sdk.py:410, 463, 1951-1952`](../../backend/services/strategy_sdk.py).
   Описано детально у CRITICAL section вище. Реальний CB — це
   `halt_on_consecutive_losses + max_consecutive_losses`.
 
 - **`max_daily_spend_usd`** (default 2000.0, schema-only) —
-  [`strategy_sdk.py:399, 435, 1921-1922`](../../backend/services/strategy_sdk.py).
+  [`strategy_sdk.py:399, 437, 1938-1939`](../../backend/services/strategy_sdk.py).
   UI label «Max Daily Spend (USD)», валідація `[1, 100M]`. **Жоден gate не читає.**
   Якщо вам потрібен daily-spend cap (orthogonal до loss-cap, бо loss = realized PnL,
   spend = total notional placed), потрібен B-плану щоб додати consumer у `risk_manager`.
 
 - **`retry_limit`** (default 2, schema-only) —
-  [`strategy_sdk.py:404, 440, 1928`](../../backend/services/strategy_sdk.py).
+  [`strategy_sdk.py:404, 450, 1945`](../../backend/services/strategy_sdk.py).
   UI label «Retry Limit», валідація `[0, 50]`. **Жоден submission consumer не читає.**
   Live execution path має власний retry-logic, що не звертається до цього поля.
 
 - **`retry_backoff_ms`** (default 250, schema-only) —
-  [`strategy_sdk.py:405, 441, 1929`](../../backend/services/strategy_sdk.py).
+  [`strategy_sdk.py:405, 453, 1946`](../../backend/services/strategy_sdk.py).
   Companion to `retry_limit`, той самий стан — без consumer-а.
 
 - **`order_ttl_seconds`** (default 1200, schema-only) —
-  [`strategy_sdk.py:401, 437, 1620, 1925`](../../backend/services/strategy_sdk.py).
-  UI label «Order TTL (seconds)», валідація `[1, 86400]`. Line 1620 — це
+  [`strategy_sdk.py:401, 441, 1637, 1942`](../../backend/services/strategy_sdk.py).
+  UI label «Order TTL (seconds)», валідація `[1, 86400]`. Line 1637 — це
   лише список полів, не consumer. **Жодний lifecycle / cancel scheduler
   не читає.** TTL/cancel керується іншими механізмами (e.g.
   `session_engine` cancel-on-cycle-end, `terminal_market_watchdog`).
 
-**Підсумок:** 5 з 25 `TRADER_RISK_DEFAULTS` полів = **20% dead code**.
-Якщо оператор хоче UI cleanup — окремий B/R план (приховати з UI або додати реальний consumer).
+- **`slippage_bps`** (default 35.0 bps, schema-only) —
+  [`strategy_sdk.py:402, 444, 1943`](../../backend/services/strategy_sdk.py).
+  UI label «Slippage Guard (bps)», валідація `[0, 10000]`. Surfaced у
+  HIGH-tier matrix як `confirmed dead` (Plan 0036 audit) — детальніше
+  у [HIGH § `slippage_bps`](#high--slippage_bps). Поле `order_manager.py:1047`,
+  яке іноді з'являється у grep-результатах, — це **обчислений** Cox-PH
+  slippage_bps, що пишеться у shadow-payload для звіту, не gate.
+  Реальний live slippage cap — це Group F `MAX_SLIPPAGE_PERCENT`
+  (різний pipeline, у відсотках, default 2.0%); per-trader bps-cap
+  відсутній. Якщо потрібен — додати consumer у `risk_manager` /
+  `order_manager` через окремий B-план.
+
+- **`max_spread_bps`** (default 75.0 bps, schema-only) —
+  [`strategy_sdk.py:403, 447, 1944`](../../backend/services/strategy_sdk.py).
+  UI label «Max Spread (bps)», валідація `[0, 10000]`. Surfaced у
+  HIGH-tier matrix як `confirmed dead` (Plan 0036 audit) — детальніше
+  у [HIGH § `max_spread_bps`](#high--max_spread_bps). У `decision_gates.py`
+  та `order_manager.py` жодного `risk_limits["max_spread_bps"]`
+  consumer **не існує**. Окремі **per-strategy** params з тим самим
+  іменем живі (наприклад,
+  [`sports_overreaction_fader.py:80, 354`](../../backend/services/strategies/sports_overreaction_fader.py),
+  default 200.0; gate `if spread_bps > max_spread_bps`), але ті —
+  інший шар (`strategy_params`, не `risk_limits`). Per-trader
+  risk_limit version не плагнуто у жоден gate.
+
+- **`use_dynamic_sizing`** (default `True`, schema-only) —
+  [`strategy_sdk.py:407, 457, 1948`](../../backend/services/strategy_sdk.py).
+  UI label «Dynamic Position Sizing». Surfaced у HIGH-tier matrix як
+  `confirmed dead` (Plan 0036 audit) — детальніше у
+  [HIGH § `use_dynamic_sizing`](#high--use_dynamic_sizing).
+  `_trader_size_limits`
+  ([`strategies/base.py:219-245`](../../backend/services/strategies/base.py))
+  **жодного разу не звертається** до `risk_limits["use_dynamic_sizing"]` —
+  base_size hardcoded як `max(1.0, max_trade × 0.40)`. У
+  `decision_gates.py` consumer відсутній. Цей флаг ніяк не змінює
+  sizing-logic; sizing ефективно завжди працює як
+  `max_trade_notional_usd × 0.40` для base_size та
+  `max_trade_notional_usd` як ceiling, незалежно від цього флага.
+
+**Підсумок:** 8 з 25 `TRADER_RISK_DEFAULTS` полів = **32% dead code**
+(3 нові додано Plan 0038 на основі Plan 0036 HIGH-tier audit).
+Якщо оператор хоче UI cleanup — окремий B/R план (приховати з UI
+або додати реальний consumer).
 
 ### Dead code in `config.py` (Settings)
 

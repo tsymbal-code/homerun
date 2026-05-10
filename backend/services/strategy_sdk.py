@@ -439,8 +439,12 @@ class StrategySDK:
         # Dead code as of 2026-05-10 — see docs/strategies/_common-bot-parameters.md
         # § Dead code in TRADER_RISK_DEFAULTS.  Schema-only; no runtime consumer.
         {"key": "order_ttl_seconds", "label": "Order TTL (seconds)", "type": "integer", "min": 1, "max": 86400, "dead_code": True},
-        {"key": "slippage_bps", "label": "Slippage Guard (bps)", "type": "number", "min": 0, "max": 10000},
-        {"key": "max_spread_bps", "label": "Max Spread (bps)", "type": "number", "min": 0, "max": 10000},
+        # Dead code as of 2026-05-10 — see docs/strategies/_common-bot-parameters.md
+        # § Dead code in TRADER_RISK_DEFAULTS.  Schema-only; no runtime consumer.
+        {"key": "slippage_bps", "label": "Slippage Guard (bps)", "type": "number", "min": 0, "max": 10000, "dead_code": True},
+        # Dead code as of 2026-05-10 — see docs/strategies/_common-bot-parameters.md
+        # § Dead code in TRADER_RISK_DEFAULTS.  Schema-only; no runtime consumer.
+        {"key": "max_spread_bps", "label": "Max Spread (bps)", "type": "number", "min": 0, "max": 10000, "dead_code": True},
         # Dead code as of 2026-05-10 — see docs/strategies/_common-bot-parameters.md
         # § Dead code in TRADER_RISK_DEFAULTS.  Schema-only; no runtime consumer.
         {"key": "retry_limit", "label": "Retry Limit", "type": "integer", "min": 0, "max": 50, "dead_code": True},
@@ -448,7 +452,9 @@ class StrategySDK:
         # § Dead code in TRADER_RISK_DEFAULTS.  Schema-only; no runtime consumer.
         {"key": "retry_backoff_ms", "label": "Retry Backoff (ms)", "type": "integer", "min": 0, "max": 60000, "dead_code": True},
         {"key": "allow_averaging", "label": "Allow Averaging", "type": "boolean"},
-        {"key": "use_dynamic_sizing", "label": "Dynamic Position Sizing", "type": "boolean"},
+        # Dead code as of 2026-05-10 — see docs/strategies/_common-bot-parameters.md
+        # § Dead code in TRADER_RISK_DEFAULTS.  Schema-only; no runtime consumer.
+        {"key": "use_dynamic_sizing", "label": "Dynamic Position Sizing", "type": "boolean", "dead_code": True},
         {"key": "halt_on_consecutive_losses", "label": "Halt on Loss Streak", "type": "boolean"},
         {"key": "max_consecutive_losses", "label": "Max Consecutive Losses", "type": "integer", "min": 0, "max": 1000},
         # Dead code as of 2026-05-10 — see docs/strategies/_common-bot-parameters.md

@@ -52,7 +52,13 @@ the entry in this journal is **incomplete** without a 5-step
 walkthrough — see the [Walkthrough template](#walkthrough-template-for-critical-knob-changes)
 below. The list of 21 CRITICAL knobs covered today (per-entry
 **audited per Plan 0034 on 2026-05-10** — read each entry's
-`<!-- audited YYYY-MM-DD: <verdict> -->` marker before applying):
+`<!-- audited YYYY-MM-DD: <verdict> -->` marker before applying;
+the sibling **HIGH-tier** matrix was audited per **Plan 0036 on
+2026-05-10** with verdicts on each of the 46 entries — see the
+matrix's **Knob interaction matrix — HIGH tier** section, where
+4 entries were demoted to `confirmed dead`: `slippage_bps`,
+`max_spread_bps`, `use_dynamic_sizing` (Group A) and
+`scanner_max_opportunities_total/_per_strategy` (Group D)):
 
 `max_position_notional_usd` · `max_trade_notional_usd` ·
 `max_gross_exposure_usd` · `min_exit_notional` (gate, not knob;

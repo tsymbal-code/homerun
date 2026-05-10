@@ -332,7 +332,11 @@ granularity: 1 commit per plan or 30, the grep query is the same.
 Active plans (canonical order, prerequisites and categories live in
 [`plan-control-index.md`](plan-control-index.md)):
 
-_None at the moment — see [`completed/`](completed/) for finished plans._
+- [0032 — Eliminate fast-trader dedup-spam (signal_cache deep fix)](0032-eliminate-fast-trader-dedup-spam.md)
+- [0033 — Verify Cox-PH shadow-fill pessimism before tuning](0033-verify-cox-ph-shadow-fill-pessimism.md)
+- [0034 — Per-entry audit of the CRITICAL-tier knob matrix](0034-critical-knob-matrix-per-entry-audit.md)
+- [0035 — Split entry-band cap from execution-price cap in shadow chase-up](0035-split-entry-band-from-execution-price-cap.md)
+- [0036 — Per-entry audit of the HIGH-tier knob matrix](0036-high-knob-matrix-per-entry-audit.md)
 
 Architecture notes:
 
