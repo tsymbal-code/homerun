@@ -142,7 +142,7 @@ misses, UPDATE (line 8522-8534) when it hits. Collapse both into a
 single `pg_insert().on_conflict_do_update(...)` so the DB owns the
 conflict resolution.
 
-- [ ] In
+- [x] In
       [`backend/services/trader_orchestrator_state.py:8480-8534`](../../backend/services/trader_orchestrator_state.py:8480)
       replace the `if row is None: ... else: ...` split inside the
       loop with a single UPSERT call. Pseudocode:
@@ -193,24 +193,24 @@ conflict resolution.
       working — derive `inserts` from "was identity in
       `existing_by_identity`?" since the SELECT already happens
       anyway.
-- [ ] The closure loop at
+- [x] The closure loop at
       [line 8537-8551](../../backend/services/trader_orchestrator_state.py:8537)
       stays unchanged — that's pure Python attribute mutation
       on already-loaded ORM objects, no INSERT involved.
-- [ ] Inline 5-line comment block above the new UPSERT
+- [x] Inline 5-line comment block above the new UPSERT
       explaining: "Idempotent at the DB level — concurrent
       callers no longer race on the in-memory
       `existing_by_identity` snapshot. Conflict resolution
       mirrors the previous UPDATE branch (re-open closed
       positions, refresh sizing/timing fields, merge
       payload_json)."
-- [ ] Mark completed
+- [x] Mark completed
 
 ### Task 2: Regression tests in `test_trader_orchestrator_state_signals.py`
 
 Two scenarios pin the fix.
 
-- [ ] Add `test_sync_trader_position_inventory_reopens_existing_closed_row`:
+- [x] Add `test_sync_trader_position_inventory_reopens_existing_closed_row`:
       seed a `trader_positions` row with `status=closed_loss` for
       identity `(trader, shadow, 0xMKT, buy_no)`. Seed a fresh
       `trader_orders` row with same identity, status=open. Call
@@ -220,7 +220,7 @@ Two scenarios pin the fix.
       includes `sync_source='order_inventory'`. Assert no
       duplicate row was created (`COUNT(*)=1` for the identity
       tuple).
-- [ ] Add `test_sync_trader_position_inventory_concurrent_insert_does_not_raise`:
+- [x] Add `test_sync_trader_position_inventory_concurrent_insert_does_not_raise`:
       pre-insert a `trader_positions` row directly via raw SQL
       after `sync_trader_position_inventory` builds its
       `existing_by_identity` snapshot but before it commits.
@@ -228,7 +228,7 @@ Two scenarios pin the fix.
       always return None (simulating the snapshot missing the
       row). Confirm the call completes without IntegrityError
       and the existing row gets updated rather than failing.
-- [ ] Add `test_sync_trader_position_inventory_payload_json_merges_on_conflict`:
+- [x] Add `test_sync_trader_position_inventory_payload_json_merges_on_conflict`:
       seed an existing row with
       `payload_json={"strategy_exit_config": {"foo": 1}, "sync_source": "manual"}`.
       Run sync with new bucket carrying
@@ -237,34 +237,34 @@ Two scenarios pin the fix.
       old `strategy_exit_config` (preserved) and the new
       `open_order_ids` (added), with `sync_source` overwritten
       to `"order_inventory"`.
-- [ ] Run validation:
+- [x] Run validation:
       `bash scripts/run_tests_remote.sh tests/test_trader_orchestrator_state_signals.py`.
-- [ ] Mark completed
+- [x] Mark completed
 
 ### Task 3: Deploy, restore `halt_on_consecutive_losses=true`, verify, close out
 
-- [ ] Pre-deploy: count `uq_trader_position_identity` log entries
+- [x] Pre-deploy: count `uq_trader_position_identity` log entries
       in last 15 min on Sandbox bot (recent baseline ~2/5min):
       ```bash
       ssh polyhome-1 'cd /home/polyhome/homerun && docker compose logs --since=15m worker-trading 2>&1 | grep -c "uq_trader_position_identity"'
       ```
       Record count.
-- [ ] Run `./deploy/sync_remote.sh`. Confirm clean restart.
-- [ ] Wait 5 min for the new code to handle a few cycles, then
+- [x] Run `./deploy/sync_remote.sh`. Confirm clean restart.
+- [x] Wait 5 min for the new code to handle a few cycles, then
       re-count IntegrityError occurrences (same grep, last 5
       min). Expected: **0**. Record count.
-- [ ] Restore `halt_on_consecutive_losses=true` on the Sandbox
+- [x] Restore `halt_on_consecutive_losses=true` on the Sandbox
       bot via `PUT /api/traders/{id}` (full risk_limits dict
       with the flag flipped). Audit the revision:
       ```bash
       ssh polyhome-1 'cd /home/polyhome/homerun && docker compose exec -T postgres psql -U homerun -d homerun -c "SELECT operator, reason, created_at FROM trader_config_revisions WHERE trader_id='\''61dcbeb2b9bc42bd9e9635a09ae5e0c3'\'' ORDER BY created_at DESC LIMIT 1"'
       ```
       Confirm a new revision was recorded with the restore reason.
-- [ ] Wait another 30 min and confirm bot has not auto-paused
+- [x] Wait another 30 min and confirm bot has not auto-paused
       via circuit_breaker. Check
       `trader_events WHERE event_type LIKE 'circuit_breaker%' AND created_at > <deploy_time>`
       → expect zero rows.
-- [ ] Update
+- [x] Update
       [`docs/plans/architecture/trader-pipeline.md`](architecture/trader-pipeline.md)
       `## Known footguns`: add a short paragraph noting that
       `sync_trader_position_inventory` now uses UPSERT, the
@@ -272,15 +272,15 @@ Two scenarios pin the fix.
       consecutive-loss counter no longer gets infrastructure
       noise from this source. Bump `Last verified:` to deploy
       date.
-- [ ] Append a dated entry to
+- [x] Append a dated entry to
       [`docs/operational/runtime-tweaks.md`](../operational/runtime-tweaks.md)
       recording: pre/post IntegrityError counts, the
       `halt_on_consecutive_losses=true` restore, rollback
       recipe (`git revert <SHA>` + redeploy → reverts to
       INSERT-then-pray pattern; would also need to flip
       `halt=false` again as the workaround).
-- [ ] `git mv docs/plans/0024-upsert-trader-position-inventory.md docs/plans/completed/`.
-- [ ] Update [`plan-control-index.md`](plan-control-index.md)
+- [x] `git mv docs/plans/0024-upsert-trader-position-inventory.md docs/plans/completed/`.
+- [x] Update [`plan-control-index.md`](plan-control-index.md)
       to point at `completed/` path.
-- [ ] `git log --grep='Plan: 0024'` shows the full commit chain.
-- [ ] Mark completed
+- [x] `git log --grep='Plan: 0024'` shows the full commit chain.
+- [x] Mark completed

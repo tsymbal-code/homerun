@@ -2396,3 +2396,57 @@ ssh polyhome-1 'curl -fsS -X PUT http://127.0.0.1:8888/api/traders/61dcbeb2b9bc4
   whether a per-bot analytics tile is justified — but only
   after that pattern actually shows up in production data.
 
+### 2026-05-10 ~12:20 UTC — Plan 0024: UPSERT in `sync_trader_position_inventory` eliminated IntegrityError race
+
+- **Surface**: `backend/services/trader_orchestrator_state.py::sync_trader_position_inventory`
+  (code, not DB — ships in the image).
+- **Applied via**: `./deploy/sync_remote.sh` (commits `bcafd9c2`
+  + the closing-commit). Plan archived at
+  [`docs/plans/completed/0024-upsert-trader-position-inventory.md`](../plans/completed/0024-upsert-trader-position-inventory.md).
+- **Why**: Closes the cascade-failure root cause from the
+  2026-05-10 ~10:12-11:24 UTC entry (Phase 0 caps tripping
+  circuit_breaker). The IntegrityError on
+  `uq_trader_position_identity` was firing whenever
+  `circuit_breaker_safe_exit` left a closed row that the next
+  copy-trade signal collided with. Failed-signal IntegrityErrors
+  were counted by `halt_on_consecutive_losses` as actual losses
+  → breaker tripped → safe_exit closed more positions →
+  more collisions.
+- **Fix**: replaced `session.add(TraderPosition(...))` with
+  `pg_insert(TraderPosition.__table__).on_conflict_do_update(constraint="uq_trader_position_identity", set_={...})`
+  in the `for identity, bucket in grouped.items():` loop. The
+  conflict branch overwrites the colliding row with the same
+  fields the previous UPDATE branch wrote (re-opens closed
+  positions, refreshes sizing/timing, merges payload_json in
+  Python before the UPSERT). Established UPSERT pattern in same
+  file (TraderSignalConsumption line 6706, TraderSignalCursor
+  line 6982).
+- **Verification (this redeploy)**:
+  - Pre-deploy: **4 IntegrityError / 15 min** in worker-trading log.
+  - Post-deploy 5-min window: **0**.
+  - Post-deploy 30-min window: **0** (zero `uq_trader_position_identity`
+    occurrences across the entire observation period).
+  - Decision flow remained healthy: 11 selected / 446 skipped /
+    386 blocked over 30 min, normal copy-trade `min_notional` /
+    `entry_drift` skip distribution.
+- **`halt_on_consecutive_losses=true` restored** at 11:48 UTC
+  via `PUT /api/traders/61dcbeb2...`. After 30 min of
+  observation: **zero** `circuit_breaker_pause` events on the
+  trader. The pre-fix workaround from the previous entry is
+  now properly retired.
+- **Regression tests**: 2 new in
+  [`backend/tests/test_trader_live_provider_reconciliation.py`](../../backend/tests/test_trader_live_provider_reconciliation.py)
+  pin (a) reopen-after-close case and (b) no-IntegrityError when
+  the in-memory snapshot misses a row that exists in DB. All 33
+  tests in the file pass via
+  `bash scripts/run_tests_remote.sh tests/test_trader_live_provider_reconciliation.py`.
+- **Rollback**:
+  ```bash
+  git revert bcafd9c2
+  ./deploy/sync_remote.sh
+  ```
+  IntegrityError race returns; would also need to flip
+  `halt_on_consecutive_losses=false` again as the workaround.
+- **Status**: SHIPPED — verified 2026-05-10. Cascade-failure
+  root cause from the 10:12 entry is now fully closed.
+

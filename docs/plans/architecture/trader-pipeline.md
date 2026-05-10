@@ -592,6 +592,36 @@ Search hints:
   | Pre Plan 0002 (May 7 2026, 1 h pre-redeploy window) | `1077.6 ms`, `5029.4 ms` (n=2) | Postgres oversized for the host: `shared_buffers=4GB` against 7.6 GiB RAM, `effective_cache_size=10GB` (lying to the planner). RAM `available` ≈ 363 MiB. |
   | Post Plan 0002 (15 min post-redeploy window) | n=0 — no `Trader cycle slow` events fired | Postgres re-sized to `shared_buffers=1.5GB`, `effective_cache_size=3GB` (truthful), `max_connections=100`. Cache hit 99.29%, RAM `available` 1.7 GiB. The trade-signal feed collapsed to ≈0.4/min after the restart due to **out-of-scope** `worker-trading` event-loop saturation, so no signals → no slow-cycle samples. The Postgres layer is no longer the bottleneck on this host. |
 
+- **`uq_trader_position_identity` race on position re-open (FIXED
+  by Plan 0024).** Before plan 0024,
+  `sync_trader_position_inventory`
+  ([`trader_orchestrator_state.py:8480-8534`](../../../backend/services/trader_orchestrator_state.py:8480))
+  did `session.add(TraderPosition(...))` for any identity tuple
+  not present in its `existing_by_identity` snapshot. The snapshot
+  was a SELECT taken at the top of the function; between that SELECT
+  and the eventual flush, another concurrent path (or a recently-
+  closed row from `circuit_breaker_safe_exit`) could leave a row
+  with the same `(trader_id, mode, market_id, direction)` that
+  collided with `uq_trader_position_identity`
+  ([`models/database.py:4373-4379`](../../../backend/models/database.py:4373)).
+  The resulting `IntegrityError` was counted by the signal-processing
+  layer as a "failed signal", which fed `halt_on_consecutive_losses`
+  and tripped the circuit breaker — which then `circuit_breaker_safe_exit`-flattened
+  more positions, seeding more collisions. Documented chain in
+  [`runtime-tweaks.md`](../../operational/runtime-tweaks.md)
+  2026-05-10 ~10:12-11:24 UTC entry. **Plan 0024 replaced the
+  INSERT with `pg_insert(...).on_conflict_do_update(constraint="uq_trader_position_identity", set_={...})`**;
+  the conflict branch overwrites the colliding row with the same
+  fields the previous UPDATE branch would have written (re-opens
+  closed positions, refreshes sizing/timing, merges payload_json
+  in Python before the UPSERT). Two regression tests in
+  [`test_trader_live_provider_reconciliation.py`](../../../backend/tests/test_trader_live_provider_reconciliation.py)
+  pin the contract: re-open existing closed row + no
+  IntegrityError when the snapshot misses a row that DOES exist.
+  Post-deploy verification: 4 IntegrityError / 15 min → 0 / 30 min;
+  `halt_on_consecutive_losses=true` restored, no
+  `circuit_breaker_pause` events in 30 min observation window.
+
 ## Extension points
 
 | When you want to… | Touch |
@@ -616,14 +646,17 @@ Search hints:
 | Submission-side defence layer (9 modules between decision and fill) | [execution-defense.md](execution-defense.md) |
 | Operator-applied runtime knob-twists (rollback recipes) | [`../../operational/runtime-tweaks.md`](../../operational/runtime-tweaks.md) |
 
-Last verified: 2026-05-10 (footgun added for the conditional
-orchestrator boot-state reset shipped by plan 0021 — auto-resume
-shadow branch in `_reset_orchestrator_boot_state`. Prior verification
-2026-05-09: Step 7 + footguns updated for the `_persist_execution_projection`
-commit-missing failure mode introduced by commit `936f96a4`; corresponds
-to plan 0016. /sync-docs N=5 audit on the same date added the
-`runtime_trigger_cycle_timeout_seconds` sibling-knob note plus the
-new `risk_limits` triple — `max_entry_drift_pct`,
-`max_market_data_age_ms`, `allow_taker_limit_buy_above_signal` — for
-commits `c8b2c144`/`6ab5f3a6`, and corrected the stale link to
-`backend/workers/trader_orchestrator_worker.py`.)
+Last verified: 2026-05-10 (footgun added for plan 0024 —
+`sync_trader_position_inventory` UPSERT eliminating the
+`uq_trader_position_identity` race that fed false losses into
+`halt_on_consecutive_losses`. Prior verification same date:
+footgun added for plan 0021's conditional boot-state reset.
+Earlier 2026-05-09: Step 7 + footguns updated for the
+`_persist_execution_projection` commit-missing failure mode
+introduced by commit `936f96a4`; corresponds to plan 0016.
+/sync-docs N=5 audit on the same date added the
+`runtime_trigger_cycle_timeout_seconds` sibling-knob note plus
+the new `risk_limits` triple — `max_entry_drift_pct`,
+`max_market_data_age_ms`, `allow_taker_limit_buy_above_signal` —
+for commits `c8b2c144`/`6ab5f3a6`, and corrected the stale link
+to `backend/workers/trader_orchestrator_worker.py`.)
