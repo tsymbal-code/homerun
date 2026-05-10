@@ -273,6 +273,18 @@ the simulator and lifecycle to learn `direction='buy'` + token_id.
       `ValueError` — those need first-class support, out of scope
       here. Update every caller in `simulation.py` to thread the
       payload through.
+- [x] **Follow-up after Task 6 deploy.** While verifying drain we
+      observed `Unsupported direction 'sell_no'` errors still firing
+      on legacy in-flight orders — the canonical `sell_yes`/`sell_no`
+      directions had never been mapped in either helper (pre-existing
+      bug, same defect-3a class). Extended both `_direction_to_position_side`
+      and `_direction_outcome_index` so `sell_yes` resolves to YES
+      side / index 0 and `sell_no` resolves to NO side / index 1
+      (the leg sits on the same side of the binary market regardless
+      of whether the action is buy or sell). Added regression tests
+      `test_direction_to_position_side_resolves_sell_yes_to_yes_side`,
+      `test_direction_to_position_side_resolves_sell_no_to_no_side`,
+      `test_direction_outcome_index_canonical_sell_yes_resolves_to_yes_index`.
 - [x] In [`backend/services/trader_orchestrator/position_lifecycle.py:879-885`](../../backend/services/trader_orchestrator/position_lifecycle.py:879)
       change `_direction_outcome_index(direction)` to
       `_direction_outcome_index(direction, *, market_info=None, token_id=None)`.
