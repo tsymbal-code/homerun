@@ -711,6 +711,48 @@ async def _run_wallet_cache_reseeder_loop(stop_event: asyncio.Event) -> None:
             pass
 
 
+# Configuration-absence sentinel used by `live_execution_service` when
+# any of the four required Polymarket credential fields is empty.  When
+# this is the current init-error string, the reseeder loop is operating
+# exactly as designed (live execution disabled by config, not by
+# failure) — per-cycle skip warnings would be pure log-spam.  The
+# transition-detector below demotes those to DEBUG until the error
+# string changes.
+_MISSING_CREDS_INIT_ERROR_SENTINEL = "missing_polymarket_credentials"
+_last_observed_reseeder_init_error: str | None = None
+
+
+def _announce_reseeder_state_transition_if_changed() -> bool:
+    """Emit a one-shot WARN when the reseeder enters or leaves the
+    configuration-absence state, and return whether we are currently
+    in that quiet mode so callers can pick the right log level.
+
+    This is **not** a state machine — just a transition detector.  Each
+    call reads `live_execution_service.get_last_init_error()`, compares
+    to the module-level last-observed value, and announces a change at
+    WARNING.  Steady state (no change since last call) emits nothing.
+    """
+    global _last_observed_reseeder_init_error
+    current = live_execution_service.get_last_init_error()
+    previous = _last_observed_reseeder_init_error
+    if current != previous:
+        if current == _MISSING_CREDS_INIT_ERROR_SENTINEL:
+            logger.warning(
+                "WalletStateCache reseeder: polymarket credentials missing "
+                "— demoting per-cycle warnings to DEBUG until creds appear",
+                previous_state=previous,
+            )
+        elif previous == _MISSING_CREDS_INIT_ERROR_SENTINEL:
+            logger.warning(
+                "WalletStateCache reseeder: polymarket credentials state "
+                "changed; resuming standard logging",
+                previous_state=previous,
+                current_state=current,
+            )
+        _last_observed_reseeder_init_error = current
+    return current == _MISSING_CREDS_INIT_ERROR_SENTINEL
+
+
 async def _reseed_wallet_state_cache_from_rest() -> None:
     """Pull a fresh open-positions + closed-positions snapshot from
     Polymarket and feed it to ``WalletStateCache.seed_from_rest``.
@@ -735,6 +777,13 @@ async def _reseed_wallet_state_cache_from_rest() -> None:
     from services.wallet_state_cache import get_wallet_state_cache
 
     cache = get_wallet_state_cache()
+    # When init-error is the configuration-absence sentinel
+    # (missing_polymarket_credentials), per-cycle skip warnings below
+    # are demoted to DEBUG to avoid log-spam in shadow-only deployments.
+    # The transition into and out of this state is announced once at
+    # WARNING by `_announce_reseeder_state_transition_if_changed`.
+    quiet_mode = _announce_reseeder_state_transition_if_changed()
+    skip_log = logger.debug if quiet_mode else logger.warning
 
     # Try to recover from a stuck init by driving a retry.  This is the
     # difference between "trading silently blocked for hours" and
@@ -760,14 +809,14 @@ async def _reseed_wallet_state_cache_from_rest() -> None:
             # there is genuinely nothing to seed against.
             cache_wallet = cache._wallet_address  # noqa: SLF001 — internal
             if not cache_wallet:
-                logger.warning(
+                skip_log(
                     "WalletStateCache reseeder skipped: live_execution_service "
                     "not ready and cache has no pinned wallet; the freshness "
                     "gate will keep refusing trades.  Last init error: %s",
                     live_execution_service.get_last_init_error(),
                 )
                 return
-            logger.warning(
+            skip_log(
                 "WalletStateCache reseeder using cache-pinned wallet=%s "
                 "(live_execution_service not ready, last_init_error=%s)",
                 cache_wallet,
@@ -783,7 +832,7 @@ async def _reseed_wallet_state_cache_from_rest() -> None:
         or cache._wallet_address  # noqa: SLF001 — internal
     )
     if not wallet_address:
-        logger.warning(
+        skip_log(
             "WalletStateCache reseeder skipped: no wallet address resolved "
             "from live_execution_service or cache.  Trading remains blocked.",
         )
