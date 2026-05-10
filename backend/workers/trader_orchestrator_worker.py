@@ -126,6 +126,58 @@ _TRADER_TIMEOUT_CANCEL_GRACE_SECONDS = 5.0
 _MIN_LIVE_PROCESS_SIGNAL_CYCLE_TIMEOUT_SECONDS = 20.0  # soft budget for live signal-processing cycles
 _STRATEGY_EVALUATION_TIMEOUT_SECONDS = 15.0
 
+# Severity escalation for ``shadow_ledger_backfill_failed``: when this
+# event count for a given trader_id over the rolling window below
+# crosses the threshold, the next emit goes out as ``severity='error'``
+# (with ``escalated_from='warn'`` in the payload) so the UI events
+# strip flags it instead of letting 1,000+ warns hide a real defect.
+# See plan 0018.
+SHADOW_LEDGER_BACKFILL_FAILED_ESCALATION_THRESHOLD = 50
+SHADOW_LEDGER_BACKFILL_FAILED_ESCALATION_WINDOW_SECONDS = 3600.0
+
+
+async def _resolve_shadow_ledger_backfill_severity(
+    session,
+    *,
+    trader_id: str,
+) -> tuple[str, dict[str, Any]]:
+    """Decide severity for the next ``shadow_ledger_backfill_failed`` emit.
+
+    Counts existing events of this type for the same trader inside the
+    rolling 1-hour window. When the count meets the threshold, escalate
+    to ``error`` and surface the escalation in the payload. Per-trader
+    isolation: a noisy bot does not cascade severity to its peers.
+    """
+
+    if not trader_id:
+        return "warn", {}
+    cutoff = utcnow() - timedelta(seconds=SHADOW_LEDGER_BACKFILL_FAILED_ESCALATION_WINDOW_SECONDS)
+    stmt = (
+        select(func.count(TraderEvent.id))
+        .where(TraderEvent.trader_id == str(trader_id))
+        .where(TraderEvent.event_type == "shadow_ledger_backfill_failed")
+        .where(TraderEvent.created_at >= cutoff)
+    )
+    try:
+        result = await session.execute(stmt)
+        count = int(result.scalar() or 0)
+    except Exception as exc:
+        logger.warning(
+            "Failed to count prior shadow_ledger_backfill_failed events; "
+            "defaulting to warn",
+            trader_id=str(trader_id),
+            exc_info=exc,
+        )
+        return "warn", {}
+    if count >= SHADOW_LEDGER_BACKFILL_FAILED_ESCALATION_THRESHOLD:
+        return "error", {
+            "escalated_from": "warn",
+            "escalation_window_seconds": SHADOW_LEDGER_BACKFILL_FAILED_ESCALATION_WINDOW_SECONDS,
+            "escalation_threshold": SHADOW_LEDGER_BACKFILL_FAILED_ESCALATION_THRESHOLD,
+            "prior_event_count": count,
+        }
+    return "warn", {}
+
 # Fast-tier traders are owned by ``fast_trader_runtime`` — this shared
 # orchestrator loop skips them entirely so their per-tick budget is not
 # consumed by the 20-30s cycles that "normal" / "slow" traders can incur.
@@ -4503,14 +4555,21 @@ async def _run_trader_once_inner(
                     shadow_account_id=shadow_account_id,
                 )
                 if backfill_result.get("errors"):
+                    severity, escalation_payload = await _resolve_shadow_ledger_backfill_severity(
+                        session,
+                        trader_id=trader_id,
+                    )
+                    event_payload = dict(backfill_result)
+                    if escalation_payload:
+                        event_payload.update(escalation_payload)
                     await create_trader_event(
                         session,
                         trader_id=trader_id,
                         event_type="shadow_ledger_backfill_failed",
-                        severity="warn",
+                        severity=severity,
                         source="worker",
                         message="Shadow ledger backfill encountered one or more errors.",
-                        payload=backfill_result,
+                        payload=event_payload,
                     )
                 force_flatten = resume_policy == "flatten_then_start"
                 lifecycle_result = await reconcile_shadow_positions(

@@ -369,7 +369,7 @@ Find the emit-site in
 a rolling window, escalate to `severity='error'` so the UI events
 strip flags it.
 
-- [ ] In `trader_orchestrator_worker.py`, near the
+- [x] In `trader_orchestrator_worker.py`, near the
       `shadow_ledger_backfill_failed` emit site, count recent
       occurrences for `(trader_id, event_key='shadow_ledger_backfill_failed')`
       from `trader_events` over the last 1 hour. If count ≥ 50,
@@ -379,12 +379,12 @@ strip flags it.
       `SHADOW_LEDGER_BACKFILL_FAILED_ESCALATION_THRESHOLD = 50`
       near the top of the worker file so it is tunable in one
       place.
-- [ ] Confirm the UI events strip already groups
+- [x] Confirm the UI events strip already groups
       `severity='error'` distinctly. If not, no UI work is
       needed — operator-side `trader_events` query
       (`SELECT severity, count(*) FROM trader_events ... GROUP BY 1`)
       will surface it via the existing diagnostic.
-- [ ] Add regression tests in existing
+- [x] Add regression tests in existing
       [`backend/tests/test_trader_orchestrator_shadow_backfill.py`](../../backend/tests/test_trader_orchestrator_shadow_backfill.py)
       (next to the existing single happy-path test):
       - `test_shadow_ledger_backfill_failed_emits_warn_below_threshold`
@@ -399,9 +399,9 @@ strip flags it.
         — 100 events for trader A do not escalate trader B's
         next event. Pins isolation so a noisy bot doesn't
         cascade.
-- [ ] Run validation:
+- [x] Run validation:
       `cd backend && pytest tests/test_trader_orchestrator_shadow_backfill.py -q`.
-- [ ] Mark completed
+- [x] Mark completed
 
 ### Task 6: deploy, verify drain, update docs, archive
 
