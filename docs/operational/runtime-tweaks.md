@@ -2051,34 +2051,153 @@ OPEN — fix deployed and verified.  Remaining work:
   cleanly as positions drain, whether realised P&L stabilises
   with the smaller per-position notional.
 
-- **Pruning losing leaders — already shipped in the UI** (corrected
-  2026-05-10 after operator pointed out duplicate-functionality
-  plans 0024/0025 were redundant; both deleted):
-  - **Pool tab**
-    ([`frontend/src/components/DiscoveryPanel.tsx:1552-1605`](../../frontend/src/components/DiscoveryPanel.tsx))
-    has per-wallet **Blacklist**, **Manual exclude**, and
-    **Unblacklist** buttons. Clicking sets
-    `discovered_wallets.source_flags.pool_blacklisted` (or
-    `pool_manual_exclude`) and triggers
-    `smart_wallet_pool.recompute_pool()` within ~60 s. Pool view
-    is sortable by `total_pnl` and filterable by min P&L /
-    win-rate, so the operator can find losers visually.
-    Backend route:
-    `POST /api/discovery/pool/members/{address}/blacklist` /
-    `DELETE` for unset
-    ([`backend/api/routes_discovery.py:2471-2500`](../../backend/api/routes_discovery.py)).
-  - **Tracked → Groups tab** has a "Manual Group" creator
-    ([`frontend/src/components/RecentTradesPanel.tsx:880-960`](../../frontend/src/components/RecentTradesPanel.tsx)).
-    A bot's `traders_scope.modes` can be set to `["group"]` with
-    `group_ids=[<UUID>]` to scope copy-trade to ONLY a curated
-    set of trusted leaders. Cleaner than "blacklist N losers"
-    when the operator already knows who the good ones are.
-  - **Caveat**: the Pool tab shows wallet-**global** P&L (across
-    all of Polymarket), not per-bot scoped. For our 217-order
-    audit the global vs bot-specific signals correlated well
-    enough that the existing UI is sufficient. If operator
-    notices systematic mismatch later (e.g. a wallet good
-    globally but consistently bad for our specific bot), revisit
-    whether a per-bot analytics tile is justified — but only
-    after that pattern actually shows up in production data.
+### 2026-05-10 ~10:12-11:24 UTC — Phase 0 cap change cascade-failed; rolled back + halt_on_consecutive_losses disabled
+
+This entry documents a multi-step recovery from the
+2026-05-10 ~10:08 Phase 0 cap change above. The change itself was
+reverted; this is the post-mortem + the residual workaround.
+
+**Symptom**: ~4 minutes after Phase 0 caps applied at 10:08, bot
+auto-paused via `circuit_breaker_pause` ("4 consecutive losses,
+limit=4"). Subsequent `circuit_breaker_safe_exit` force-closed
+83 shadow positions at current market prices — many of those
+realised losses they wouldn't have hit otherwise. After two
+operator-driven resumes (10:51 and 11:16), the breaker re-tripped
+within 18-19 s each time.
+
+**Initial diagnosis (PARTIALLY WRONG, kept here for the record)**:
+I claimed the consecutive-losses counter was "stale" because the
+breaker re-tripped despite `loss_streak_reset_at` advancing on
+operator_resume and despite zero `trader_orders` being closed in
+the last 30 minutes. I disabled `halt_on_consecutive_losses=false`
+as an escalation workaround, expecting the bot would still keep
+failing.
+
+**Corrected diagnosis (after operator asked about RPC)**: not a
+stale counter. The actual cause is the
+`uq_trader_position_identity` constraint
+(`(trader_id, mode, market_id, direction)`) firing on attempts to
+re-open positions on markets where a previous position closed
+during `circuit_breaker_safe_exit`. The constraint covers all
+statuses, so even closed positions block new opens on the same
+(market_id, direction). The signal-processing layer counts the
+resulting `IntegrityError` as a "failed signal", which feeds the
+consecutive-losses counter as a loss. So 5 IntegrityError-failures
+in a row tripped the breaker, not 5 actual losing trades. This is
+the same defect-class I incorrectly closed earlier this session
+("constraint not reproducing" — verified by checking `COUNT(*) > 1`
+on the tuple, which always returned zero **because the constraint
+blocks the second INSERT before the row gets in**, so duplicates
+never accumulate to be counted).
+
+**Actions taken** (in order):
+
+1. **10:08 UTC** — Phase 0 caps applied (max_position 5,
+   max_gross 100, max_daily_loss 100, max_trade 5, max_daily_spend 200).
+   See preceding entry above for full dict.
+2. **10:12 UTC** — `circuit_breaker_pause` (4 consecutive losses).
+   `circuit_breaker_safe_exit` force-closed 83 positions.
+3. **10:51 UTC** — operator resumed via UI. Re-tripped after 18 s.
+4. **11:14-11:17 UTC** — first rollback attempt: PUT pre-change
+   risk_limits (full dict from
+   `trader_config_revisions.trader_before_json` of revision
+   `edb50a24...`) + `is_paused=false`. Bot resumed, re-tripped
+   `circuit_breaker_pause` (5 consecutive losses) at 11:17:05 —
+   only 19 s after resume. Audit revision id (rollback): see
+   `trader_config_revisions ORDER BY created_at DESC LIMIT 1
+   WHERE reason ILIKE '%ROLLBACK%'`.
+5. **11:21 UTC** — second escalation: PUT
+   `halt_on_consecutive_losses=false` + resume. All other
+   risk_limits remain at the rollback (pre-Phase-0) state.
+   Bot stayed alive.
+6. **11:30+ UTC verification** — 0 new circuit_breaker events
+   since the escalation. Decision flow recovered: 24 selected,
+   61 skipped, 1 failed, 136 blocked over a 5-min window.
+   IntegrityError occurrences: 2 per 5 min (rare, not a
+   systematic flood), confirming the constraint does fire but
+   only sporadically — it is the breaker amplifying that, not
+   constant failure.
+
+**Current state of `risk_limits`** (post-escalation, what's
+actually live):
+- All Phase 0 numeric caps **REVERTED** to pre-change values
+  (max_position 100, max_gross 2000, max_daily_loss 1000,
+  max_trade 100, max_daily_spend 5000).
+- `halt_on_consecutive_losses = false` ← WORKAROUND, not a
+  permanent state.
+- `circuit_breaker_drawdown_pct = 12.0` and
+  `max_daily_loss_usd = 1000.0` remain as the active backstops.
+- `max_consecutive_losses = 4` value persists but is dormant
+  while halt is off.
+
+**Rollback** (restore the workaround back to default protection):
+```bash
+ssh polyhome-1 'curl -fsS -X PUT http://127.0.0.1:8888/api/traders/61dcbeb2b9bc42bd9e9635a09ae5e0c3 \
+  -H "Content-Type: application/json" \
+  -d "{\"requested_by\":\"operator\",\"reason\":\"Restore halt_on_consecutive_losses=true\",\"risk_limits\":{...current dict with halt=true...}}"'
+```
+
+**Real follow-up needed (out of scope for this entry)**:
+- The `uq_trader_position_identity` constraint should NOT block
+  re-opens on the same `(market_id, direction)` once the
+  previous position is terminal. Either change to a partial
+  unique index `WHERE status='open'`, or change
+  `_persist_execution_projection` to UPDATE the existing row
+  on conflict instead of INSERT-ing a new one. This is the
+  defect that cascaded into the breaker storm.
+- The signal-processing layer should not count
+  `IntegrityError`-failures as losses for the consecutive-loss
+  counter — they are infrastructure failures, not P&L
+  outcomes. Failed signals should bump a separate
+  "infrastructure errors" counter with its own threshold.
+- Both follow-ups warrant an actual plan once the operator is
+  ready to invest the cycles. The constraint fix needs an
+  Alembic migration; the counter-classification fix is a
+  smaller code change in the orchestrator's loss-streak
+  bookkeeping.
+
+**Lessons learned (logged to feedback memory under `feedback_audit_existing_ui_before_planning.md` extension and a new `feedback_risk_knob_interactions.md` to be written)**:
+- A risk-knob change in isolation must include a written
+  dimensional analysis of every gate that consumes the changed
+  field, plus every sibling safety net (consecutive-loss
+  counter, drawdown breaker, halt-on-* flags, force-flatten
+  triggers). I shipped Phase 0 without that and it cost the
+  bot a forced 83-position flatten plus three failed restarts
+  before stabilising.
+- When a "diagnosis" is offered, validate it against logs
+  before acting. I called the counter "stale" without
+  cross-checking the worker-trading log — which clearly showed
+  the IntegrityError chain.
+
+---
+
+### 2026-05-10 — Pruning losing leaders is already shipped in the UI (operator-corrected; plans 0024/0025 deleted as redundant)
+
+- **Pool tab**
+  ([`frontend/src/components/DiscoveryPanel.tsx:1552-1605`](../../frontend/src/components/DiscoveryPanel.tsx))
+  has per-wallet **Blacklist**, **Manual exclude**, and
+  **Unblacklist** buttons. Clicking sets
+  `discovered_wallets.source_flags.pool_blacklisted` (or
+  `pool_manual_exclude`) and triggers
+  `smart_wallet_pool.recompute_pool()` within ~60 s. Pool view
+  is sortable by `total_pnl` and filterable by min P&L /
+  win-rate, so the operator can find losers visually.
+  Backend route:
+  `POST /api/discovery/pool/members/{address}/blacklist` /
+  `DELETE` for unset
+  ([`backend/api/routes_discovery.py:2471-2500`](../../backend/api/routes_discovery.py)).
+- **Tracked → Groups tab** has a "Manual Group" creator
+  ([`frontend/src/components/RecentTradesPanel.tsx:880-960`](../../frontend/src/components/RecentTradesPanel.tsx)).
+  A bot's `traders_scope.modes` can be set to `["group"]` with
+  `group_ids=[<UUID>]` to scope copy-trade to ONLY a curated
+  set of trusted leaders. Cleaner than "blacklist N losers"
+  when the operator already knows who the good ones are.
+- **Caveat**: the Pool tab shows wallet-**global** P&L (across
+  all of Polymarket), not per-bot scoped. For our 217-order
+  audit the global vs bot-specific signals correlated well
+  enough that the existing UI is sufficient. If operator
+  notices systematic mismatch later (e.g. a wallet good
+  globally but consistently bad for our specific bot), revisit
+  whether a per-bot analytics tile is justified — but only
+  after that pattern actually shows up in production data.
 
