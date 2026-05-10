@@ -432,23 +432,34 @@ class StrategySDK:
         {"key": "max_position_notional_usd", "label": "Max Position Notional (USD)", "type": "number", "min": 1},
         {"key": "max_gross_exposure_usd", "label": "Max Gross Exposure (USD)", "type": "number", "min": 1},
         {"key": "max_daily_loss_usd", "label": "Max Daily Loss (USD)", "type": "number", "min": 1},
-        {"key": "max_daily_spend_usd", "label": "Max Daily Spend (USD)", "type": "number", "min": 1},
+        # Dead code as of 2026-05-10 — see docs/strategies/_common-bot-parameters.md
+        # § Dead code in TRADER_RISK_DEFAULTS.  Schema-only; no runtime consumer.
+        {"key": "max_daily_spend_usd", "label": "Max Daily Spend (USD)", "type": "number", "min": 1, "dead_code": True},
         {"key": "cooldown_seconds", "label": "Cooldown (seconds)", "type": "integer", "min": 0},
-        {"key": "order_ttl_seconds", "label": "Order TTL (seconds)", "type": "integer", "min": 1, "max": 86400},
+        # Dead code as of 2026-05-10 — see docs/strategies/_common-bot-parameters.md
+        # § Dead code in TRADER_RISK_DEFAULTS.  Schema-only; no runtime consumer.
+        {"key": "order_ttl_seconds", "label": "Order TTL (seconds)", "type": "integer", "min": 1, "max": 86400, "dead_code": True},
         {"key": "slippage_bps", "label": "Slippage Guard (bps)", "type": "number", "min": 0, "max": 10000},
         {"key": "max_spread_bps", "label": "Max Spread (bps)", "type": "number", "min": 0, "max": 10000},
-        {"key": "retry_limit", "label": "Retry Limit", "type": "integer", "min": 0, "max": 50},
-        {"key": "retry_backoff_ms", "label": "Retry Backoff (ms)", "type": "integer", "min": 0, "max": 60000},
+        # Dead code as of 2026-05-10 — see docs/strategies/_common-bot-parameters.md
+        # § Dead code in TRADER_RISK_DEFAULTS.  Schema-only; no runtime consumer.
+        {"key": "retry_limit", "label": "Retry Limit", "type": "integer", "min": 0, "max": 50, "dead_code": True},
+        # Dead code as of 2026-05-10 — see docs/strategies/_common-bot-parameters.md
+        # § Dead code in TRADER_RISK_DEFAULTS.  Schema-only; no runtime consumer.
+        {"key": "retry_backoff_ms", "label": "Retry Backoff (ms)", "type": "integer", "min": 0, "max": 60000, "dead_code": True},
         {"key": "allow_averaging", "label": "Allow Averaging", "type": "boolean"},
         {"key": "use_dynamic_sizing", "label": "Dynamic Position Sizing", "type": "boolean"},
         {"key": "halt_on_consecutive_losses", "label": "Halt on Loss Streak", "type": "boolean"},
         {"key": "max_consecutive_losses", "label": "Max Consecutive Losses", "type": "integer", "min": 0, "max": 1000},
+        # Dead code as of 2026-05-10 — see docs/strategies/_common-bot-parameters.md
+        # § Dead code in TRADER_RISK_DEFAULTS.  Schema-only; no runtime consumer.
         {
             "key": "circuit_breaker_drawdown_pct",
             "label": "Circuit Breaker Drawdown (%)",
             "type": "number",
             "min": 0,
             "max": 100,
+            "dead_code": True,
         },
         {
             "key": "max_entry_drift_pct",

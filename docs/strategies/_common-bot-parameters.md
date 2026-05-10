@@ -1343,6 +1343,18 @@ Enum: `market_direction` | `market` | `asset_timeframe`. Контролює як
 
 Поля, які UI exposes, validation passes, БД персистить, **але runtime ігнорує**. Зміна цих knob-ів **не має жодного ефекту**. Усі підтверджені grep-ом 2026-05-10.
 
+**UI marker.** З Plan 0031 (2026-05-10) форма Bot → Risk Limits
+рендерить ці поля з **red-tinted background** і `⚠ deprecated · no
+runtime effect` banner-ом над input-ом. Hover-tooltip каже коротку
+ту саму інформацію плюс посилання на цю секцію. Schema flag
+`"dead_code": True` лежить у
+[`backend/services/strategy_sdk.py:435+`](../../backend/services/strategy_sdk.py)
+(в `TRADER_RISK_FIELDS_SCHEMA`); single source of truth — backend
+schema, frontend його тільки рендерить. Щоб **прибрати флаг**
+(тобто реально wire-нути consumer-а), видалити `dead_code: True`
+з schema, додати gate / decision / execution path, оновити
+matrix-entry нижче.
+
 - **`circuit_breaker_drawdown_pct`** (default 12.0, schema-only) —
   [`strategy_sdk.py:410, 447, 1934-1935`](../../backend/services/strategy_sdk.py).
   Описано детально у CRITICAL section вище. Реальний CB — це

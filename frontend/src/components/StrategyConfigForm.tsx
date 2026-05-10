@@ -16,7 +16,30 @@ interface ParamField {
   item_schema?: Record<string, string>
   properties?: ParamField[]
   description?: string
+  /**
+   * Schema annotation (Plan 0031, 2026-05-10): when `true`, the
+   * field has no runtime consumer in the backend — editing
+   * persists the value but no gate / decision / execution path
+   * reads it.  Source of truth: backend
+   * `strategy_sdk.py:TRADER_RISK_FIELDS_SCHEMA` entries that
+   * carry `"dead_code": True`.  Audit trail is in
+   * `docs/strategies/_common-bot-parameters.md` § "Dead code in
+   * TRADER_RISK_DEFAULTS".  The renderer wraps these fields in
+   * a red-tinted container with a hover tooltip; behaviour is
+   * otherwise unchanged so existing values stay editable.
+   */
+  dead_code?: boolean
 }
+
+/**
+ * Tooltip body shown on hover over a `dead_code` field.
+ * Single-source so the matrix doc and the UI stay in sync.
+ */
+const DEAD_CODE_TOOLTIP =
+  'Dead-code knob: this field is exposed for historical reasons but no ' +
+  'runtime gate / decision / execution path reads it. Editing has no ' +
+  'effect. See docs/strategies/_common-bot-parameters.md § Dead code in ' +
+  'TRADER_RISK_DEFAULTS for the audit trail.'
 
 interface StrategyConfigFormProps {
   schema: { param_fields: ParamField[] }
@@ -349,7 +372,35 @@ function ArrayStringOptionsInput({
   )
 }
 
-function ConfigField({
+/**
+ * Outer wrapper around the type-switched renderer.  When the schema
+ * marks a field as `dead_code` (Plan 0031), it gets a red-tinted
+ * container and a deprecation banner; the inner input remains
+ * fully functional so persisted values stay editable (and revertable).
+ * For every other field, this is a transparent pass-through.
+ */
+function ConfigField(props: {
+  field: ParamField
+  value: unknown
+  onChange: (value: unknown) => void
+}) {
+  if (!props.field.dead_code) {
+    return <ConfigFieldImpl {...props} />
+  }
+  return (
+    <div
+      title={DEAD_CODE_TOOLTIP}
+      className="relative rounded-md border-l-2 border-rose-400/60 bg-rose-500/15 px-2 py-1.5"
+    >
+      <div className="mb-1 text-[9px] font-mono uppercase tracking-wide text-rose-300">
+        ⚠ deprecated · no runtime effect (see common-bot-parameters.md)
+      </div>
+      <ConfigFieldImpl {...props} />
+    </div>
+  )
+}
+
+function ConfigFieldImpl({
   field,
   value,
   onChange,
