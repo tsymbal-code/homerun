@@ -83,6 +83,7 @@ notes.
 | 0036 | [Per-entry audit of the HIGH-tier knob matrix](completed/0036-high-knob-matrix-per-entry-audit.md) | D        | 0029          |
 | 0037 | [Verify Plan 0035 chase-cap drop on 2026-05-11](0037-verify-plan-0035-chase-cap-drop-2026-05-11.md) | D        | 0035          |
 | 0038 | [Flag three additional `TRADER_RISK_DEFAULTS` knobs as dead-code in the UI](completed/0038-flag-three-trader-risk-knobs-as-dead.md) | U        | 0031, 0036    |
+| 0039 | [Migrate Polymarket integration to CLOB V2](completed/0039-migrate-to-polymarket-clob-v2.md) | B        | —             |
 
 When adding a row: keep this table sorted by ID ascending. Don't
 re-number plans — gaps in IDs are normal and expected (deleted or
@@ -379,6 +380,29 @@ Only notes that aren't obvious from the title. All plans must follow
   CI job split (unit-fast / db-slow), Hypothesis property tests
   for FIFO/Kelly/Cox-PH, `respx` cassettes, mutation testing.
   Each is a follow-up.
+- **Plan 0039 — Migrate Polymarket integration to CLOB V2.**
+  Backend feature (B). **Completed 2026-05-10.** Polymarket cut
+  over from CLOB V1 to V2 on 2026-04-28 — V1 exchange contracts
+  and the V1 `OrderFilled` topic emit zero events on Polygon
+  since then. Our hard-coded V1 constants in
+  `backend/services/wallet_ws_monitor.py` silently broke
+  wallet-trade detection, which in turn broke every
+  `traders_copy_trade` consumer (including
+  `Focused - 0x10c95474a8`). The plan replaced the V1 addresses
+  + topic with V2 in the monitor, rewrote
+  `_parse_order_filled_log` for the V2 ABI shape (4 topics,
+  7 data words, with `side`/`tokenId`/`builder`/`metadata`),
+  rewrote `_determine_trade_side_and_details` against the new
+  `side` byte, added V2 operators to
+  `ctf_execution.ensure_exchange_approval`, and verified that
+  submit-side `ClobClient`/`OrderBuilder` already signs EIP-712
+  with V2 `verifyingContract` (the SDK's `__resolve_version()`
+  returns `2` against the live CLOB API since the cutover, so no
+  submit-side change was required). Clean cut — V1 fallback
+  branches deleted, not retained, per the project's
+  no-back-compat rule. Live verification: 236 events / 10 min
+  post-deploy vs 0 / 24 h pre-deploy. No risk-knob changes;
+  CRITICAL knob walkthrough policy did not apply.
 
 ## Ordering decision tree (for agents picking the next plan)
 

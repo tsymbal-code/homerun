@@ -66,14 +66,23 @@ might never be picked up in the first place."
 |     trades on-chain      |    set by tracked_wallets +
 +------------+-------------+    discovered_wallets pool)
              |
-             | Polygon RPC + user-channel WS
+             | Polygon RPC `eth_getLogs` against CLOB V2
+             | exchanges (CTF V2 + Neg Risk V2) filtered by
+             | the V2 OrderFilled topic — Plan 0039 cutover
              v
 +--------------------------+    services/wallet_ws_monitor.py
-| wallet_ws_monitor:       |     - persists every wallet trade
-|   - WS subscriptions     |       to wallet_monitor_events
-|   - _persist_event       |     - fans out via add_callback
-|   - add_callback         |       (in-process, NOT event_bus)
-+------------+-------------+
+| wallet_ws_monitor:       |     - filters logs against
+|   - WS subscriptions     |       POLYMARKET_EXCHANGE_ADDRESSES_V2
+|   - _persist_event       |       (CTF V2 + Neg Risk V2)
+|   - add_callback         |     - decodes V2 OrderFilled (4t+7w):
++------------+-------------+       side byte, tokenId, makerAmt,
+                                   takerAmt, fee, builder,
+                                   metadata — see _parse_order_
+                                   filled_log
+                                 - persists every wallet trade
+                                   to wallet_monitor_events
+                                 - fans out via add_callback
+                                   (in-process, NOT event_bus)
              |
              | _on_wallet_trade callback
              v
@@ -215,7 +224,7 @@ does not match any current `traders` signal.
 
 | # | Stage | File:line | Function / class |
 |---|---|---|---|
-| 1 | Wallet WS feed | `backend/services/wallet_ws_monitor.py` | `WalletWsMonitor`, `add_callback`, `_persist_event` |
+| 1 | Wallet WS feed (V2-only post Plan 0039) | `backend/services/wallet_ws_monitor.py` | `WalletWsMonitor`, `add_callback`, `_persist_event`, `_parse_order_filled_log` (CLOB V2 ABI: 4 topics + 7 data words), `POLYMARKET_EXCHANGE_ADDRESSES_V2`, `ORDER_FILLED_TOPIC = 0xd543adfd…d8ee` |
 | 2 | Service startup (trading plane) | `backend/workers/host.py:1095` | `traders_copy_trade_signal_service.start()` |
 | 3 | Wallet-trade callback registration | `backend/services/traders_copy_trade_signal_service.py:103` | `wallet_ws_monitor.add_callback(self._on_wallet_trade)` |
 | 4 | 8x async processor loops | `backend/services/traders_copy_trade_signal_service.py:113-119` | `_processor_loop` task fanout |
@@ -740,4 +749,4 @@ invariants apply:
 - [`docs/plans/0011-skeleton-trade-signal-ttl-and-retention.md`](../0011-skeleton-trade-signal-ttl-and-retention.md) — defensive `expires_at` on skeleton-INSERTed rows + stuck-skeleton retention sweep on the discovery plane.
 - [`docs/plans/architecture/_appendix/0008-baseline-2026-05-07.txt`](_appendix/0008-baseline-2026-05-07.txt) — baseline data captured during investigation.
 
-Last verified: 2026-05-10 (Plan 0018: real-diff against `_resolve_market_snapshot` normalisation in `traders_copy_trade_signal_service.py` plus the publish-surface chain. Status: IN SYNC; section "Outcome normalisation in the publish surface (Plan 0018)" added to document the new contract.); previously 2026-05-09 (Plan 0017: real-diff against post-0009/0010/0011 publish path — `_EXECUTION_ACTIVATION_BY_SOURCE_KEY` at `signal_bus.py:501-505` shows `traders → "immediate"`; `_strategy_runtime_metadata` at `signal_bus.py:510-551` is the explicit allow-list with warn-once on unknown sources; `bridge_opportunities_to_signals` at `strategy_signal_bridge.py:18`; defensive deferred branches at `intent_runtime.py:2310-2318, 2378-2390` remain present but unreachable; skeleton-INSERT + Plan-0011 retention sweep verified in `intent_runtime.py:~2000+` and `skeleton_signal_retention.py:67+`. Status: IN SYNC, no edits beyond this marker. Some line numbers drifted slightly (~10 lines) due to surrounding code growth but symbols and structural descriptions match current implementation.)
+Last verified: 2026-05-10 (Plan 0039: real-diff against the wallet-monitor V1→V2 cutover. `wallet_ws_monitor.py` constants and `_parse_order_filled_log` decode V2-only — V1 fallback branches removed. Live verification post-deploy: 236 events / 10 min vs 0 / 24 h pre-deploy. Status: IN SYNC; pipeline-diagram comment for the wallet_ws_monitor box updated to mention V2 contracts + V2 OrderFilled ABI; row 1 of the Code-reference table now lists the V2 constants and decoder symbols.); previously 2026-05-10 (Plan 0018: real-diff against `_resolve_market_snapshot` normalisation in `traders_copy_trade_signal_service.py` plus the publish-surface chain. Status: IN SYNC; section "Outcome normalisation in the publish surface (Plan 0018)" added to document the new contract.); 2026-05-09 (Plan 0017: real-diff against post-0009/0010/0011 publish path — `_EXECUTION_ACTIVATION_BY_SOURCE_KEY` at `signal_bus.py:501-505` shows `traders → "immediate"`; `_strategy_runtime_metadata` at `signal_bus.py:510-551` is the explicit allow-list with warn-once on unknown sources; `bridge_opportunities_to_signals` at `strategy_signal_bridge.py:18`; defensive deferred branches at `intent_runtime.py:2310-2318, 2378-2390` remain present but unreachable; skeleton-INSERT + Plan-0011 retention sweep verified in `intent_runtime.py:~2000+` and `skeleton_signal_retention.py:67+`. Status: IN SYNC, no edits beyond this marker. Some line numbers drifted slightly (~10 lines) due to surrounding code growth but symbols and structural descriptions match current implementation.)

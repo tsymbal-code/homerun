@@ -2763,3 +2763,85 @@ This is a code-side simulation, not a runtime tweak. The actual
 production rollout is tracked in Plan 0035 / Task 5; verification
 SQL lives there.
 
+## 2026-05-10 ~21:00 UTC — Plan 0039: Polymarket CLOB V2 cutover landed in `wallet_ws_monitor` + `ctf_execution`
+
+- **Surface**: code change rsynced via `./deploy/sync_remote.sh`,
+  not a DB tweak. Logged here because it un-broke the entire
+  copy-trade pipeline that had been silent since Polymarket's
+  2026-04-28 V1→V2 exchange cutover, and because the rollback
+  recipe is the same shape as a runtime knob (`git revert` +
+  redeploy).
+- **Applied via**: code patch (Plan 0039 commits, all carry
+  `Plan: 0039` trailer) → `./deploy/sync_remote.sh`.
+- **Why**: `worker-trading` was issuing `eth_getLogs` against the
+  V1 exchange addresses (`0x4bFb…982E`,
+  `0xc5D563…220f80a`) and the V1 `OrderFilled` topic
+  (`0xd0a08e8c…f6`). Polymarket cut those contracts dead on
+  2026-04-28. Live trading moved to `0xE111…996B` (CTF Exchange
+  V2) + `0xe2222d…0F59` (Neg Risk V2) and a new `OrderFilled`
+  signature (`0xd543adfd…d8ee`, ABI: 4 indexed topics + 7 data
+  words including `side` / `tokenId` / `builder` / `metadata`).
+  Result before fix: zero rows in `wallet_monitor_events` for
+  24 + h, copy-trade decisions silent for trader
+  `Focused - 0x10c95474a8`.
+- **Expected effect**: `wallet_monitor_events` row rate jumps
+  from 0 / h to tens / min; `Trade detected` log lines reappear
+  in `worker-trading`; CTF `setApprovalForAll` covers BOTH V2
+  exchange operators (CTF Exchange V2 + Neg Risk V2), no
+  `silently no-op approve` failure mode for negrisk markets.
+- **Verification command**:
+
+  ```bash
+  ssh polyhome-1 "cd /home/polyhome/homerun && \
+    docker compose exec -T postgres psql -U homerun -d homerun -t -c \
+      \"SELECT count(*) FROM wallet_monitor_events \
+        WHERE detected_at > now() - interval '10 minutes'\""
+  # Pre-deploy: 0
+  # Post-deploy (10 min after redeploy): 236
+  #   (132 BUY + 104 SELL across the 48 tracked source wallets)
+  ```
+
+### Changes (code surface, not DB)
+
+| Path | Before | After |
+|---|---:|---:|
+| `wallet_ws_monitor.CTF_EXCHANGE_ADDRESSES` | `(0x4bFb…982E, 0xc5D563…220f80a)` (V1) | renamed to `POLYMARKET_EXCHANGE_ADDRESSES_V2 = (0xE111…996B, 0xe2222d…0F59)` |
+| `wallet_ws_monitor.ORDER_FILLED_TOPIC` | `0xd0a08e8c…f6` (V1) | `0xd543adfd…d8ee` (V2) |
+| `wallet_ws_monitor._parse_order_filled_log` | accepted V1 4t+5w + 2t+7w | V2-only: 4t+7w (`side`, `tokenId`, `makerAmt`, `takerAmt`, `fee`, `builder`, `metadata`); rejects V1 shapes |
+| `wallet_ws_monitor._determine_trade_side_and_details` | V1 asset-id-0-as-USDC heuristic | V2 `side` byte + leader-as-maker / leader-as-taker inversion |
+| `wallet_ws_monitor._handle_log` | filtered taker-side hits where maker ∉ V1 exchange set | removed — V2 contracts never appear as maker/taker |
+| `WalletTradeEvent.builder/metadata` | n/a | new `bytes32` hex fields plumbed through for future referral attribution |
+| `ctf_execution.CTFExecutionService.CTF_EXCHANGE` | `0x4bFb41…D8B8982E` (V1, single operator) | replaced by `POLYMARKET_EXCHANGE_V2` + `POLYMARKET_NEG_RISK_EXCHANGE_V2` class attrs sourced from `py_clob_client_v2.config.get_contract_config(137)` and pinned by assert |
+| `ctf_execution.ensure_exchange_approval` | one `setApprovalForAll(V1 exchange, true)` | iterates over the two V2 operators; aggregates per-operator results in `payload.approvals[]`; aborts on first failure |
+| `live_execution_service.initialize` docstring | n/a | comment paragraph documents that submit-side is automatically V2 (SDK `__resolve_version()` returns `2` against live CLOB API after the cutover); reproducer command included |
+
+### Rollback
+
+```bash
+# 1. Revert the V2 migration commits.
+ssh polyhome-1 'cd /home/polyhome/homerun && git log --grep="Plan: 0039" --oneline'
+git -C /Users/dtsym/Work/Splunk/_Project-X/homerun revert <SHA-range from above>
+# 2. Re-rsync to the server.
+./deploy/sync_remote.sh
+# 3. Effect: V1 constants return → wallet_ws_monitor receives zero
+#    OrderFilled events again → wallet_monitor_events rate drops to
+#    0 within ~30 s → copy-trade pipeline goes silent. No other
+#    pipeline regresses (ClobClient still resolves V2 transparently
+#    via the SDK's __resolve_version() — submit-side is unaffected
+#    by reverting our wallet-monitor changes).
+# 4. Verify rollback: same SQL query as the verification command;
+#    expect count(*) = 0 within 5 minutes.
+```
+
+### Regression coverage
+
+`backend/tests/test_wallet_ws_monitor.py` (V2 fixtures + V1
+rejection assertions) and `backend/tests/test_ctf_execution.py`
+(V2 operator address pinning + `ensure_exchange_approval`
+end-to-end behaviour). Both files green at deploy time:
+
+```bash
+bash scripts/run_tests_remote.sh tests/test_wallet_ws_monitor.py tests/test_ctf_execution.py
+# 48 passed in 2.32s
+```
+
