@@ -546,6 +546,41 @@ of dedupe_keys (the prefetch is a no-op); traders publishes
 a handful at a time. The projection loop is unchanged — it
 remains the single owner of the actual `trade_signals` write.
 
+### Outcome normalisation in the publish surface (Plan 0018)
+
+`traders_copy_trade_signal_service._resolve_market_snapshot`
+(`backend/services/traders_copy_trade_signal_service.py`)
+emits an `outcome` label alongside the `token_id` for every
+copy-trade opportunity. A leader trade on Polymarket can
+land on a market whose `outcomes[]` array carries
+non-canonical labels (the prediction-market "categorical"
+case where each candidate is its own binary YES/NO market
+but the question text is the candidate name, e.g.
+`outcomes=["Arsenal","No"]` rather than `["Yes","No"]`).
+The downstream simulator and lifecycle reconciler key off
+the canonical `"YES"`/`"NO"` outcome strings to map a leg
+back to a binary `PositionSide`/outcome index.
+
+Plan 0018 wired a normalisation step into
+`_resolve_market_snapshot`: when the resolved gamma
+snapshot has exactly two `tokens[]` and two `outcomes[]`
+**and** at least one of the outcome labels lower-cases to
+`"yes"` or `"no"`, the helper forces the emitted `outcome`
+to the canonical `"Yes"`/`"No"` string for whichever index
+the leader trade's `token_id` sits at. Truly multi-outcome
+single-market structures (>2 tokens, none of them YES/NO —
+rare outright formats) keep the original label so downstream
+gates can either widen via `token_id` or refuse the row.
+
+Without this step the strategy emitted
+`positions_to_take[0].outcome = "Arsenal"` for binary
+markets, which forced the legacy fall-through path to
+`direction='buy'` (defect 4 in plan 0018) and broke shadow
+ledger backfill via the simulator. The normalisation
+keeps the canonical YES/NO contract intact for the 99%+
+case where Polymarket's "categorical" wrapper hides a real
+binary market underneath.
+
 ## Operational guidance
 
 1. **Run `traders` bots on `latency_class=normal` if the
@@ -705,4 +740,4 @@ invariants apply:
 - [`docs/plans/0011-skeleton-trade-signal-ttl-and-retention.md`](../0011-skeleton-trade-signal-ttl-and-retention.md) — defensive `expires_at` on skeleton-INSERTed rows + stuck-skeleton retention sweep on the discovery plane.
 - [`docs/plans/architecture/_appendix/0008-baseline-2026-05-07.txt`](_appendix/0008-baseline-2026-05-07.txt) — baseline data captured during investigation.
 
-Last verified: 2026-05-09 (Plan 0017: real-diff against post-0009/0010/0011 publish path — `_EXECUTION_ACTIVATION_BY_SOURCE_KEY` at `signal_bus.py:501-505` shows `traders → "immediate"`; `_strategy_runtime_metadata` at `signal_bus.py:510-551` is the explicit allow-list with warn-once on unknown sources; `bridge_opportunities_to_signals` at `strategy_signal_bridge.py:18`; defensive deferred branches at `intent_runtime.py:2310-2318, 2378-2390` remain present but unreachable; skeleton-INSERT + Plan-0011 retention sweep verified in `intent_runtime.py:~2000+` and `skeleton_signal_retention.py:67+`. Status: IN SYNC, no edits beyond this marker. Some line numbers drifted slightly (~10 lines) due to surrounding code growth but symbols and structural descriptions match current implementation.)
+Last verified: 2026-05-10 (Plan 0018: real-diff against `_resolve_market_snapshot` normalisation in `traders_copy_trade_signal_service.py` plus the publish-surface chain. Status: IN SYNC; section "Outcome normalisation in the publish surface (Plan 0018)" added to document the new contract.); previously 2026-05-09 (Plan 0017: real-diff against post-0009/0010/0011 publish path — `_EXECUTION_ACTIVATION_BY_SOURCE_KEY` at `signal_bus.py:501-505` shows `traders → "immediate"`; `_strategy_runtime_metadata` at `signal_bus.py:510-551` is the explicit allow-list with warn-once on unknown sources; `bridge_opportunities_to_signals` at `strategy_signal_bridge.py:18`; defensive deferred branches at `intent_runtime.py:2310-2318, 2378-2390` remain present but unreachable; skeleton-INSERT + Plan-0011 retention sweep verified in `intent_runtime.py:~2000+` and `skeleton_signal_retention.py:67+`. Status: IN SYNC, no edits beyond this marker. Some line numbers drifted slightly (~10 lines) due to surrounding code growth but symbols and structural descriptions match current implementation.)

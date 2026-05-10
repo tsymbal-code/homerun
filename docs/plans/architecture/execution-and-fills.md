@@ -90,6 +90,31 @@ orchestrator path above; `simulation_trades` is empty in the
 current production deployment. Treat it as a candidate for
 future retirement (no code change in this plan).
 
+#### Shadow ledger backfill (orchestrator → `SimulationService`)
+
+The orchestrator-driven path also runs a back-channel **shadow
+ledger backfill** that mirrors every successfully simulated
+shadow leg into the legacy `simulation_*` tables for replay /
+analytics consumers.  Entry point:
+
+| Path | What it holds |
+|---|---|
+| [`backend/services/simulation.py`](../../../backend/services/simulation.py) | `SimulationService.record_orchestrator_shadow_fill()` writes one `simulation_trade` + one `simulation_position` for a shadow fill that already landed in `trader_orders` / `trader_positions`. Called from `trader_orchestrator_worker._shadow_ledger_backfill_step()` per cycle. Failures emit a `shadow_ledger_backfill_failed` `trader_event`. |
+| [`backend/services/simulation.py`](../../../backend/services/simulation.py) `_direction_to_position_side(direction, payload=None)` | Maps a leg `direction` to a binary `(PositionSide, outcome_label)`. Canonical fast path: `buy_yes`/`sell_yes` → YES, `buy_no`/`sell_no` → NO. Defensive widening (Plan 0018): when `direction` is the bare `buy`/`sell` (emitted by `traders_copy_trade` for non-canonical outcome labels and by any pre-fix in-flight orders), the helper resolves via `payload['token_id']` against `payload['market']['token_ids']` (or `clob_token_ids`), index 0 → YES, index 1 → NO. Truly multi-outcome single-market structures (>2 tokens) and unknown `token_id` still raise `ValueError` so the backfill emits a `shadow_ledger_backfill_failed` event instead of silently misclassifying the leg. |
+
+Severity escalation (Plan 0018):
+`trader_orchestrator_worker._resolve_shadow_ledger_backfill_severity()`
+counts `shadow_ledger_backfill_failed` events for the same
+`trader_id` over a rolling 1 h window
+(`SHADOW_LEDGER_BACKFILL_FAILED_ESCALATION_WINDOW_SECONDS=3600`);
+once the count meets
+`SHADOW_LEDGER_BACKFILL_FAILED_ESCALATION_THRESHOLD=50` the
+emit flips from `severity='warn'` to `severity='error'` and
+adds `escalated_from='warn'` plus `event_count_window_h=1` to
+the payload, so the UI events strip can group it distinctly
+and operators are paged on a recurring backfill regression
+rather than the warn drowning in noise.
+
 ### Live path
 
 | Path | What it holds |
@@ -338,4 +363,4 @@ lives natively in this note.
 | `PriceCache` / `WalletStateCache` | [`websocket-and-events.md`](websocket-and-events.md) |
 | Sandbox account model (capital, slippage, max position size) | [`settings-and-secrets.md`](settings-and-secrets.md) |
 
-Last verified: 2026-05-09 (Shadow-path key-files block rewritten to separate orchestrator-driven shadow from legacy standalone simulator after commit `936f96a4`; missing-commit footgun added; corresponds to plan 0016.)
+Last verified: 2026-05-10 (Plan 0018: shadow-ledger backfill subsection added with `_direction_to_position_side` widening contract and `_resolve_shadow_ledger_backfill_severity` escalation; real-diff against `simulation.py` and `trader_orchestrator_worker.py` shows symbols match.); previously 2026-05-09 (Shadow-path key-files block rewritten to separate orchestrator-driven shadow from legacy standalone simulator after commit `936f96a4`; missing-commit footgun added; corresponds to plan 0016.)

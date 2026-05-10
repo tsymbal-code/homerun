@@ -63,7 +63,7 @@ notes.
 | 0015 | [Close remaining architecture-doc gaps](completed/0015-close-remaining-doc-gaps.md) | D        | 0013, 0014    |
 | 0016 | [Documentation hygiene for the shadow-execution commit fix](completed/0016-document-shadow-commit-fix.md) | R        | 0014, 0015    |
 | 0017 | [Real-diff audit of `<unverified>` architecture notes](completed/0017-audit-unverified-arch-notes.md) | D        | 0013, 0014    |
-| 0018 | [Fix stuck shadow positions on `traders_copy_trade`](0018-fix-stuck-shadow-positions-traders-copy-trade.md) | B        | —             |
+| 0018 | [Fix stuck shadow positions on `traders_copy_trade`](completed/0018-fix-stuck-shadow-positions-traders-copy-trade.md) | B        | —             |
 | 0019 | [Test suite hardening — coverage, markers, smoke tests, remote runner](completed/0019-test-suite-hardening.md) | D        | —             |
 | 0021 | [Auto-resume orchestrator in shadow mode on application startup](0021-orchestrator-auto-resume-shadow-on-startup.md) | B        | —             |
 
@@ -331,6 +331,18 @@ Only notes that aren't obvious from the title. All plans must follow
   `/sync-docs 5` audit surfaced for future plans. No runtime
   code changes — the patch is already shipped; this plan moves
   documentation only.
+- **Plan 0020 — Make Alembic migrations replayable from base.**
+  Refactor / hardening (R). Direct follow-up to Plan 0019, which
+  surfaced that `alembic upgrade base→head` against a fresh DB
+  fails with `DuplicateColumnError` because the baseline migration
+  `Base.metadata.create_all`s every current ORM column at revision
+  1 and ~13 later migrations then collide. Adds `safe_add_column`
+  / `safe_create_table` / `safe_create_index` helpers to
+  `alembic_helpers.py`, retrofits the unguarded migrations to use
+  them, and extends the round-trip test with a full base→head
+  replay case. Once green, removes the "Known footgun" entry from
+  `architecture/testing.md`. Production is unaffected — it stays
+  at head with the schema applied incrementally.
 - **Plan 0019 — Test suite hardening.** Documentation / tooling
   (D, secondary R). Closes four structural gaps in the backend
   test suite that let real regressions through despite ~1 990

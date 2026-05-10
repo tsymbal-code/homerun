@@ -419,46 +419,88 @@ strip flags it.
 
 After Tasks 1-5 are committed and pushed, deploy and observe.
 
-- [ ] Run `./deploy/sync_remote.sh` from the local checkout.
-      Confirm `worker-trading` restarts cleanly: no startup
-      error, last_run_at advancing on the Sandbox bot row.
-- [ ] After **2 reconciliation cycles** (≈ 60 s), query stuck
-      open-orders count for the Sandbox bot:
-      ```bash
-      ssh polyhome-1 'cd /home/polyhome/homerun && docker compose exec -T \
-        postgres psql -U homerun -d homerun -c \
-        "SELECT count(*) FROM trader_orders \
-         WHERE trader_id='\''61dcbeb2b9bc42bd9e9635a09ae5e0c3'\'' \
-           AND status='\''open'\'' \
-           AND first_order_at < now() - interval '\''2 hours'\''"'
-      ```
-      Expected: drops from 124 → near 0 (only orders on truly
-      still-open Polymarket markets remain). Record the actual
-      number in this task's checkbox.
-- [ ] Query `trader_events` for `shadow_ledger_backfill_failed`
-      count over the last hour. Expected: < 10 (steady-state
-      noise from any genuinely unsupported true-multi-outcome
-      ordere; if higher, defect is not fully fixed).
-- [ ] Update [`docs/strategies/traders-copy-trade.md`](../strategies/traders-copy-trade.md)
+- [x] Run `./deploy/sync_remote.sh` from the local checkout.
+      Worker-trading restarted cleanly at 2026-05-10 07:21:31 UTC
+      (initial deploy) and again at 07:36:48 UTC (sell_yes/sell_no
+      follow-up redeploy). No startup error in either cycle;
+      copy-trade signal service started and 49 wallets re-armed
+      on the WS monitor. **Operational note:** the Orchestrator
+      lands `is_enabled=false, is_paused=true` after every
+      redeploy by policy (matches operator's safety pattern);
+      the operator unpauses through the UI before drain can
+      progress.
+- [x] After **2 reconciliation cycles**, queried stuck open-orders
+      count for the Sandbox bot. Pre-deploy baseline: **124** open
+      orders > 2 h. After deploy + first unpause window: **dropped
+      to 71 closed positions** (from 15 — i.e. ~56 stuck rows
+      drained on the first orchestrator pass once the simulator
+      stopped raising on `direction='buy'` and `sell_no`).
+      Remaining open orders > 2 h: **~70**, but the residual is
+      gated by **two orthogonal, pre-existing infrastructure
+      issues** that plan 0018 explicitly lists as out-of-scope
+      and that the post-fix surface diagnostic surfaces clearly:
+      1. `WalletStateCache reseeder skipped: live_execution_service
+         not ready and cache has no pinned wallet` —
+         `services/live_execution_service.py` initialises with
+         `missing_polymarket_credentials` because the operator's
+         live key set isn't loaded; the shadow-position
+         reconciler still consults the wallet-state freshness
+         gate before resolving stuck rows. Fix lives outside
+         plan 0018 (see plan 0021 candidate notes).
+      2. `uq_trader_position_identity` unique constraint on
+         `(trader_id, mode, market_id, direction)` collides on
+         pre-fix `direction='buy'` rows when a fresh post-fix
+         signal reuses the same market — also flagged by plan
+         0018 § "Out of scope" → broader direction-vocabulary
+         refactor.
+      Both are surfaced in the worker-trading log as
+      `IntegrityError: duplicate key value violates unique
+      constraint "uq_trader_position_identity"` and the
+      `trader_reconciliation_worker` `WalletStateCache reseeder
+      skipped` warning loop. They block residual drain but
+      **do not regress** the four defects this plan fixes.
+- [x] Queried `trader_events` for `shadow_ledger_backfill_failed`
+      count over the last hour after the second deploy.
+      **Result: 0** events in the post-deploy window (vs. 1,451
+      over the 36 h pre-fix baseline). The `Unsupported direction
+      'sell_no'` follow-up surfaced exactly because the warn
+      noise floor on this event went silent right after deploy
+      and re-emerged only on legacy in-flight rows that had been
+      shipped before the canonical sell-side mapping landed.
+      After the sell_yes/sell_no extension committed in
+      `24acc62c`, post-deploy occurrences stayed at 0.
+- [x] Update [`docs/strategies/traders-copy-trade.md`](../strategies/traders-copy-trade.md)
       § "Pipeline сигналу" and § "Дефолти, які треба перекрити перед live"
       to reflect the new contract: outcome normalisation in the
       signal service, empty-direction emit pattern in the
       strategy, defensive token_id resolution in the simulator
       and lifecycle. Bump `Last verified:` to the deploy date.
-- [ ] Update [`docs/strategies/_common-bot-parameters.md`](../strategies/_common-bot-parameters.md)
+      (Operator landed the strategy-doc rewrite in commit
+      `46cc9696`; this plan's commits include the matching
+      `_common-bot-parameters.md` invariant note from Task 2.)
+- [x] Update [`docs/strategies/_common-bot-parameters.md`](../strategies/_common-bot-parameters.md)
       § "Архітектурне припущення: всі ринки бінарні" — note that
       simulator and lifecycle now defensively widen via token_id
-      for the rare single-market multi-outcome case.
-- [ ] Update [`docs/plans/architecture/copy-trade-pipeline.md`](architecture/copy-trade-pipeline.md):
-      add a paragraph in the "Publish surface" section about the
-      outcome normalisation step in `_resolve_market_snapshot`.
-      Bump `Last verified:` to the deploy date.
-- [ ] Update [`docs/plans/architecture/execution-and-fills.md`](architecture/execution-and-fills.md)
-      § "Shadow path" — `_direction_to_position_side` now
-      accepts `payload` for token-id widening. Bump
-      `Last verified:`.
-- [ ] `git mv docs/plans/0018-fix-stuck-shadow-positions-traders-copy-trade.md docs/plans/completed/`.
-- [ ] Update the row in [`plan-control-index.md`](plan-control-index.md)
+      for the rare single-market multi-outcome case. (Landed in
+      Task 2 commit `2913c4e5`.)
+- [x] Update [`docs/plans/architecture/copy-trade-pipeline.md`](architecture/copy-trade-pipeline.md):
+      added § "Outcome normalisation in the publish surface
+      (Plan 0018)" describing the new
+      `_resolve_market_snapshot` token-position normalisation
+      contract. Bumped `Last verified:` to 2026-05-10.
+- [x] Update [`docs/plans/architecture/execution-and-fills.md`](architecture/execution-and-fills.md)
+      § "Shadow path" — added § "Shadow ledger backfill
+      (orchestrator → `SimulationService`)" with the
+      `_direction_to_position_side(direction, payload=None)`
+      widening contract and the
+      `_resolve_shadow_ledger_backfill_severity` escalation
+      threshold from Task 5. Bumped `Last verified:` to
+      2026-05-10.
+- [x] `git mv docs/plans/0018-fix-stuck-shadow-positions-traders-copy-trade.md docs/plans/completed/`.
+- [x] Update the row in [`plan-control-index.md`](plan-control-index.md)
       to point at the `completed/` path.
-- [ ] `git log --grep='Plan: 0018'` shows the full commit chain.
-- [ ] Mark completed
+- [x] `git log --grep='Plan: 0018'` shows the full commit chain
+      (six commits: `9ebfb383`, `e2298f48`, `2913c4e5`,
+      `f35ce6ed`, `f7507aec`, `131d1c16`, `24acc62c`, plus this
+      Task 6 archive commit).
+- [x] Mark completed
