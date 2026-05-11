@@ -222,37 +222,71 @@ between 17:00 and 17:25 UTC.
 
 ### Task 5: Live verification on polyhome-1
 
-- [ ] `./deploy/sync_remote.sh` from the local checkout.
-- [ ] No strategy-row mutation needed — this change is contained
+- [x] `./deploy/sync_remote.sh` from the local checkout.
+- [x] No strategy-row mutation needed — this change is contained
   in `signal_bus.py` and re-deploys as part of the standard image
   rebuild. Plan 0051's `reset-to-factory` workflow is **not**
   relevant here because there is no strategy `source_code` to
-  re-snapshot.
-- [ ] `docker compose restart worker-trading backend` so both
-  consumers of `signal_bus` reload.
-- [ ] Wait 30 minutes (six 5 m cycles per asset × 3 assets =
-  18 potential signals). Then run the third Validation Command and
-  compare to the Task 1 baseline. Pass criterion:
-  `executed / (executed + expired) ≥ 90%`.
-- [ ] If the ratio stays below 90 %, capture the post-deploy
-  `trade_signals` lifecycle (status, created_at, updated_at per
-  signal_id) into `work-artifacts/0052-post-fix-evidence.md` and
-  attach the gap to the plan close notes — the most likely cause
-  would then be a SECOND expiry path we missed in
-  `expire_stale_signals` or `intent_runtime`.
-- [ ] Mark completed
+  re-snapshot. Confirmed post-deploy: `crypto_5m_last_outcome`
+  config retained `assets: ["BTC","SOL","XRP"]` (the auto-resync
+  reset only fires when a strategy `source_code` row diverges
+  from disk, which it didn't here).
+- [x] `docker compose restart worker-trading backend` so both
+  consumers of `signal_bus` reload (rolled in by `sync_remote.sh`).
+- [x] Wait 30 minutes (six 5 m cycles per asset × 3 assets =
+  18 potential signals). Window: 2026-05-11 18:30–19:00 UTC.
+  Result: **6 executed / 7 expired / 3 pending / 2 skipped**
+  (`executed/(executed+expired) = 6/13 = 46 %` — below pass
+  criterion). Detail in
+  [`work-artifacts/0052-post-fix-evidence.md`](work-artifacts/0052-post-fix-evidence.md).
+- [x] Race-condition class **fully resolved** (this plan's
+  invariant): every `expired` row in the window has
+  `age_at_update_s ∈ [61.08, 67.88]` — i.e. expiration only fires
+  *after* the 60 s grace cutoff. Pre-deploy baseline showed
+  `age_at_update_s = 2.47 s`. The grace guard works exactly as
+  designed.
+- [x] Failing pass criterion is caused by a **second, independent
+  defect** uncovered once the race noise was removed: the trader
+  `eff366f86217484b98950ea836099a02` ("Crypto 5m Last Outcome")
+  skipped two full 5 m cycles (18:30, 18:40 — 6 signals) without
+  ever emitting a `trader_decisions` row. `worker-trading` logs
+  show `Fast trader cycle exceeded hard budget` /
+  `signal_source: cache, signal_cache_hit, runtime_list_signals
+  ≈ 0.6 ms returning 0 rows`, meaning `intent_runtime`'s
+  in-memory snapshot did not yet hold the freshly-INSERT-ed
+  signals at the moment the fast-trader cycle read it. This is a
+  cache-staleness / pull-vs-push lag inside
+  `workers.fast_trader_runtime`, NOT a `signal_bus` issue.
+  Tracked in **Plan 0053** (`fast-trader signal cache miss
+  between signal_bus INSERT and intent_runtime read`).
+- [x] Mark completed
 
 ### Task 6: Doc + close-out
 
-- [ ] Update [`docs/plans/architecture/copy-trade-pipeline.md`](architecture/copy-trade-pipeline.md):
+- [x] Update [`docs/plans/architecture/copy-trade-pipeline.md`](architecture/copy-trade-pipeline.md):
   add a short note under the signal-projection / `upsert_trade_signal`
   section describing the new grace guard and citing this plan.
   One paragraph max — the authoritative behaviour lives in
   the docstring on `expire_source_signals_except`.
-- [ ] Update [`docs/strategies/crypto-5m-last-outcome.md`](../strategies/crypto-5m-last-outcome.md):
+- [x] Update [`docs/strategies/crypto-5m-last-outcome.md`](../strategies/crypto-5m-last-outcome.md):
   remove or revise any line that implies signals can be silently
   dropped between emit and trader; add a one-line link to this
   plan under "Посилання".
-- [ ] Move this plan to `docs/plans/completed/` and update the
+- [x] Move this plan to `docs/plans/completed/` and update the
   link in `plan-control-index.md`.
-- [ ] Mark completed
+- [x] Mark completed
+
+### Outcome / Follow-up
+
+- The race condition described in the plan Overview is **fully
+  closed**: zero signals expire younger than the 60 s grace
+  cutoff. Mechanism verified against forensic baseline (Task 1)
+  and the post-deploy 30 m window (Task 5).
+- The originally-stated pass criterion (≥ 90 % executed ratio)
+  is **not** met by this fix alone, because removing the race
+  exposed a second, independent defect in `fast_trader_runtime`
+  (in-memory signal cache lags behind `signal_bus` INSERTs).
+  That defect now owns its own plan: **Plan 0053**.
+- No changes needed to `intent_runtime` snapshot semantics, no
+  CRITICAL-tier knob touched, no migration. `signal_bus.py` is
+  the only mutated module.

@@ -131,3 +131,4 @@ Midcycle і last-outcome — **дві ортогональні гіпотези 
   на коротких 1.8%+ spike-ах.
 - Plan: [`0047-crypto-5m-last-outcome-follow-strategy`](../plans/completed/0047-crypto-5m-last-outcome-follow-strategy.md).
 - Plan: [`0051-rest-book-fallback-for-crypto-5m-last-outcome`](../plans/completed/0051-rest-book-fallback-for-crypto-5m-last-outcome.md) — REST cache-prime на cache-miss `book_depth`.
+- Plan: [`0052-grace-period-in-expire-source-signals-except`](../plans/completed/0052-grace-period-in-expire-source-signals-except.md) — закриває race у `signal_bus.expire_source_signals_except`, через який свіжі signals помирали в перші ~3 c після INSERT. Тепер сигнали захищені 60-секундним grace window.

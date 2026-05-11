@@ -96,7 +96,7 @@ notes.
 | 0049 | [Retention housekeeper for `trader_events` (esp. firehose_evaluation)](completed/0049-trader-events-retention-housekeeper.md) | R        | 0044          |
 | 0050 | [Auto-resync SYSTEM strategies from disk on every container boot](0050-auto-resync-system-strategies-on-boot.md) | B        | 0041          |
 | 0051 | [REST book-fallback for crypto_5m_last_outcome](completed/0051-rest-book-fallback-for-crypto-5m-last-outcome.md) | B        | 0047          |
-| 0052 | [Grace period in expire_source_signals_except](0052-grace-period-in-expire-source-signals-except.md) | R        | 0011, 0047, 0051 |
+| 0052 | [Grace period in expire_source_signals_except](completed/0052-grace-period-in-expire-source-signals-except.md) | R        | 0011, 0047, 0051 |
 
 When adding a row: keep this table sorted by ID ascending. Don't
 re-number plans — gaps in IDs are normal and expected (deleted or
@@ -417,6 +417,31 @@ Only notes that aren't obvious from the title. All plans must follow
   must re-apply the per-trader asset list (e.g.
   `["BTC","SOL","XRP"]`) via SQL `UPDATE` after every deploy that
   touches a strategy module. Recipe lives inline in plan Task 5.
+- **Plan 0052 — Grace period in `expire_source_signals_except`.**
+  Refactor / hardening (R). Direct follow-up to plan 0051: with the
+  REST cache-prime in place, `crypto_5m_last_outcome` was emitting on
+  100 % of cycles, but only ~50 % of those signals ever reached the
+  trader as `executed` — the rest were flipped to `expired` by
+  `signal_bus.expire_source_signals_except` ~2.5 s after creation.
+  Root cause was a snapshot race in `intent_runtime._project_status_batch`:
+  the `keep_dedupe_keys` set was captured a fraction of a second
+  BEFORE a fresh INSERT, so the sweep nuked the new row before the
+  trader's cursor could reach it. Fix is one conservative guard
+  inside `expire_source_signals_except`: refuse to mark
+  `status='expired'` on rows younger than `_EXPIRE_SOURCE_GRACE_SECONDS`
+  (default 60 s, opt-out via `min_signal_age_seconds=0.0`). Single
+  call site (`intent_runtime.py:3124`) keeps the default — no
+  caller-side change. Live verification 2026-05-11 18:30–19:00 UTC:
+  zero signals expire with `age < 60 s` (down from 9/9 in the 17:00–17:30
+  baseline), but the `executed/(executed+expired)` ratio is still 46 %
+  because removing the race noise exposed a second, independent defect:
+  `workers.fast_trader_runtime` reads its in-memory `intent_runtime`
+  signal cache while the cache has not yet absorbed the freshly-INSERT-ed
+  signals (visible as `signal_source: cache, signal_cache_hit,
+  runtime_list_signals=0.6 ms returning 0 rows` for the 18:30 and 18:40
+  cycles). That defect now owns its own plan (proposed Plan 0053);
+  it is NOT a `signal_bus` problem and `expire_source_signals_except`
+  needs no further changes.
 - **Plan 0049 — Retention housekeeper for `trader_events`.**
   Refactor / hardening (R). Direct follow-up to plan 0044, which
   unlocked the volume that triggered this plan. Plan 0044's
