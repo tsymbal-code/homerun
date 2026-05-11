@@ -40,12 +40,13 @@
 
 Two-tier retention is the right shape:
 
-1. **`firehose_evaluation`** (the bulk, ~99 % of rows): keep **14 days**.
-   That covers two full A/B-test windows and the Plan 0046
-   backtest's longest practical replay window. Beyond 14 days the
-   rows are dead weight — the backtester is the only consumer that
-   reaches back that far, and rolling-window stat-arb on stale
-   firehose has no business case.
+1. **`firehose_evaluation`** (the bulk, ~99 % of rows): keep **7 days**.
+   That covers one full A/B-test window and the Plan 0046 / 0048
+   backtest's typical 24 h replay (with comfortable headroom).
+   Beyond 7 days the rows are dead weight — the backtester is the
+   only consumer that reaches back at all, and rolling-window
+   stat-arb on stale firehose has no business case. The window can
+   always be widened later via the DB-backed knob.
 2. **Everything else** (`decision`, `order`, `provider_health`,
    `circuit_breaker`, etc. — low-volume audit trail): keep
    **90 days**. These are diagnostic / regulatory and the volume
@@ -58,16 +59,16 @@ than each tier's retention; both tiers are DB-backed knobs in
 (`ix_trader_events_created_at`) so deletes are O(log n) per batch.
 
 Steady-state size after the first full retention cycle:
-`firehose_evaluation` settles around **14 days × 24 h × 262 k rows/h
-≈ 88 M rows ≈ ~118 GB on disk** (Postgres overhead included).
-That is still too big for `polyhome-1` — the operator should
-**either lower the firehose retention to 3–7 days** once this
-plan ships, **or** also land a follow-up that reduces firehose
-emit rate at source (e.g., switch reject events for the dominant
-`asset_enabled`/`timeframe`/`midcycle_crossed` gates from
-WHISPER-persist to WHISPER-drop). The 14 d default is the upper
-bound the backtester needs; the operational right-size is
-expected to be lower.
+`firehose_evaluation` settles around **7 days × 24 h × 262 k rows/h
+≈ 44 M rows ≈ ~59 GB on disk** (Postgres overhead included). That
+is ~20 % of host `/dev/sda1` (301 GB) — workable but not luxurious.
+If the operator wants slack room for a longer A/B or for the
+trader_events index growth (≥10 % of table size), a **follow-up
+that reduces firehose emit rate at source** is the next lever —
+e.g., switch reject events for the dominant
+`asset_enabled` / `timeframe` / `midcycle_crossed` gates from
+WHISPER-persist to WHISPER-drop. That follow-up is out of scope
+here.
 
 ## Context / References
 
@@ -96,7 +97,7 @@ expected to be lower.
 
 - [ ] Add Alembic migration adding two columns to `app_settings`:
       `trader_events_firehose_retention_days` (`Integer`, default
-      14, nullable false) and
+      **7**, nullable false) and
       `trader_events_other_retention_days` (`Integer`, default 90,
       nullable false). Migration file lives at
       `backend/alembic/versions/<date>_add_trader_events_retention_knobs.py`.
@@ -169,14 +170,19 @@ expected to be lower.
 
 ### Task 3: operational guardrails
 
-- [ ] Document the first-run drain cost: at the moment of activation
-      the table has ≥ 14 days × 8.4 GB/day = **~118 GB** of
-      firehose backlog if let run unattended. First housekeeper
-      kick must therefore prune `firehose_evaluation` in 50 000-row
-      batches with pauses to avoid runaway autovacuum or replica
-      lag. Add a "First-run" subsection to the strategy doc /
-      runbook noting that the first 24 h after enabling the
-      housekeeper should be monitored.
+- [ ] Document the first-run drain cost: by the time activation
+      triggers fire (see policy header — threshold (a) is
+      `trader_events` > 30 GB, ~T+4 d), the backlog is already
+      well past the new 7-day retention floor, so the first
+      housekeeper run must delete every row older than 7 days
+      in a single sitting. Worst case if activation is delayed
+      to threshold (b)/(c): ≥ 14 days × 8.4 GB/day ≈ ~118 GB
+      to prune. First housekeeper kick must therefore prune
+      `firehose_evaluation` in 50 000-row batches with pauses to
+      avoid runaway autovacuum or replica lag. Add a "First-run"
+      subsection to the strategy doc / runbook noting that the
+      first 24 h after enabling the housekeeper should be
+      monitored.
 - [ ] Add a small CLI helper at
       `scripts/trader_events_housekeeper_dry_run.py` that prints
       `(rows_to_delete, oldest_row, bytes_estimate)` per tier
