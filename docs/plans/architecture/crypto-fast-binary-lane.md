@@ -186,6 +186,34 @@ subscribe to `EventType.CRYPTO_UPDATE`. The current set:
 Operator-facing per-strategy docs: `docs/strategies/crypto-*.md`,
 `docs/strategies/btc-eth-*.md`.
 
+### REST cache-prime hook (Plan 0051)
+
+The `crypto_5m_last_outcome` strategy adds a fire-and-forget REST
+cache-prime when the synchronous `book_depth` gate misses the
+`PriceCache`. The strategy module
+([`backend/services/strategies/crypto_5m_last_outcome.py`](../../../backend/services/strategies/crypto_5m_last_outcome.py))
+calls `FeedManager.get_order_book(token_id)` from inside the
+reject branch; that method is async and routes through the
+already-registered `_build_polymarket_http_fallback_order_book`
+fallback, writing the fetched book back into the cache. The
+strategy's own ~6 Hz on_event firing rate then finds a populated
+book on the next tick (~150 ms) and passes the gate.
+
+A per-token `_REST_PRIME_COOLDOWN_S = 3.0` guard caps HTTP load at
+~20 fetches/min/token even in the worst case. The behaviour is
+gated by `rest_book_fallback_enabled` in the strategy config
+(default `True`); flipping the toggle off in the strategy-manager
+UI restores the prior pure-WS behaviour.
+
+This is **scoped to one strategy on purpose**. The other crypto
+strategies (`crypto_5m_midcycle`, `crypto_convergence`,
+`btc_eth_directional_edge`, `btc_eth_maker_quote`,
+`crypto_entropy_maker`, `crypto_spike_reversion`) keep the
+sync-only path. A general SDK-level fallback that benefits every
+strategy is the natural follow-up but was deliberately deferred —
+the call shape and rate-limit interaction need a wider design
+pass.
+
 ### Toggle API
 
 Generic worker-control API
@@ -331,4 +359,4 @@ fetch; lower would serialize, higher would not help.
 | Tag-based market intake (the lane this one bypasses) | [`market-filter.md`](market-filter.md) |
 | Per-strategy operator references (Ukrainian) | `docs/strategies/crypto-*.md`, `docs/strategies/btc-eth-*.md` |
 
-Last verified: 2026-05-08
+Last verified: 2026-05-11

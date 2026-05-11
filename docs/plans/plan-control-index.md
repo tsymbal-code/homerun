@@ -95,6 +95,7 @@ notes.
 | 0048 | [2026-05-12 — first crypto_5m_midcycle param sweep on 24h](backlog/0048-2026-05-12-crypto-5m-midcycle-param-sweep.md) | D        | 0046          |
 | 0049 | [Retention housekeeper for `trader_events` (esp. firehose_evaluation)](completed/0049-trader-events-retention-housekeeper.md) | R        | 0044          |
 | 0050 | [Auto-resync SYSTEM strategies from disk on every container boot](0050-auto-resync-system-strategies-on-boot.md) | B        | 0041          |
+| 0051 | [REST book-fallback for crypto_5m_last_outcome](0051-rest-book-fallback-for-crypto-5m-last-outcome.md) | B        | 0047          |
 
 When adding a row: keep this table sorted by ID ascending. Don't
 re-number plans — gaps in IDs are normal and expected (deleted or

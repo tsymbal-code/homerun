@@ -53,6 +53,12 @@ logger = get_logger(__name__)
 # Defaults — every value is overridable via the DB ``config`` column.
 # ---------------------------------------------------------------------------
 
+# Per-token REST cache-prime cooldown. on_event fires ~6 Hz, so 3 s
+# caps fallback HTTP calls per token at ~20/min — well under the
+# polymarket_client per-IP limiter and well under the natural 30
+# calls a 90 s book-empty window would otherwise issue.
+_REST_PRIME_COOLDOWN_S: float = 3.0
+
 _ALL_ASSETS: tuple[str, ...] = ("BTC", "ETH", "SOL", "XRP")
 
 DEFAULT_CONFIG: dict[str, Any] = {
@@ -71,6 +77,11 @@ DEFAULT_CONFIG: dict[str, Any] = {
     # Polymarket WS book a moment to populate at cycle rollover; below
     # ~15 s the book is often empty and the depth gate rejects.
     "entry_seconds_after_start": 30.0,
+    # When the WS-fed PriceCache is empty for the side we want to buy,
+    # fire a fire-and-forget REST fetch through FeedManager so the cache
+    # is populated for the next ~150 ms tick. Guarded per token by a
+    # short cooldown to keep total HTTP load modest. Plan 0051.
+    "rest_book_fallback_enabled": True,
     # Master switch (also exposed at the row level via Strategy.enabled).
     "enabled": True,
 }
@@ -130,6 +141,13 @@ def crypto_5m_last_outcome_config_schema() -> dict[str, Any]:
                 "max": 299.0,
                 "default": 30.0,
                 "phase": "signal",
+            },
+            {
+                "key": "rest_book_fallback_enabled",
+                "label": "REST Book Fallback on Cache Miss",
+                "type": "boolean",
+                "default": True,
+                "phase": "execution",
             },
         ]
     }
@@ -243,6 +261,10 @@ class Crypto5mLastOutcomeStrategy(BaseStrategy):
         # at our 30 s threshold, so the strategy must keep retrying
         # within the cycle until the book-depth / VWAP gates pass.
         self._emitted_market_ids: set[str] = set()
+        # Last unix-second a REST book-prime fetch was kicked off per
+        # token. Stale entries fall out of relevance naturally as old
+        # cycles' tokens stop appearing on incoming events. Plan 0051.
+        self._rest_prime_last_ts: dict[str, float] = {}
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -291,6 +313,38 @@ class Crypto5mLastOutcomeStrategy(BaseStrategy):
             if opp is not None:
                 opportunities.append(opp)
         return opportunities
+
+    @staticmethod
+    def _prime_book_via_rest(token_id: str) -> None:
+        """Fire-and-forget REST cache prime for a single CLOB token.
+
+        Bypasses the synchronous PriceCache read path inside
+        ``StrategySDK.get_order_book_depth`` by going through
+        ``FeedManager.get_order_book(token_id)``, which routes to the
+        registered Polymarket HTTP fallback when the WS cache is stale
+        and writes the fetched book back into the cache. The result is
+        not awaited — by the next on_event tick (~150 ms later) the
+        sync path will see a populated book.
+
+        Requires a running event loop to schedule the coroutine; in
+        sync test contexts the helper is a no-op. Errors are swallowed
+        (logged at debug only). The caller's cooldown bookkeeping in
+        ``_evaluate_market`` is the sole rate guard. Plan 0051.
+        """
+        try:
+            from services.ws_feeds import get_feed_manager
+            import asyncio as _asyncio
+            try:
+                loop = _asyncio.get_running_loop()
+            except RuntimeError:
+                return
+            feed_mgr = get_feed_manager()
+            loop.create_task(feed_mgr.get_order_book(token_id))
+        except Exception as exc:
+            logger.debug(
+                "crypto_5m_last_outcome REST prime failed for token %s: %s",
+                token_id[:18] if token_id else "?", exc,
+            )
 
     @staticmethod
     def _ensure_ws_subscribed_for_5m(markets: list[Any]) -> None:
@@ -503,6 +557,12 @@ class Crypto5mLastOutcomeStrategy(BaseStrategy):
             _emit_reject(MURMUR)
             return None
 
+        # Resolve the side-specific CLOB token id once: the book_depth
+        # reject path below (Plan 0051) needs it to fire a REST cache
+        # prime, and the create_opportunity step further down also
+        # consumes it.
+        token_id = typed_market.clob_token_ids[0 if side == "YES" else 1]
+
         bet_size_usd = float(self.config.get("bet_size_usd", 15.0))
         depth = StrategySDK.get_order_book_depth(
             typed_market, side=side, size_usd=bet_size_usd,
@@ -513,6 +573,16 @@ class Crypto5mLastOutcomeStrategy(BaseStrategy):
             detail=f"side={side} size_usd={bet_size_usd:.2f}",
         ))
         if not depth_present:
+            # Cache miss for the side we want — kick a REST fetch
+            # through FeedManager so the next ~150 ms tick finds a
+            # populated book via the normal sync path. Per-token
+            # cooldown keeps total HTTP load modest. Plan 0051.
+            if self.config.get("rest_book_fallback_enabled", True):
+                now_s = now_ms / 1000.0
+                last = self._rest_prime_last_ts.get(token_id, 0.0)
+                if now_s - last >= _REST_PRIME_COOLDOWN_S:
+                    self._rest_prime_last_ts[token_id] = now_s
+                    self._prime_book_via_rest(token_id)
             _emit_reject(MURMUR)
             return None
         is_fresh = bool(depth.get("is_fresh", False))
@@ -563,7 +633,6 @@ class Crypto5mLastOutcomeStrategy(BaseStrategy):
         #     win_prob is 0.80 and emits never go negative there).
         win_prob_estimate = 0.50
         expected_payout = 1.0  # Polymarket pays $1 per winning share
-        token_id = typed_market.clob_token_ids[0 if side == "YES" else 1]
 
         slug = str(market.get("slug") or market_id)
         title = f"Crypto 5m last-outcome: {slug} {side}"

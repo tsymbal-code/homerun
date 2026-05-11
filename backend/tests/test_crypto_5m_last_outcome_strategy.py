@@ -498,3 +498,108 @@ def test_happy_path_opportunity_carries_full_context(strategy, fresh_cache):
     assert ctx["previous_outcome"] == "YES"
     assert ctx["reference_price"] == pytest.approx(80_050.0)
     assert ctx["bet_size_usd"] == pytest.approx(15.0)
+
+
+# ---------------------------------------------------------------------------
+# REST book-fallback prime on cache miss (Plan 0051)
+# ---------------------------------------------------------------------------
+
+
+def _seed_yes_rollover(strategy) -> dict:
+    """Helper: seed the strategy's rollover state so a follow-up
+    evaluation against a YES-token market resolves to side=YES, then
+    return the new-cycle market dict (without seeding any book)."""
+    _observe(
+        strategy,
+        _market(condition_id="0xa", reference=80_000.0, end_ms=END_MS),
+        now_ms=START_MS + 5_000,
+    )
+    return _market(
+        condition_id="0xb",
+        reference=80_050.0,
+        end_ms=END_MS + CYCLE_MS,
+        yes_token=YES_TOKEN_B,
+        no_token=NO_TOKEN_B,
+    )
+
+
+def test_book_depth_miss_fires_rest_prime_within_cooldown(strategy, fresh_cache, monkeypatch):
+    """Cache-miss tick fires the prime once; a tick within the
+    3 s cooldown does not re-fire; a tick after the cooldown does."""
+    new_market = _seed_yes_rollover(strategy)
+    calls: list[str] = []
+    monkeypatch.setattr(strategy, "_prime_book_via_rest", lambda tok: calls.append(tok))
+
+    # Tick 1: 30 s into new cycle, no book seeded → reject + prime fires.
+    assert strategy._evaluate_market(new_market, now_ms=END_MS + 30_000) is None
+    assert calls == [YES_TOKEN_B]
+
+    # Tick 2: +1 s later (still within 3 s cooldown) → no new prime.
+    assert strategy._evaluate_market(new_market, now_ms=END_MS + 31_000) is None
+    assert calls == [YES_TOKEN_B]
+
+    # Tick 3: +3.5 s past the original prime → cooldown expired, prime fires again.
+    assert strategy._evaluate_market(new_market, now_ms=END_MS + 33_500) is None
+    assert calls == [YES_TOKEN_B, YES_TOKEN_B]
+
+
+def test_rest_prime_disabled_when_flag_off(fresh_cache, monkeypatch):
+    """Setting rest_book_fallback_enabled=False suppresses the prime
+    even when the book_depth gate fails the same way as default."""
+    s = Crypto5mLastOutcomeStrategy()
+    s.configure({"rest_book_fallback_enabled": False})
+    new_market = _seed_yes_rollover(s)
+    calls: list[str] = []
+    monkeypatch.setattr(s, "_prime_book_via_rest", lambda tok: calls.append(tok))
+
+    assert s._evaluate_market(new_market, now_ms=END_MS + 30_000) is None
+    assert calls == []
+
+
+def test_rest_prime_uses_correct_side_token(fresh_cache, monkeypatch):
+    """previous_outcome=YES must prime YES token; previous_outcome=NO
+    must prime NO token."""
+    s_yes = Crypto5mLastOutcomeStrategy()
+    s_yes.configure({})
+    yes_market = _seed_yes_rollover(s_yes)
+    yes_calls: list[str] = []
+    monkeypatch.setattr(s_yes, "_prime_book_via_rest", lambda tok: yes_calls.append(tok))
+    assert s_yes._evaluate_market(yes_market, now_ms=END_MS + 30_000) is None
+    assert yes_calls == [YES_TOKEN_B]
+
+    s_no = Crypto5mLastOutcomeStrategy()
+    s_no.configure({})
+    _observe(
+        s_no,
+        _market(condition_id="0xa", reference=80_000.0, end_ms=END_MS),
+        now_ms=START_MS + 5_000,
+    )
+    no_market = _market(
+        condition_id="0xb",
+        reference=79_950.0,  # ↓ → prev cycle's NO won
+        end_ms=END_MS + CYCLE_MS,
+        yes_token=YES_TOKEN_B,
+        no_token=NO_TOKEN_B,
+    )
+    no_calls: list[str] = []
+    monkeypatch.setattr(s_no, "_prime_book_via_rest", lambda tok: no_calls.append(tok))
+    assert s_no._evaluate_market(no_market, now_ms=END_MS + 30_000) is None
+    assert no_calls == [NO_TOKEN_B]
+
+
+def test_rest_prime_helper_swallows_exceptions(monkeypatch):
+    """The helper is wrapped in try/except so that an internal
+    failure (FeedManager lookup, asyncio loop bind, HTTP fallback
+    crash) never surfaces in the strategy's on_event hot path.
+    Tested in isolation per Task 1 ('keep this helper testable
+    in isolation') because StrategySDK.get_order_book_depth also
+    consumes get_feed_manager and would mask the helper failure
+    under a full _evaluate_market call."""
+    import services.ws_feeds as ws_feeds_mod
+
+    def _boom() -> None:
+        raise RuntimeError("simulated FeedManager failure")
+
+    monkeypatch.setattr(ws_feeds_mod, "get_feed_manager", _boom)
+
+    Crypto5mLastOutcomeStrategy._prime_book_via_rest(YES_TOKEN_A)

@@ -1023,6 +1023,13 @@ SYSTEM_OPPORTUNITY_STRATEGY_SEEDS: list[SystemOpportunityStrategySeed] = [
                     "default": 30.0,
                     "phase": "signal",
                 },
+                {
+                    "key": "rest_book_fallback_enabled",
+                    "label": "REST Book Fallback on Cache Miss",
+                    "type": "boolean",
+                    "default": True,
+                    "phase": "execution",
+                },
             ]
         },
     ),

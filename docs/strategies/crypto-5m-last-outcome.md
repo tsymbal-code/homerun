@@ -71,6 +71,7 @@ trader-binding-у (TP/SL з конфігу або hold to settlement). Стра�
 | `max_entry_price` | `0.95` | Max VWAP — захист від купівлі на 0.97+ |
 | `min_entry_price` | `0.05` | Min VWAP — захист від degenerate fills |
 | `bet_size_usd` | `15.0` | Fixed sizing — не Kelly |
+| `rest_book_fallback_enabled` | `True` | На cache-miss `book_depth` стратегія автоматично підтягує order-book через REST-fallback (`FeedManager.get_order_book` → `polymarket_client.get_order_book`). Per-token cooldown `3 c` уникає storm-у. Вимикається з UI або однією SQL-update — див. Plan 0051 |
 
 `win_prob_estimate` усередині стратегії — **0.50** (coin-flip prior),
 бо емпіричних даних ще нема. ROI / risk у firehose рахуються від
@@ -97,8 +98,14 @@ trader-binding-у (TP/SL з конфігу або hold to settlement). Стра�
   оцінка outcome зіб'ється на цей один rollover. Стратегія
   само-коректується на наступному циклі.
 - **Stale book**. `book_fresh` гейт зрізає, поки cache не
-  оновився. На холодному cache буває довгий стрімінг — для цього є
-  `_ensure_ws_subscribed_for_5m` (як у midcycle).
+  оновився. Холодний WS cache тепер само-лікується: на cache-miss
+  `book_depth` стратегія fire-and-forget викликає
+  `FeedManager.get_order_book(token_id)` (Plan 0051), що тригерить
+  REST-fallback і записує book назад у `PriceCache`. Наступний tick
+  (~150 ms пізніше) знаходить свіжий book і проходить гейт. Per-token
+  cooldown 3 c обмежує загальне HTTP-навантаження.
+  `_ensure_ws_subscribed_for_5m` (як у midcycle) залишається першою
+  лінією — підписує токени щоб WS наповнював cache фоново.
 
 ## Як це працює разом із midcycle
 
@@ -123,3 +130,4 @@ Midcycle і last-outcome — **дві ортогональні гіпотези 
 - [Crypto Spike Reversion](crypto-spike-reversion.md) — fade-гіпотеза
   на коротких 1.8%+ spike-ах.
 - Plan: [`0047-crypto-5m-last-outcome-follow-strategy`](../plans/completed/0047-crypto-5m-last-outcome-follow-strategy.md).
+- Plan: [`0051-rest-book-fallback-for-crypto-5m-last-outcome`](../plans/completed/0051-rest-book-fallback-for-crypto-5m-last-outcome.md) — REST cache-prime на cache-miss `book_depth`.
