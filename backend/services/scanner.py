@@ -83,6 +83,15 @@ class ArbitrageScanner:
         self._heavy_inflight: bool = False
         self._fast_lane_error: Optional[str] = None
         self._heavy_lane_error: Optional[str] = None
+        # Plan 0045: snapshot of clob_token_ids the scanner asked the
+        # Polymarket WS feed to subscribe on the previous fast-scan.
+        # Diffed on every scan so stale-rotated markets get unsubscribed
+        # — without this the shared ``_subscribed_assets`` set climbed
+        # to 7000+ tokens within ~10 min, blowing past Polymarket's
+        # per-connection cap and silently dropping the freshest
+        # entries (including the crypto lane's 5 m markets the
+        # strategies need depth data for).
+        self._ws_subscribed_tokens: set[str] = set()
         self._fast_watchdog_timeout_count: int = 0
         self._heavy_watchdog_timeout_count: int = 0
         self._full_snapshot_cursor_index: int = 0
@@ -3651,7 +3660,34 @@ class ArbitrageScanner:
                     try:
                         feed_mgr = get_feed_manager()
                         if feed_mgr._started:
-                            await feed_mgr.polymarket_feed.subscribe(token_ids=candidate_token_ids)
+                            # Plan 0045: diff-subscribe instead of additive.
+                            # Stale rotated-out tokens get unsubscribed so
+                            # Polymarket's per-connection cap doesn't
+                            # silently drop the freshest entries. See
+                            # ``MarketRuntime._sync_crypto_subscriptions``
+                            # for the mirror fix on the crypto lane.
+                            new_active = {
+                                str(t).strip()
+                                for t in candidate_token_ids
+                                if str(t).strip()
+                            }
+                            previous = self._ws_subscribed_tokens
+                            to_subscribe = sorted(new_active - previous)
+                            to_unsubscribe = sorted(previous - new_active)
+                            if to_unsubscribe:
+                                try:
+                                    await feed_mgr.polymarket_feed.unsubscribe(to_unsubscribe)
+                                except Exception as un_exc:
+                                    logger.debug(
+                                        "Fast-scan WS unsubscribe failed (non-critical): %s",
+                                        un_exc,
+                                    )
+                                    to_unsubscribe = []
+                            if to_subscribe:
+                                await feed_mgr.polymarket_feed.subscribe(token_ids=to_subscribe)
+                            self._ws_subscribed_tokens = (
+                                (previous - set(to_unsubscribe)) | new_active
+                            )
                     except Exception as exc:
                         logger.debug("Fast-scan WS subscription sync failed", exc_info=exc)
                 if reactive_mode:
