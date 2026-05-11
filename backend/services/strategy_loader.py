@@ -686,6 +686,20 @@ class StrategyLoader:
         # Populated lazily by ``get_or_clone_for_trader``; invalidated whenever
         # the global slug reloads (via ``load`` / ``unload``) or the trader's
         # ``source_configs_json`` mutates (via ``invalidate_per_trader``).
+        #
+        # KNOWN LEAK (Plan 0043 backlog): this dict grows monotonically and
+        # has no LRU / TTL. Entries are dropped only via explicit
+        # ``invalidate_per_trader`` calls wired into the ``routes_traders``
+        # mutation endpoints. If a trader row is deleted outside that path —
+        # raw SQL, race with a missed endpoint, future background mutation —
+        # the corresponding ``(slug, trader_id)`` entry stays alive forever,
+        # holding a strategy instance and its in-process state. At today's
+        # trader counts (single digits) this is negligible; at scale it
+        # becomes an OOM mine. Plan 0043 fixes it by piggybacking on
+        # ``trader_binding_cache._refresh()`` to evict ``(slug, trader_id)``
+        # pairs no longer in the live binding map. Activate when trader
+        # count climbs into the tens or worker-trading RSS shows hourly
+        # creep without explicit roster growth.
         self._per_trader: dict[tuple[str, str], LoadedStrategy] = {}
 
     @property
