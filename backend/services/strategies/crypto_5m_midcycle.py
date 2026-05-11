@@ -371,9 +371,22 @@ class Crypto5mMidcycleStrategy(BaseStrategy):
             from services.ws_feeds import get_feed_manager
             feed_mgr = get_feed_manager()
             if not getattr(feed_mgr, "_started", False):
+                logger.info(
+                    "crypto_5m_midcycle WS subscribe skipped (TEMP)",
+                    reason="feed_manager not started",
+                    token_count=len(token_ids),
+                )
                 return
+            pm_feed = feed_mgr.polymarket_feed
+            already_subscribed = sum(1 for t in token_ids if t in pm_feed._subscribed_assets)
             import asyncio as _asyncio
-            _asyncio.ensure_future(feed_mgr.polymarket_feed.subscribe(token_ids=token_ids))
+            _asyncio.ensure_future(pm_feed.subscribe(token_ids=token_ids))
+            logger.info(
+                "crypto_5m_midcycle WS subscribe issued (TEMP)",
+                token_count=len(token_ids),
+                already_subscribed=already_subscribed,
+                feed_state=str(getattr(pm_feed, "_state", "?")),
+            )
         except Exception as exc:
             # Non-critical — depth gate will simply reject this tick and
             # the strategy retries on the next dispatch.
