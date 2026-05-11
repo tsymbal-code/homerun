@@ -50,6 +50,28 @@ _DEFAULT_MAX_TOKENS = int(os.environ.get("HOMERUN_RECORDER_MAX_TOKENS", "8000"))
 _MIN_LIQUIDITY_USD = float(os.environ.get("HOMERUN_RECORDER_MIN_LIQUIDITY", "10.0"))
 
 
+def _recorder_enabled() -> bool:
+    """Plan 0045: recorder subscriber off by default.
+
+    The recorder bulk-subscribes the top ``_DEFAULT_MAX_TOKENS`` liquid
+    markets (default 8000) so the microstructure recorder can write
+    price ticks to disk for backtesting. Each subscription competes
+    against Polymarket's per-connection cap; on a crypto-only or
+    scanner-driven deployment those subscriptions starve the strategies
+    that actually need real-time book depth (see
+    ``crypto_5m_midcycle.book_depth`` rejections captured in the Plan
+    0045 live-verification logs).
+
+    Operators who need the recorder (running backtests, building
+    microstructure datasets, etc.) flip this on by setting the
+    ``HOMERUN_RECORDER_ENABLED`` env var to a truthy string
+    (``1``/``true``/``yes``/``on``). Default OFF keeps the WS feed
+    bounded for trading workflows.
+    """
+    raw = os.environ.get("HOMERUN_RECORDER_ENABLED", "").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
 @dataclass
 class _ServiceState:
     last_run_at: float = 0.0
@@ -268,7 +290,20 @@ async def loop_tick() -> None:
 
 
 async def run_loop() -> None:
-    """Long-running loop entry-point — call from host worker."""
+    """Long-running loop entry-point — call from host worker.
+
+    Plan 0045: short-circuits when ``HOMERUN_RECORDER_ENABLED`` env
+    var is unset/false (default). Keeps the WS feed's subscription
+    set bounded for trading workflows that don't need the recorder's
+    bulk top-N-liquid subscription.
+    """
+    if not _recorder_enabled():
+        logger.info(
+            "Recorder subscription loop disabled "
+            "(HOMERUN_RECORDER_ENABLED not set) — exiting cleanly. "
+            "Set the env var to enable bulk top-N-liquid subscription."
+        )
+        return
     # Stagger startup so the first tick happens after the catalog is
     # warm but before the first scanner pass produces stale opps.
     await asyncio.sleep(20.0)
