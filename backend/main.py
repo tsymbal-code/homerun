@@ -404,15 +404,33 @@ async def lifespan(app: FastAPI):
 
         # Warm unified strategy loader at process startup.
         try:
-            from services.opportunity_strategy_catalog import ensure_all_strategies_seeded
+            from services.opportunity_strategy_catalog import (
+                ensure_all_strategies_seeded,
+                resync_system_strategies_with_disk,
+            )
             from services.strategy_loader import strategy_loader as _loader
 
             async with AsyncSessionLocal() as session:
                 seeded = await ensure_all_strategies_seeded(session)
+                # Plan 0050: rewrite DB rows from disk md5-mismatches
+                # BEFORE the loader caches them. Failure is fail-open;
+                # we keep booting on whatever the DB has today.
+                try:
+                    resync_summary = await resync_system_strategies_with_disk(
+                        session, process_label="backend"
+                    )
+                except Exception as resync_exc:  # pragma: no cover
+                    logger.warning(
+                        "strategy resync at backend startup failed",
+                        exc_info=resync_exc,
+                    )
+                    resync_summary = {"resynced": [], "errors": [str(resync_exc)]}
                 loaded = await _loader.refresh_all_from_db(session=session)
             logger.info(
                 "Strategy registries loaded",
                 seeded=seeded.get("seeded", 0),
+                resynced=len(resync_summary.get("resynced") or []),
+                resync_errors=len(resync_summary.get("errors") or []),
                 loaded=len(loaded.get("loaded", [])),
                 errors=len(loaded.get("errors", {})),
             )

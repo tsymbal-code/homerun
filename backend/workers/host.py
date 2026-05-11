@@ -1077,11 +1077,30 @@ class WorkerHost:
 
         if self._enabled("load_strategy_registry"):
             try:
-                from services.opportunity_strategy_catalog import ensure_all_strategies_seeded
+                from services.opportunity_strategy_catalog import (
+                    ensure_all_strategies_seeded,
+                    resync_system_strategies_with_disk,
+                )
                 from services.strategy_loader import strategy_loader
 
                 async with AsyncSessionLocal() as session:
                     seeded = await ensure_all_strategies_seeded(session)
+                    # Plan 0050: rewrite DB rows from disk md5-mismatches
+                    # BEFORE the loader caches them. Each plane runs its
+                    # own resync because each plane has its own loader
+                    # process; one process's reset is invisible to
+                    # another's cache. Failure is fail-open.
+                    try:
+                        resync_summary = await resync_system_strategies_with_disk(
+                            session, process_label=f"worker-{self._plane_name}"
+                        )
+                    except Exception as resync_exc:  # pragma: no cover
+                        logger.warning(
+                            "strategy resync at worker startup failed",
+                            plane=self._plane_name,
+                            exc_info=resync_exc,
+                        )
+                        resync_summary = {"resynced": [], "errors": [str(resync_exc)]}
                 # Per-plane strategy filter.  Without this, every plane
                 # imports every strategy at startup — the trading plane
                 # ends up loading ``news_edge`` which transitively pulls
@@ -1098,6 +1117,8 @@ class WorkerHost:
                     "Strategy registries loaded",
                     plane=self._plane_name,
                     seeded=seeded.get("seeded", 0),
+                    resynced=len(resync_summary.get("resynced") or []),
+                    resync_errors=len(resync_summary.get("errors") or []),
                     loaded=len(loaded.get("loaded", [])),
                     errors=len(loaded.get("errors", {})),
                     source_keys=list(source_keys) if source_keys else "all",

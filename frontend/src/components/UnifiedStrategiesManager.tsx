@@ -54,6 +54,7 @@ import {
   AIStrategyDraftGenerationResponse,
   AIModifyStrategyCodeResponse,
 } from '../services/api'
+import { getLastSystemStrategyResync, SystemStrategyResyncSummary } from '../services/apiIntelligence'
 import StrategyApiDocsFlyout from './StrategyApiDocsFlyout'
 // Backtesting was moved out of the strategy editor into Strategies →
 // Research where it lives alongside the code-evolution autoresearcher.
@@ -532,6 +533,14 @@ export default function UnifiedStrategiesManager({
     queryFn: () => getUnifiedStrategies(),
     staleTime: 15000,
     refetchInterval: 15000,
+  })
+
+  // Plan 0050: last system-strategy resync (banner data).
+  const systemResyncQuery = useQuery({
+    queryKey: ['system-strategy-resync', 'last'],
+    queryFn: getLastSystemStrategyResync,
+    staleTime: 30_000,
+    refetchInterval: 60_000,
   })
 
   const templateQuery = useQuery({
@@ -1427,7 +1436,9 @@ export default function UnifiedStrategiesManager({
   // ==================== Render ====================
 
   return (
-    <div className="h-full min-h-0 flex gap-3">
+    <div className="h-full min-h-0 flex flex-col gap-2">
+      <SystemResyncBanner data={systemResyncQuery.data} />
+      <div className="flex-1 min-h-0 flex gap-3">
       {/* ══════════════════ Left sidebar: Strategy list ══════════════════ */}
       <div className="w-[280px] shrink-0 min-h-0 flex flex-col rounded-lg border border-border/70 bg-card/50">
         {/* Header actions */}
@@ -3082,6 +3093,86 @@ export default function UnifiedStrategiesManager({
       )}
 
       <StrategyApiDocsFlyout open={showApiDocs} onOpenChange={setShowApiDocs} variant={flyoutVariant} />
+      </div>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Plan 0050 — system-strategy resync status banner
+// ---------------------------------------------------------------------------
+
+function SystemResyncBanner({ data }: { data: SystemStrategyResyncSummary | undefined }) {
+  const [expanded, setExpanded] = useState(false)
+  if (!data || data.available === false) {
+    return null
+  }
+  const resyncedCount = data.resynced.length
+  const errorCount = data.errors.length
+  const hasErrors = errorCount > 0
+  const hasChanges = resyncedCount > 0
+  if (!hasErrors && !hasChanges) {
+    // Quiet case: everything was already in sync. Skip the banner —
+    // it would just be visual noise.
+    return null
+  }
+  const ranAt = new Date(data.ran_at)
+  const ageMs = Date.now() - ranAt.getTime()
+  const ageLabel =
+    ageMs < 60_000 ? 'just now'
+    : ageMs < 3_600_000 ? `${Math.floor(ageMs / 60_000)} min ago`
+    : ageMs < 86_400_000 ? `${Math.floor(ageMs / 3_600_000)} h ago`
+    : `${Math.floor(ageMs / 86_400_000)} d ago`
+  return (
+    <div className={cn(
+      'shrink-0 rounded-md border px-3 py-2 text-[12px] flex items-start gap-2',
+      hasErrors
+        ? 'border-red-500/40 bg-red-500/5 text-red-300'
+        : 'border-blue-500/40 bg-blue-500/5 text-blue-200',
+    )}>
+      <RefreshCw className={cn('w-3.5 h-3.5 shrink-0 mt-0.5', hasErrors && 'text-red-400')} />
+      <div className="flex-1 min-w-0">
+        <div className="font-medium">
+          Last system resync: {ageLabel}
+          <span className="ml-2 text-[11px] font-normal opacity-80">
+            ({data.process})
+          </span>
+        </div>
+        <div className="text-[11px] mt-0.5 opacity-90 flex flex-wrap gap-x-3 gap-y-0.5">
+          <span>{resyncedCount} updated</span>
+          <span>{data.unchanged_count} unchanged</span>
+          {data.skipped_user_authored.length > 0 && (
+            <span>{data.skipped_user_authored.length} user-authored (skipped)</span>
+          )}
+          {errorCount > 0 && <span className="font-semibold">{errorCount} error(s)</span>}
+          <span className="opacity-70">total seeds: {data.total_seeds}</span>
+        </div>
+        {(resyncedCount > 0 || errorCount > 0) && (
+          <button
+            type="button"
+            className="mt-1 text-[11px] underline opacity-80 hover:opacity-100"
+            onClick={() => setExpanded(v => !v)}
+          >
+            {expanded ? 'Hide details' : 'Show details'}
+          </button>
+        )}
+        {expanded && (
+          <div className="mt-2 space-y-1 font-mono text-[10.5px] leading-tight">
+            {data.resynced.map(r => (
+              <div key={`resynced-${r.slug}`} className="opacity-90">
+                ✓ <span className="font-semibold">{r.slug}</span>
+                {' '}md5 {r.db_md5_before.slice(0, 8)} → {r.disk_md5.slice(0, 8)}
+                {' '}(Δlen {r.len_delta > 0 ? '+' : ''}{r.len_delta})
+              </div>
+            ))}
+            {data.errors.map(e => (
+              <div key={`err-${e.slug}`} className="text-red-300">
+                ✗ <span className="font-semibold">{e.slug}</span>: {e.error}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
     </div>
   )
 }

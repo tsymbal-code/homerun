@@ -2595,3 +2595,50 @@ async def reset_strategy_to_factory_endpoint(strategy_id: str):
             )
 
         return result
+
+
+@router.get("/system-resync/last")
+async def get_last_system_strategy_resync():
+    """Return the most recent ``strategy_resync`` event payload.
+
+    Plan 0050. Backed by ``trader_events`` rows written by
+    :func:`opportunity_strategy_catalog.resync_system_strategies_with_disk`
+    on every backend / worker boot. The Strategy Manager UI uses
+    this to render a "Last system resync: ... ago" banner.
+
+    Returns ``{"available": false}`` when no resync has run yet
+    (fresh install, or pre-Plan-0050 boot).
+    """
+    from models.database import TraderEvent
+
+    async with AsyncSessionLocal() as session:
+        row = (
+            await session.execute(
+                select(TraderEvent)
+                .where(TraderEvent.event_type == "strategy_resync")
+                .order_by(TraderEvent.created_at.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+
+        if row is None:
+            return {"available": False}
+
+        payload = row.payload_json or {}
+        created_at = row.created_at
+        ran_at_iso = (
+            created_at.isoformat() + "Z"
+            if created_at and not str(created_at).endswith("Z")
+            else str(created_at)
+        )
+        return {
+            "available": True,
+            "ran_at": ran_at_iso,
+            "process": payload.get("process") or "unknown",
+            "resynced": payload.get("resynced") or [],
+            "unchanged_count": int(payload.get("unchanged_count") or 0),
+            "skipped_user_authored": payload.get("skipped_user_authored") or [],
+            "skipped_missing": payload.get("skipped_missing") or [],
+            "errors": payload.get("errors") or [],
+            "total_seeds": int(payload.get("total_seeds") or 0),
+        }

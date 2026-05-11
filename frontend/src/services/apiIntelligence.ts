@@ -2065,3 +2065,32 @@ export function streamAutoresearchExperiment(
     if (err.name !== 'AbortError') onError(String(err))
   })
 }
+
+// ---------------------------------------------------------------------------
+// Plan 0050 — last system-strategy resync (banner data)
+// ---------------------------------------------------------------------------
+
+export type SystemStrategyResyncSummary =
+  | { available: false }
+  | {
+      available: true
+      ran_at: string
+      process: string
+      resynced: Array<{
+        slug: string
+        db_md5_before: string
+        disk_md5: string
+        len_delta: number
+        reset_status?: string
+      }>
+      unchanged_count: number
+      skipped_user_authored: Array<{ slug: string; reason: string }>
+      skipped_missing: string[]
+      errors: Array<{ slug: string; error: string }>
+      total_seeds: number
+    }
+
+export const getLastSystemStrategyResync = async (): Promise<SystemStrategyResyncSummary> => {
+  const { data } = await api.get('/strategy-manager/system-resync/last')
+  return data as SystemStrategyResyncSummary
+}

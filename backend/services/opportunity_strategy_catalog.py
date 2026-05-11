@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Any
 from datetime import datetime, timezone
 from pathlib import Path
+import hashlib
 import importlib
 import re
 import uuid
@@ -11,7 +12,7 @@ import uuid
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from models.database import Strategy
+from models.database import Strategy, TraderEvent
 from services.strategy_sdk import StrategySDK
 from services.strategies.news_edge import news_edge_config_schema
 from services.strategies.traders_copy_trade import traders_copy_trade_config_schema
@@ -1626,3 +1627,184 @@ async def reset_strategy_to_factory(session: AsyncSession, slug: str) -> dict:
     current.updated_at = utcnow()
     await session.commit()
     return {"status": "reset", "detail": f"Strategy '{slug}' reset to factory defaults"}
+
+
+def _md5_of_str(s: str | None) -> str:
+    """Stable 32-char md5 hex of a (possibly None) string. Empty string is
+    treated as the zero-length input — distinct from None on the row."""
+    if s is None:
+        return ""
+    return hashlib.md5(s.encode("utf-8")).hexdigest()
+
+
+async def resync_system_strategies_with_disk(
+    session: AsyncSession,
+    *,
+    process_label: str | None = None,
+) -> dict:
+    """Reconcile every SYSTEM strategy in DB against the on-disk seed.
+
+    Plan 0050. Called from every backend process at boot, immediately
+    after ``ensure_all_strategies_seeded`` and BEFORE
+    ``strategy_loader.refresh_all_from_db`` — so the loader sees the
+    fresh ``source_code`` we just wrote.
+
+    For each slug in ``build_system_opportunity_strategy_rows()``:
+      * If the DB row does not exist → skip (the seed step that runs
+        before us will have inserted it; if it didn't, this resync
+        cannot fabricate it either).
+      * If ``current.is_system = False`` → skip (operator has authored
+        their own version through the UI; do NOT clobber).
+      * If md5(disk source_code) == md5(db source_code) → unchanged.
+      * Otherwise → call :func:`reset_strategy_to_factory` and record
+        the (slug, db_md5_before, disk_md5, len_delta) in
+        ``resynced``.
+
+    Failure of any single slug is logged and recorded in ``errors`` —
+    we do NOT raise. Callers at startup are fail-open: if resync
+    fails entirely the process continues with whatever is in DB
+    today.
+
+    On every call (even when no rows were rewritten) one
+    ``trader_events`` row with ``event_type='strategy_resync'`` is
+    written so the Strategy Manager UI can render a "last resync"
+    banner.
+
+    Returns a summary dict — the same payload that is persisted to
+    ``trader_events.payload_json``.
+    """
+    seed_rows = build_system_opportunity_strategy_rows()
+    seed_by_slug = {r["slug"]: r for r in seed_rows}
+
+    if not seed_by_slug:
+        summary: dict[str, Any] = {
+            "ran_at": utcnow().isoformat(),
+            "process": process_label or "unknown",
+            "resynced": [],
+            "unchanged_count": 0,
+            "skipped_user_authored": [],
+            "skipped_missing": [],
+            "errors": [],
+            "total_seeds": 0,
+        }
+        await _record_resync_event(session, summary)
+        return summary
+
+    current_rows = (
+        await session.execute(
+            select(Strategy).where(Strategy.slug.in_(list(seed_by_slug.keys())))
+        )
+    ).scalars().all()
+    current_by_slug = {r.slug: r for r in current_rows}
+
+    resynced: list[dict[str, Any]] = []
+    unchanged_count = 0
+    skipped_user_authored: list[dict[str, Any]] = []
+    skipped_missing: list[str] = []
+    errors: list[dict[str, Any]] = []
+
+    for slug, seed_row in seed_by_slug.items():
+        disk_source = seed_row.get("source_code") or ""
+        disk_md5 = _md5_of_str(disk_source)
+
+        current = current_by_slug.get(slug)
+        if current is None:
+            # ensure_seeded that runs before us should have created
+            # this; if it didn't, we have no insight into why and
+            # cannot safely fabricate the row from inside resync.
+            skipped_missing.append(slug)
+            continue
+
+        if not bool(getattr(current, "is_system", True)):
+            skipped_user_authored.append({"slug": slug, "reason": "user_authored"})
+            continue
+
+        db_md5 = _md5_of_str(current.source_code)
+        if db_md5 == disk_md5:
+            unchanged_count += 1
+            continue
+
+        len_delta = len(disk_source) - len(current.source_code or "")
+        try:
+            reset_result = await reset_strategy_to_factory(session, slug)
+        except Exception as exc:  # pragma: no cover — safety net
+            logger.error(
+                "resync failed for strategy",
+                slug=slug,
+                exc_info=exc,
+            )
+            errors.append({"slug": slug, "error": str(exc)})
+            continue
+
+        resynced.append({
+            "slug": slug,
+            "db_md5_before": db_md5,
+            "disk_md5": disk_md5,
+            "len_delta": len_delta,
+            "reset_status": reset_result.get("status"),
+        })
+        logger.info(
+            "resynced system strategy from disk",
+            slug=slug,
+            db_md5_before=db_md5[:12],
+            disk_md5=disk_md5[:12],
+            len_delta=len_delta,
+        )
+
+    summary = {
+        "ran_at": utcnow().isoformat(),
+        "process": process_label or "unknown",
+        "resynced": resynced,
+        "unchanged_count": unchanged_count,
+        "skipped_user_authored": skipped_user_authored,
+        "skipped_missing": skipped_missing,
+        "errors": errors,
+        "total_seeds": len(seed_by_slug),
+    }
+
+    logger.info(
+        "System strategy resync complete",
+        process=summary["process"],
+        resynced=len(resynced),
+        unchanged=unchanged_count,
+        skipped_user=len(skipped_user_authored),
+        skipped_missing=len(skipped_missing),
+        errors=len(errors),
+        total_seeds=summary["total_seeds"],
+    )
+
+    await _record_resync_event(session, summary)
+    return summary
+
+
+async def _record_resync_event(session: AsyncSession, summary: dict) -> None:
+    """Persist one ``trader_events`` row per resync pass.
+
+    Best-effort — if the row insert fails we log a warning but do
+    NOT propagate (the caller is fail-open at startup).
+    """
+    try:
+        row = TraderEvent(
+            id=str(uuid.uuid4()),
+            trader_id=None,
+            event_type="strategy_resync",
+            severity="warning" if summary.get("errors") else "info",
+            verbosity="murmur",
+            source="opportunity_strategy_catalog",
+            operator=None,
+            message=(
+                f"resynced={len(summary.get('resynced') or [])} "
+                f"unchanged={summary.get('unchanged_count') or 0} "
+                f"errors={len(summary.get('errors') or [])}"
+            ),
+            trace_id=None,
+            payload_json=summary,
+        )
+        session.add(row)
+        await session.commit()
+    except Exception as exc:  # pragma: no cover — safety net
+        logger.warning("failed to persist strategy_resync trader_event", exc_info=exc)
+        try:
+            await session.rollback()
+        except Exception:
+            pass

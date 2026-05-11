@@ -334,6 +334,8 @@ Defined in `backend/models/opportunity.py`. This is the single most important mo
 
 Every strategy extends `BaseStrategy` from `backend/services/strategies/base.py`.
 
+**Runtime source-of-truth lives in Postgres** (`strategies.source_code` column), but as of Plan 0050 every backend / worker process **automatically resyncs SYSTEM strategies from disk on boot** — between `ensure_all_strategies_seeded` and `strategy_loader.refresh_all_from_db`. Rsync a new `.py` file, restart the relevant container, and the new code is live. User-authored strategies (`is_system=false`) are never overwritten; for those, manual "Reset to factory" through Strategy Manager remains the only path back to the shipped seed. The Strategy Manager UI carries a banner showing the most recent boot-time resync result.
+
 Required:
 - Set class attributes: `strategy_type`, `name`, `description`
 - Implement `detect(events, markets, prices) -> list[Opportunity]` for sync work

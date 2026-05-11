@@ -291,7 +291,7 @@ events to the event bus.
 | Add a new HTTP route | New `api/routes_<domain>.py`, include it in `main.py` router list. |
 | Add a new WebSocket channel/topic | Extend `_message_channel()` / `_message_topic()` in `api/websocket.py` and the producer that broadcasts. |
 | Add a new background loop | New file in `workers/`, register it in the right plane in `workers/host.py`. Don't put background loops in `main.py`. |
-| Add a built-in strategy | New file in `services/strategies/`. Restart workers (or reload from UI). |
+| Add a built-in strategy | New file in `services/strategies/`. Restart workers — the boot-time resync (Plan 0050) writes the disk source back into `strategies.source_code` automatically; the loader sees the new code on the next `refresh_all_from_db`. No manual "Reset to factory" needed. |
 | Add a per-purpose AI model | Update `AppSettings.llm_model_assignments` JSON; consumer reads it and passes `model=` to `manager.chat`. |
 | Add a new external feed (a new venue) | Mirror the structure of `binance_feed.py` or `ws_feeds.py`; register the start in the trading plane's `host.py`. |
 
@@ -311,4 +311,10 @@ events to the event bus.
   alembic walks the full migration list. Containers wait on the
   `migrate` service to complete to avoid duplicate work.
 
-Last verified: 2026-05-09 (Plan 0017: real-diff against `backend/main.py` lifespan, 34+ `routes_*.py` routers, `host.py` `_PLANE_CONFIGS`, `strategy_loader.py` / `data_source_loader.py` plug-in patterns, cross-process messaging surfaces (Postgres rows + Redis pub/sub + event_bus). Status: IN SYNC, no edits beyond this marker.)
+Last verified: 2026-05-11 (Plan 0050: documented the boot-time
+`resync_system_strategies_with_disk` call inserted between
+`ensure_all_strategies_seeded` and `strategy_loader.refresh_all_from_db`
+on both `backend/main.py` and `backend/workers/host.py` startup paths;
+the "Add a built-in strategy" row in the extension-points table is
+amended to note that operators no longer need to click "Reset to
+factory" after rsyncing a new `.py` file.); previously 2026-05-09 (Plan 0017: real-diff against `backend/main.py` lifespan, 34+ `routes_*.py` routers, `host.py` `_PLANE_CONFIGS`, `strategy_loader.py` / `data_source_loader.py` plug-in patterns, cross-process messaging surfaces (Postgres rows + Redis pub/sub + event_bus). Status: IN SYNC, no edits beyond this marker.)
