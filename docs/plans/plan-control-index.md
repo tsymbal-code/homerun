@@ -95,7 +95,7 @@ notes.
 | 0048 | [2026-05-12 — first crypto_5m_midcycle param sweep on 24h](backlog/0048-2026-05-12-crypto-5m-midcycle-param-sweep.md) | D        | 0046          |
 | 0049 | [Retention housekeeper for `trader_events` (esp. firehose_evaluation)](completed/0049-trader-events-retention-housekeeper.md) | R        | 0044          |
 | 0050 | [Auto-resync SYSTEM strategies from disk on every container boot](0050-auto-resync-system-strategies-on-boot.md) | B        | 0041          |
-| 0051 | [REST book-fallback for crypto_5m_last_outcome](0051-rest-book-fallback-for-crypto-5m-last-outcome.md) | B        | 0047          |
+| 0051 | [REST book-fallback for crypto_5m_last_outcome](completed/0051-rest-book-fallback-for-crypto-5m-last-outcome.md) | B        | 0047          |
 
 When adding a row: keep this table sorted by ID ascending. Don't
 re-number plans — gaps in IDs are normal and expected (deleted or
@@ -392,6 +392,30 @@ Only notes that aren't obvious from the title. All plans must follow
   CI job split (unit-fast / db-slow), Hypothesis property tests
   for FIFO/Kelly/Cox-PH, `respx` cassettes, mutation testing.
   Each is a follow-up.
+- **Plan 0051 — REST book-fallback for `crypto_5m_last_outcome`.**
+  Backend feature (B). Direct follow-up to plan 0047. The
+  strategy was emitting on roughly 50 % of cycles because the
+  WS-fed `PriceCache` stayed empty for the side it wanted to buy
+  for the entire ~4.5 min retry window inside the cycle (all 3
+  assets in lockstep, pointing at a Polymarket WS publication
+  delay rather than per-asset asymmetry). `FeedManager` already
+  has REST fallback, but `StrategySDK.get_order_book_depth` reads
+  the cache synchronously and never triggers the async path.
+  Plan 0051 wires `crypto_5m_last_outcome` to fire a
+  fire-and-forget `feed_mgr.get_order_book(token_id)` from inside
+  its own `book_depth` reject branch, gated by a 3 s per-token
+  cooldown — the next ~150 ms tick (on_event ~6 Hz) finds a
+  populated book via the normal sync path. Scoped to one strategy
+  on purpose; the other crypto strategies keep the sync-only path.
+  Live verification 2026-05-11 17:08 UTC: BTC/SOL/XRP all 6/6
+  cycles emit (100 %) over a 30 min window vs ~50 % baseline.
+  Operator-relevant deploy interaction: Plan 0050's auto-resync
+  rewrites the strategy `source_code` automatically on container
+  boot, but the same primitive (`reset_strategy_to_factory`)
+  hard-resets `config` back to seed defaults — so the operator
+  must re-apply the per-trader asset list (e.g.
+  `["BTC","SOL","XRP"]`) via SQL `UPDATE` after every deploy that
+  touches a strategy module. Recipe lives inline in plan Task 5.
 - **Plan 0049 — Retention housekeeper for `trader_events`.**
   Refactor / hardening (R). Direct follow-up to plan 0044, which
   unlocked the volume that triggered this plan. Plan 0044's

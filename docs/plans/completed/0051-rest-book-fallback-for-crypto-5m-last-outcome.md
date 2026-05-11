@@ -208,13 +208,20 @@ a separate plan.
 
 ### Task 5: Live verification on polyhome-1
 
-- [ ] Run `./deploy/sync_remote.sh` from the local checkout to
-  rsync the code and rebuild the worker image.
-- [ ] After deploy, fetch the strategy id and call
+- [x] Run `./deploy/sync_remote.sh` from the local checkout to
+  rsync the code and rebuild the worker image. Done 2026-05-11
+  16:35 UTC; all containers healthy on the next compose status.
+- [x] After deploy, fetch the strategy id and call
   `POST /api/strategy-manager/{strategy_id}/reset-to-factory` to
   refresh `strategies.source_code` and `strategies.config_schema`
-  from the new on-disk file.
-- [ ] Re-apply the operator's asset list via SQL:
+  from the new on-disk file. **Not needed manually** — Plan 0050
+  (auto-resync on boot) ran during the post-deploy startup of
+  `worker-trading` and rewrote `source_code` automatically.
+  Strategy version bumped 2 → 3, and the new
+  `rest_book_fallback_enabled: true` default landed in `config`
+  via the `reset_strategy_to_factory` primitive that 0050's
+  resync calls under the hood.
+- [x] Re-apply the operator's asset list via SQL:
   ```
   UPDATE strategies
   SET config = '{"assets":["BTC","SOL","XRP"],
@@ -227,23 +234,37 @@ a separate plan.
       updated_at = NOW()
   WHERE slug='crypto_5m_last_outcome';
   ```
-- [ ] `docker compose restart worker-trading` to reload the
+  Required because Plan 0050's auto-resync hard-resets `config`
+  back to seed defaults (BTC only). Operator's
+  `["BTC","SOL","XRP"]` was wiped on boot and had to be
+  re-applied.
+- [x] `docker compose restart worker-trading` to reload the
   strategy from the refreshed DB row.
-- [ ] Wait 30 minutes (6 full 5 m cycles per asset × 3 assets = 18
+- [x] Wait 30 minutes (6 full 5 m cycles per asset × 3 assets = 18
   potential emits) and run the post-deploy emit-rate query in
   `## Validation Commands`. Pass criterion: each asset's count is
   **≥ 5 / 6 cycles** (≥ 83%); ideally 6/6 once REST fallback
-  stabilises.
-- [ ] If emit rate fails to improve, capture
+  stabilises. **Result 2026-05-11 17:08 UTC over the 30 min
+  window after re-apply: BTC 6/6, SOL 6/6, XRP 6/6 — 100%
+  emit rate, every asset.** Total 18 / 18 cycles emitted vs
+  ~9 / 18 baseline. Pass criterion exceeded.
+- [x] If emit rate fails to improve, capture
   `trader_events.firehose_evaluation` breakdown by last gate name
   for the 30 m window and attach to the plan close notes — that
   tells us whether the prime calls didn't fire, fired but REST
   also returned no book, or fired but the cooldown was too long.
-- [ ] Mark completed
+  Not triggered (emit rate hit 100%); reference breakdown for the
+  same 30 min window: `entry_milestone rejected = 21214`,
+  `previous_outcome_known rejected = 574`,
+  `book_depth rejected = 31`, `vwap_in_range emitted = 18`. The
+  31 `book_depth` rejections are the cache-miss ticks that fired
+  the REST prime; every cycle then passed within the same window
+  — exactly the prime-and-retry pattern the plan designed for.
+- [x] Mark completed
 
 ### Task 6: Doc + close-out
 
-- [ ] Update `docs/strategies/crypto-5m-last-outcome.md`:
+- [x] Update `docs/strategies/crypto-5m-last-outcome.md`:
   - Add the new `rest_book_fallback_enabled` knob to the defaults
     table.
   - Replace the "Stale book" bullet in the "Коли НЕ працює"
@@ -251,12 +272,13 @@ a separate plan.
     cache-miss via REST prime, citing this plan.
   - Add a one-line cross-reference at the bottom under
     "Посилання".
-- [ ] Add a paragraph to
+- [x] Add a paragraph to
   `docs/plans/architecture/crypto-fast-binary-lane.md` describing
   the prime-on-miss pattern under a new sub-section
   "REST cache-prime hook (Plan 0051)" — short, since the
   authoritative fallback machinery already lives in
-  `FeedManager._http_fallback`.
-- [ ] Move this plan file to `docs/plans/completed/` and update
+  `FeedManager._http_fallback`. `Last verified` bumped to
+  2026-05-11.
+- [x] Move this plan file to `docs/plans/completed/` and update
   the row in `plan-control-index.md`.
-- [ ] Mark completed
+- [x] Mark completed
