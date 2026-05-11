@@ -329,6 +329,15 @@ class Crypto5mMidcycleStrategy(BaseStrategy):
         if not markets:
             return []
 
+        # Proactively subscribe the 5m markets' clob_token_ids to the
+        # Polymarket WS book feed so ``StrategySDK.get_order_book_depth``
+        # has a populated cache by the time the ``book_depth`` gate runs.
+        # Without this the gate rejects every cycle because the cache
+        # entries are missing — observed live via firehose_evaluation
+        # rows after Plan 0044 cross-mode telemetry landed. Mirrors the
+        # pattern already in btc_eth_directional_edge._subscribe_tokens_to_ws.
+        self._ensure_ws_subscribed_for_5m(markets)
+
         opportunities: list[Opportunity] = []
         now_ms = int(time.time() * 1000)
         for market in markets:
@@ -338,6 +347,37 @@ class Crypto5mMidcycleStrategy(BaseStrategy):
             if opp is not None:
                 opportunities.append(opp)
         return opportunities
+
+    @staticmethod
+    def _ensure_ws_subscribed_for_5m(markets: list[Any]) -> None:
+        """Fire-and-forget: add 5m crypto markets' clob_token_ids to the
+        Polymarket WS subscription set so book updates flow into the
+        StrategySDK cache. No-op when the feed manager hasn't started
+        yet (rare — usually only during the very first dispatch after
+        worker-trading boot)."""
+        token_ids: list[str] = []
+        for market in markets:
+            if not isinstance(market, dict):
+                continue
+            if not _detect_5m(market):
+                continue
+            for raw in market.get("clob_token_ids") or []:
+                tok = str(raw or "").strip()
+                if len(tok) > 20:
+                    token_ids.append(tok)
+        if not token_ids:
+            return
+        try:
+            from services.ws_feeds import get_feed_manager
+            feed_mgr = get_feed_manager()
+            if not getattr(feed_mgr, "_started", False):
+                return
+            import asyncio as _asyncio
+            _asyncio.ensure_future(feed_mgr.polymarket_feed.subscribe(token_ids=token_ids))
+        except Exception as exc:
+            # Non-critical — depth gate will simply reject this tick and
+            # the strategy retries on the next dispatch.
+            logger.debug("crypto_5m_midcycle WS subscribe failed (non-critical): %s", exc)
 
     # ------------------------------------------------------------------
     # Per-market gate
