@@ -88,6 +88,7 @@ notes.
 | 0041 | [Per-trader strategy params must affect signal generation](completed/0041-per-trader-strategy-params-must-affect-signal-generation.md) | F        | —             |
 | 0042 | [Disable BTC and ETH 5m crypto-series defaults](completed/0042-disable-btc-eth-5m-crypto-series-defaults.md) | R        | —             |
 | 0043 | [Evict stale per-trader strategy instances on binding-cache refresh](backlog/0043-evict-stale-per-trader-strategy-instances-from-binding-cache.md) | R        | 0041          |
+| 0044 | [Firehose binding cache must include shadow traders](0044-firehose-binding-cache-include-shadow-traders.md) | R        | 0041          |
 
 When adding a row: keep this table sorted by ID ascending. Don't
 re-number plans — gaps in IDs are normal and expected (deleted or

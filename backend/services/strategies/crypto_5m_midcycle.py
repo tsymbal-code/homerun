@@ -362,6 +362,22 @@ class Crypto5mMidcycleStrategy(BaseStrategy):
         min_entry = float(self.config.get("min_entry_price", 0.05))
 
         def _emit_reject(verbosity: str = MURMUR) -> None:
+            # Plan 0044 follow-up — TEMPORARY DIAGNOSTIC.
+            # MURMUR/VOICE rejections only (post-milestone gates: oracle,
+            # distance, depth, vwap, etc.). WHISPER rejections (timeframe,
+            # asset, milestone) fire on every market every tick and would
+            # drown the log stream. Bounded to ~1-2 lines per market per
+            # cycle.
+            # Remove after firehose_evaluation rows in trader_events
+            # confirm the same data is visible via the persistent path —
+            # target window: 7 days post-deploy, see Plan 0044 Task 5.
+            if verbosity in (MURMUR,):
+                logger.info(
+                    "crypto_5m_midcycle gate reject",
+                    slug=str(market.get("slug") or ""),
+                    asset=str(market.get("asset") or ""),
+                    gates=[(g.name, g.passed, g.score, g.detail) for g in gates],
+                )
             emit_evaluation_nowait(
                 strategy_slug="crypto_5m_midcycle",
                 market=market,

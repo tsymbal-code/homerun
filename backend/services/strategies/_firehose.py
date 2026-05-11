@@ -60,11 +60,20 @@ logger = get_logger(__name__)
 #
 # This cache resolves all three:
 #   * ``_orchestrator_enabled`` → if False, suppress emit entirely.
-#   * ``_strategy_to_trader_ids`` → the set of LIVE-mode trader_ids
-#     that have ``strategy_slug`` in their ``source_configs``.  If
-#     empty, suppress emit (no one consumes this strategy's signals).
-#     Otherwise, tag the event payload with the list so per-bot
-#     terminals can filter by ``trader_id IN bound_trader_ids``.
+#   * ``_strategy_to_trader_ids`` → the set of trader_ids (live AND
+#     shadow, per Plan 0044) that have ``strategy_slug`` in their
+#     ``source_configs``.  If empty, suppress emit (no one consumes
+#     this strategy's signals).  Otherwise, tag the event payload
+#     with the list so per-bot terminals can filter by
+#     ``trader_id IN bound_trader_ids``.
+#
+#   Plan 0044: pre-fix this cache filtered to ``mode='live'`` only,
+#   which silenced firehose telemetry for shadow traders — leaving
+#   shadow operators with zero visibility into why their strategy
+#   wasn't emitting opportunities. We now include shadow bindings
+#   so the Terminal tab fires for both tiers. Live behaviour for the
+#   live-only case is unchanged because the live trader stays in the
+#   binding map.
 #
 # TTL is short (3 s) — orchestrator enable / trader-config edits show
 # up to firehose within a single refresh.
@@ -131,9 +140,11 @@ async def _refresh_binding_cache() -> None:
             )
         new_map: dict[str, list[str]] = {}
         for trader in traders:
-            mode_lower = str(getattr(trader, "mode", "") or "").strip().lower()
-            if mode_lower != "live":
-                continue
+            # Plan 0044: cross-mode binding. Live AND shadow traders both
+            # populate the firehose binding map so the Terminal tab and
+            # `trader_events` firehose_evaluation rows fire for shadow
+            # operators too. Previously a `mode != "live"` continue lived
+            # here, silencing every shadow-bound strategy's telemetry.
             cfgs = getattr(trader, "source_configs_json", None) or []
             if isinstance(cfgs, str):
                 try:
