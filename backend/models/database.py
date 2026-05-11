@@ -1493,6 +1493,17 @@ class AppSettings(Base):
     btc_eth_hf_enabled = Column(Boolean, default=True)
     btc_eth_hf_maker_mode = Column(Boolean, default=True)
 
+    # Plan 0045: Scanner WS subscription toggle. When False, the
+    # scanner's fast-scan no longer adds candidate clob_token_ids to
+    # the shared Polymarket WS subscription set — bypassing the
+    # Polymarket per-connection cap that silently dropped the
+    # crypto-lane's freshest book streams. Default OFF: operators
+    # running crypto-only setups don't need scanner's WS overlay,
+    # and scanner falls back to HTTP polling without breaking.
+    # Operators relying on scanner-source live ticks flip this back
+    # on via Settings → Scanner.
+    scanner_ws_subscribe_enabled = Column(Boolean, default=False, nullable=False, server_default="false")
+
     # Cross-Platform Arbitrage
     cross_platform_enabled = Column(Boolean, default=True)
 

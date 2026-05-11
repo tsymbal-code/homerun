@@ -81,6 +81,13 @@ class Settings(BaseSettings):
 
     # WebSocket Feed Settings
     WS_FEED_ENABLED: bool = True  # Enable real-time WebSocket price feeds
+    # Plan 0045: scanner WS subscription toggle. Default OFF —
+    # scanner falls back to HTTP polling; the shared
+    # ``polymarket_feed._subscribed_assets`` set stays bounded so
+    # Polymarket's per-connection cap doesn't silently drop the
+    # crypto lane's book streams. Flip on via Settings → Scanner
+    # for arbitrage workflows that need live scanner-market ticks.
+    SCANNER_WS_SUBSCRIBE_ENABLED: bool = False
     WS_RECONNECT_MAX_DELAY: float = 60.0  # Max reconnect backoff seconds
     WS_PRICE_STALE_SECONDS: float = 30.0  # UI/discovery staleness budget for cached prices
     WS_EXECUTION_PRICE_STALE_SECONDS: float = 10.0  # Trader execution staleness budget for cached WS prices
@@ -940,6 +947,8 @@ async def apply_search_filters():
         ("SCANNER_MAX_OPPORTUNITIES_PER_STRATEGY", "scanner_max_opportunities_per_strategy", 120),
         ("SCANNER_SKIPPED_SIGNAL_REACTIVATION_COOLDOWN_SECONDS", "scanner_skipped_signal_reactivation_cooldown_seconds", 0),
         ("SCANNER_STRICT_WS_MAX_AGE_MS", "scanner_strict_ws_max_age_ms", 30000),
+        # Plan 0045: scanner WS subscription toggle.
+        ("SCANNER_WS_SUBSCRIBE_ENABLED", "scanner_ws_subscribe_enabled", False),
         # Trading safety limits (used by live_execution_service order validation + /trader-orchestrator/live/status)
         ("MAX_TRADE_SIZE_USD", "max_trade_size_usd", 100.0),
         ("MAX_DAILY_TRADE_VOLUME", "max_daily_trade_volume", 1000.0),

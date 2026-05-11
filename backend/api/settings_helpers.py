@@ -354,6 +354,9 @@ def scanner_payload(
         ),
         "market_filter_tags": list(getattr(settings, "market_filter_tags", None) or []),
         "crypto_lane_enabled": bool(crypto_lane_enabled),
+        "scanner_ws_subscribe_enabled": bool(
+            getattr(settings, "scanner_ws_subscribe_enabled", False)
+        ),
     }
 
 
@@ -828,6 +831,11 @@ def apply_update_request(settings: AppSettings, request: Any) -> dict[str, bool]
             getattr(scan, "skipped_signal_reactivation_cooldown_seconds", 180)
         )
         settings.scanner_strict_ws_max_age_ms = int(getattr(scan, "strict_ws_max_age_ms", 30000))
+        # Plan 0045: scanner WS subscribe toggle. Default in the model
+        # is False; persist whatever the request carried, falling back
+        # to False on missing/None.
+        if getattr(scan, "scanner_ws_subscribe_enabled", None) is not None:
+            settings.scanner_ws_subscribe_enabled = bool(scan.scanner_ws_subscribe_enabled)
         raw_filter_tags = getattr(scan, "market_filter_tags", None)
         previous_tags = list(getattr(settings, "market_filter_tags", None) or [])
         normalised_tags: list[str] = []

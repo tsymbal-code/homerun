@@ -74,6 +74,7 @@ export interface ScannerSettings {
   strict_ws_max_age_ms: number
   market_filter_tags: string[]
   crypto_lane_enabled: boolean
+  scanner_ws_subscribe_enabled: boolean
 }
 
 export interface MarketFilterAvailableTag {

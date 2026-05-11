@@ -3656,7 +3656,42 @@ class ArbitrageScanner:
 
                 candidate_token_ids = self._collect_live_token_ids(candidate_markets)
                 live_prices: dict[str, dict] = {}
-                if settings.WS_FEED_ENABLED and candidate_token_ids:
+                # Plan 0045: scanner WS subscribe is operator-gated.
+                # When ``SCANNER_WS_SUBSCRIBE_ENABLED`` is False the
+                # scanner skips the WS overlay entirely — falls back to
+                # HTTP polling — so the shared
+                # ``polymarket_feed._subscribed_assets`` set stays
+                # bounded and Polymarket's per-connection cap stops
+                # silently dropping the crypto lane's freshest book
+                # streams.
+                scanner_ws_enabled = bool(
+                    getattr(settings, "SCANNER_WS_SUBSCRIBE_ENABLED", False)
+                )
+                if (
+                    settings.WS_FEED_ENABLED
+                    and not scanner_ws_enabled
+                    and self._ws_subscribed_tokens
+                ):
+                    # Toggle just flipped off OR was off at boot with
+                    # state inherited from a prior in-process run.
+                    # Drain our scope so the WS feed releases the slots.
+                    try:
+                        feed_mgr = get_feed_manager()
+                        if feed_mgr._started:
+                            await feed_mgr.polymarket_feed.unsubscribe(
+                                sorted(self._ws_subscribed_tokens)
+                            )
+                    except Exception as exc:
+                        logger.debug(
+                            "Fast-scan WS subscribe drain on disable failed: %s",
+                            exc,
+                        )
+                    self._ws_subscribed_tokens = set()
+                if (
+                    settings.WS_FEED_ENABLED
+                    and scanner_ws_enabled
+                    and candidate_token_ids
+                ):
                     try:
                         feed_mgr = get_feed_manager()
                         if feed_mgr._started:

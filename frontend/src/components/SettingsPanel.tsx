@@ -49,6 +49,7 @@ import {
 import {
   getSettings,
   updateSettings,
+  updateScannerSettings,
   testTelegramConnection,
   testTradingProxy,
   exportSettingsBundle,
@@ -255,9 +256,12 @@ export default function SettingsPanel({
     strict_ws_max_age_ms: 30000,
     market_filter_tags: [] as string[],
     crypto_lane_enabled: true,
+    scanner_ws_subscribe_enabled: false,
   })
   const [cryptoLaneToggling, setCryptoLaneToggling] = useState(false)
   const [cryptoLaneError, setCryptoLaneError] = useState<string | null>(null)
+  const [scannerWsToggling, setScannerWsToggling] = useState(false)
+  const [scannerWsError, setScannerWsError] = useState<string | null>(null)
 
   const [maintenanceForm, setMaintenanceForm] = useState({
     auto_cleanup_enabled: false,
@@ -431,6 +435,7 @@ export default function SettingsPanel({
           ? (settings.scanner?.market_filter_tags ?? [])
           : [],
         crypto_lane_enabled: settings.scanner?.crypto_lane_enabled ?? true,
+        scanner_ws_subscribe_enabled: settings.scanner?.scanner_ws_subscribe_enabled ?? false,
       })
 
       setMaintenanceForm({
@@ -717,6 +722,26 @@ export default function SettingsPanel({
       setScannerForm((p) => ({ ...p, crypto_lane_enabled: !next }))
     } finally {
       setCryptoLaneToggling(false)
+    }
+  }
+
+  // Plan 0045: scanner WS subscription toggle. Default OFF — scanner
+  // skips the Polymarket WS subscribe path and falls back to HTTP
+  // polling, freeing the per-connection subscription cap for the
+  // crypto lane's book streams. Flip on when running scanner-source
+  // arbitrage workflows that need sub-second tick overlays.
+  const handleScannerWsToggle = async (next: boolean) => {
+    setScannerWsError(null)
+    setScannerWsToggling(true)
+    setScannerForm((p) => ({ ...p, scanner_ws_subscribe_enabled: next }))
+    try {
+      await updateScannerSettings({ ...scannerForm, scanner_ws_subscribe_enabled: next })
+      queryClient.invalidateQueries({ queryKey: ['settings'] })
+    } catch (err: any) {
+      setScannerWsError(err?.response?.data?.detail || err?.message || 'Failed to toggle scanner WS subscribe')
+      setScannerForm((p) => ({ ...p, scanner_ws_subscribe_enabled: !next }))
+    } finally {
+      setScannerWsToggling(false)
     }
   }
 
@@ -1305,6 +1330,46 @@ export default function SettingsPanel({
                         </div>
                         {cryptoLaneError && (
                           <p className="text-[11px] text-destructive">{cryptoLaneError}</p>
+                        )}
+                      </div>
+                      <div className="rounded-md border border-border/60 bg-muted/15 p-3 space-y-2">
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="space-y-1">
+                            <p className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground">
+                              Scanner WS price overlay
+                            </p>
+                            <p className="text-[11px] text-muted-foreground/80 leading-snug">
+                              When on, scanner adds its hot-tier candidate markets
+                              to the Polymarket WS subscription set for sub-second
+                              tick overlays. Off (default) keeps scanner on HTTP
+                              polling and frees the per-connection subscription
+                              cap entirely for the crypto lane's book streams.
+                              Turn on only if you run scanner-source arbitrage
+                              workflows that need live ticks.
+                            </p>
+                          </div>
+                          <div className="flex items-center gap-2 pt-0.5">
+                            <span
+                              className={cn(
+                                'text-[11px] font-medium tabular-nums',
+                                scannerForm.scanner_ws_subscribe_enabled
+                                  ? 'text-emerald-500'
+                                  : 'text-muted-foreground'
+                              )}
+                            >
+                              {scannerForm.scanner_ws_subscribe_enabled ? 'On' : 'Off'}
+                            </span>
+                            <Switch
+                              checked={scannerForm.scanner_ws_subscribe_enabled}
+                              disabled={scannerWsToggling}
+                              onCheckedChange={(checked) => {
+                                void handleScannerWsToggle(Boolean(checked))
+                              }}
+                            />
+                          </div>
+                        </div>
+                        {scannerWsError && (
+                          <p className="text-[11px] text-destructive">{scannerWsError}</p>
                         )}
                       </div>
                       <MarketTagFilterSection

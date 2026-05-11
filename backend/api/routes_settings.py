@@ -246,6 +246,19 @@ class ScannerSettingsModel(BaseModel):
             "to this field on PUT /settings/scanner are ignored."
         ),
     )
+    scanner_ws_subscribe_enabled: bool = Field(
+        default=False,
+        description=(
+            "Plan 0045: when True, scanner adds hot-tier candidate "
+            "clob_token_ids to the shared Polymarket WS subscription "
+            "set for sub-second price overlays. When False, scanner "
+            "falls back to HTTP polling and stays out of the WS feed — "
+            "leaving the bounded subscription cap entirely for the "
+            "crypto lane and any other producer with depth-sensitive "
+            "strategies. Default OFF; flip on only when running "
+            "scanner-source arbitrage workflows."
+        ),
+    )
 
     @field_validator("market_filter_tags", mode="before")
     @classmethod
