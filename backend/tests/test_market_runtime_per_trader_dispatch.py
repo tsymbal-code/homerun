@@ -123,6 +123,7 @@ def _crypto_event(values: list[float]) -> DataEvent:
     return DataEvent(
         event_type=EventType.CRYPTO_UPDATE,
         source="plan-0041-test",
+        timestamp=datetime.now(timezone.utc),
         payload={
             "markets": [
                 {"id": f"market_{i}", "value": v} for i, v in enumerate(values)
