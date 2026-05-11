@@ -37,7 +37,12 @@ class _FakeResult:
 
 class _FakeSession:
     def __init__(self, traders, control):
-        self._traders = traders
+        # Mirror the SQL ``WHERE Trader.is_enabled.is_(True)`` filter that
+        # the real ``_refresh_binding_cache`` issues — without this the
+        # cross-mode loop would observe disabled rows that production
+        # never sees, and our coverage of the is_enabled gate becomes
+        # vacuous.
+        self._traders = [t for t in traders if getattr(t, "is_enabled", True)]
         self._control = control
 
     async def __aenter__(self):
