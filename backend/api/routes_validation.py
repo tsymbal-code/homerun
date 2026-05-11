@@ -113,6 +113,24 @@ class CodeBacktestOptimizeRequest(BaseModel):
     top_k: int = Field(default=10, ge=1, le=200)
 
 
+class OptimizeStrategyRequest(BaseModel):
+    """Plan 0046 — sweep an existing in-memory strategy (loaded by slug).
+
+    Used for crypto strategies whose live config knobs are mirrored in
+    ``TradingParameters`` and the strategy-manager UI. The grid is
+    expanded cartesian-style; each combo runs through
+    ``_run_crypto_replay_detection`` for the chosen window.
+    """
+
+    strategy_slug: str = Field(min_length=2, max_length=128)
+    window_hours: int = Field(default=24, ge=1, le=720)
+    grid: dict[str, list[Any]] = Field(
+        ...,
+        description="Dict mapping strategy config keys to lists of values to sweep",
+    )
+    top_k: int = Field(default=50, ge=1, le=500)
+
+
 class ExecutionBacktestRequest(BaseModel):
     """Request for the production-grade backtest engine.
 
@@ -412,6 +430,26 @@ async def run_code_backtest_optimize(req: CodeBacktestOptimizeRequest):
         top_k=req.top_k,
     )
     return result.to_dict()
+
+
+@router.post("/code-backtest/optimize-strategy")
+async def run_code_backtest_optimize_strategy(req: OptimizeStrategyRequest):
+    """Plan 0046 — sweep a crypto-update strategy by slug over a window.
+
+    Returns a leaderboard of param-set → ``emit_count``,
+    ``total_pnl_usd``, ``win_rate`` sorted by composite score. See
+    ``services.strategy_backtester.run_crypto_strategy_optimize`` for
+    the synth/replay pipeline (firehose_evaluation + crypto_oracle_history
+    are the sources of truth).
+    """
+    from services.strategy_backtester import run_crypto_strategy_optimize
+
+    return await run_crypto_strategy_optimize(
+        strategy_slug=req.strategy_slug,
+        window_hours=req.window_hours,
+        grid=req.grid,
+        top_k=req.top_k,
+    )
 
 
 @router.post("/code-backtest/execution")

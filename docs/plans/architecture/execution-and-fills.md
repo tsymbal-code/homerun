@@ -138,6 +138,31 @@ rather than the warn drowning in noise.
 | [`backend/workers/trader_reconciliation_worker.py`](../../../backend/workers/trader_reconciliation_worker.py) | `_sync_position_marks_and_exit_registry()` (line 1194). `_POSITION_MARK_SYNC_INTERVAL_SECONDS=10.0` (line 59). Updates `unrealized_pnl` from `PriceCache` |
 | [`backend/services/position_mark_state.py`](../../../backend/services/position_mark_state.py) | `PositionMarkState` — the per-position record updated by the loop |
 
+### Crypto resolution truth source
+
+Polymarket 5-minute crypto over/under markets (BTC/ETH/SOL/XRP) resolve
+against **Chainlink Data Streams**, not Binance spot. The runtime
+oracle path is `ChainlinkFeed` (in-process subscribers, ~250 ms–2 s
+heartbeat); ingest goes into an in-memory `deque` for live strategy
+gates.
+
+Since Plan 0046, the same ingest also persists into
+`crypto_oracle_history` (Postgres) at a 1 Hz throttle per
+`(asset, source)`. The table is the **post-hoc resolution truth
+source** used by the offline backtester
+([`strategy_backtester.py:_run_crypto_replay_detection`](../../../backend/services/strategy_backtester.py))
+to look up the Chainlink reading at `cycle_end_ms` and decide whether
+a hypothetical YES/NO bet would have won. Retention is 14 days
+(housekeeper in [`chainlink_feed.py:_housekeeper_loop`](../../../backend/services/chainlink_feed.py)).
+Live execution does **not** read this table — it still reads the live
+feed deque on the hot path; the table exists purely for replay /
+parameter-sweep workloads.
+
+| Path | What it holds |
+|---|---|
+| [`backend/services/chainlink_feed.py`](../../../backend/services/chainlink_feed.py) | Live deque + persistent writer (`_flush_persist_buffer`, 1 Hz) + housekeeper (`_housekeeper_loop`, 6 h cadence, 14 d retention) |
+| [`backend/models/database.py`](../../../backend/models/database.py) | `CryptoOracleHistory` ORM (PK `(asset, timestamp_ms, source)`, DESC index on `(asset, timestamp_ms)`) |
+
 ## Contracts
 
 ### Execution session state machine

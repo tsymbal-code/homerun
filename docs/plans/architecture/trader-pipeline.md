@@ -771,7 +771,50 @@ The fan-out also preserves the original safety machinery
 force-kill) on the singleton path. Per-trader clones run with a
 narrower ``_PER_TRADER_ON_EVENT_TIMEOUT_SECONDS = 15.0`` ceiling.
 
-Last verified: 2026-05-11 (Plan 0041: documented the per-trader
+## Offline backtest sources of truth (crypto `crypto_update` strategies)
+
+Plan 0046 added an offline replay harness for crypto strategies fed
+by `DataEvent(event_type="crypto_update")` (today: `crypto_5m_midcycle`,
+extensible to any future `crypto_update`-fed binary strategy). It
+lives in `services/strategy_backtester._run_crypto_replay_detection`
+and is exposed at `POST /api/validation/code-backtest/optimize-strategy`.
+
+Two sources of truth feed the replay:
+
+- **`crypto_oracle_history`** (Postgres, populated by
+  `services/chainlink_feed.ChainlinkFeed`). Throttled to 1 row per
+  `(asset, source)` per 1000 ms; the latest sample within each 1-s
+  slot wins. A housekeeper task in the same module drops rows older
+  than 14 days every 6 hours. This is the oracle source-of-truth
+  for resolution PnL — at cycle end the replay queries
+  `order by timestamp_ms desc limit 1 where timestamp_ms <= end_ms`
+  to determine whether YES or NO won.
+- **`trader_events` rows with `event_type = "firehose_evaluation"`**
+  (Postgres, populated by `services/strategies/_firehose.emit_evaluation`).
+  Each row captures the full gate chain a live evaluation walked,
+  including `vwap_price`, `staleness_ms`, oracle-age, and the
+  `book_depth`/`book_fresh` scores. The replay prefers these
+  persisted values over re-simulating depth — it can only fire on
+  cycles that originally reached the book gates, but for those it
+  reproduces the exact VWAP the live run saw. Sweeping `bet_size_usd`
+  is therefore caveated: the persisted slippage is bound to the
+  live bet size at the time the row was logged.
+
+These two tables together let an operator answer "if I had run
+`min_distance_bps=10` last week, how many positions would the bot
+have opened and what PnL would they have closed at?" without spinning
+up parallel shadow traders and waiting for the queue to fill. The
+endpoint returns a leaderboard of `(params → emit_count,
+total_pnl_usd, win_rate, samples, composite_score)` sorted by
+`composite_score = total_pnl_usd * win_rate`.
+
+Last verified: 2026-05-11 (Plan 0046: documented `crypto_oracle_history`
+as the backtest oracle source-of-truth and `firehose_evaluation` rows
+as the VWAP source-of-truth. Real-diff against
+`backend/services/strategy_backtester.py:602-981`,
+`backend/services/chainlink_feed.py` persist block, and
+`backend/models/database.py` `CryptoOracleHistory` model confirms
+the schema + lookup paths.); previously 2026-05-11 (Plan 0041: documented the per-trader
 clone + binding cache + opportunity scope. Real-diff against
 ``strategy_loader.py``, ``market_runtime.py``,
 ``intent_runtime.py`` confirms the cache, the fan-out, the

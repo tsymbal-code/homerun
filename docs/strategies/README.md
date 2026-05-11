@@ -91,6 +91,7 @@ execution, Chainlink + Binance feeds, post-only maker rebates.
 |   | [BTC/ETH Directional Edge](btc-eth-directional-edge.md) | `btc_eth_directional_edge` | IOC-taker на бік оракула при diff ≥ 2× taker fee |
 |   | [BTC/ETH Maker Quote](btc-eth-maker-quote.md) | `btc_eth_maker_quote` | Двостороннє post-only quoting із оракул-skew |
 |   | [Crypto 5m Midcycle](crypto-5m-midcycle.md) | `crypto_5m_midcycle` | На 2:30 5-хв циклу — continuation у бік оракул-руху, VWAP ≤ 70¢ |
+|   | [Crypto 5m Last-Outcome Follow](crypto-5m-last-outcome.md) | `crypto_5m_last_outcome` | На старті 5-хв циклу повторюємо сторону, що виграла попередній цикл |
 |   | [Crypto Entropy Maker](crypto-entropy-maker.md) | `crypto_entropy_maker` | Entropy + spread quality + cancel recovery + flow imbalance |
 |   | [Crypto Spike Reversion](crypto-spike-reversion.md) | `crypto_spike_reversion` | Reversion на 5m-spike ≥ 1.8% із shape-валідацією |
 

@@ -6,11 +6,21 @@ import sys
 import time
 from pathlib import Path
 
+import pytest
+
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
-from services.chainlink_feed import BINANCE_TOPIC, CHAINLINK_TOPIC, ChainlinkFeed
+from models.database import Base, CryptoOracleHistory  # noqa: E402
+from services.chainlink_feed import (  # noqa: E402
+    BINANCE_TOPIC,
+    CHAINLINK_TOPIC,
+    ChainlinkFeed,
+)
+from sqlalchemy import select  # noqa: E402
+
+from tests.postgres_test_db import build_postgres_session_factory  # noqa: E402
 
 
 def test_handle_message_parses_snapshot_rows_with_parent_symbol():
@@ -216,3 +226,164 @@ def test_get_oracle_history_filters_by_max_age_seconds():
     # Without max_age, all five points come back.
     history_full = runtime.get_oracle_history("ETH", points=80)
     assert len(history_full) == 5
+
+
+# ---------------------------------------------------------------------------
+# Plan 0046 — durable oracle history persistence + housekeeper
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_persist_flush_writes_one_row_per_asset_per_second_slot(monkeypatch):
+    """1 Hz throttle: simulate ~5 ticks/second across 60 seconds and the
+    once-per-second background flusher; expect exactly 60 rows per asset,
+    each containing the LATEST sample seen in its 1-s slot."""
+    engine, session_factory = await build_postgres_session_factory(
+        Base, "chainlink_persist_1hz"
+    )
+    import models.database as models_database
+    monkeypatch.setattr(models_database, "AsyncSessionLocal", session_factory)
+
+    feed = ChainlinkFeed()
+    base_s = 1_800_000_000  # arbitrary epoch second
+    for second in range(60):
+        # 5 sub-ticks per second; the last one's timestamp/price should win.
+        for sub in range(5):
+            ts_ms = (base_s + second) * 1000 + sub * 200
+            for asset, price_base in (("BTC", 70_000.0), ("ETH", 2_000.0)):
+                feed._record_persist_sample(
+                    asset=asset,
+                    source="chainlink",
+                    timestamp_ms=ts_ms,
+                    price=price_base + second + sub * 0.01,
+                )
+        # Simulate the 1Hz background flush at the slot boundary.
+        await feed._flush_persist_buffer()
+
+    async with session_factory() as session:
+        for asset, price_base in (("BTC", 70_000.0), ("ETH", 2_000.0)):
+            result = await session.execute(
+                select(CryptoOracleHistory)
+                .where(
+                    CryptoOracleHistory.asset == asset,
+                    CryptoOracleHistory.source == "chainlink",
+                )
+                .order_by(CryptoOracleHistory.timestamp_ms.asc())
+            )
+            rows = list(result.scalars().all())
+            assert len(rows) == 60, (
+                f"expected 60 rows for {asset}, got {len(rows)} "
+                f"(1Hz throttle should collapse 5 ticks/s into 1 row/s)"
+            )
+            buckets = [row.timestamp_ms // 1000 for row in rows]
+            assert buckets == sorted(set(buckets))  # one row per bucket, ordered
+            for second, row in enumerate(rows):
+                # The most recent sub-tick (sub=4) carries the largest
+                # timestamp_ms within each second and the largest price.
+                expected_ts = (base_s + second) * 1000 + 4 * 200
+                expected_price = price_base + second + 4 * 0.01
+                assert row.timestamp_ms == expected_ts, (
+                    f"asset={asset} second={second}: expected latest "
+                    f"sub-tick ts={expected_ts}, got {row.timestamp_ms}"
+                )
+                assert abs(row.price - expected_price) < 1e-6
+
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_persist_roundtrip_by_asset_and_end_ms(monkeypatch):
+    """Reads back the latest sample at-or-before a given end_ms — this
+    is the lookup shape the backtester uses for cycle resolution."""
+    engine, session_factory = await build_postgres_session_factory(
+        Base, "chainlink_persist_roundtrip"
+    )
+    import services.chainlink_feed as chainlink_feed
+    monkeypatch.setattr(chainlink_feed, "AsyncSessionLocal", session_factory, raising=False)
+    import models.database as models_database
+    monkeypatch.setattr(models_database, "AsyncSessionLocal", session_factory)
+
+    feed = ChainlinkFeed()
+    base_ms = 1_800_000_000_000
+    for i in range(0, 30):
+        feed._record_persist_sample(
+            asset="SOL",
+            source="chainlink",
+            timestamp_ms=base_ms + i * 1000,
+            price=87.0 + i * 0.01,
+        )
+        await feed._flush_persist_buffer()
+
+    end_ms = base_ms + 15_000  # between bucket 15 and 16
+    async with session_factory() as session:
+        result = await session.execute(
+            select(CryptoOracleHistory)
+            .where(
+                CryptoOracleHistory.asset == "SOL",
+                CryptoOracleHistory.source == "chainlink",
+                CryptoOracleHistory.timestamp_ms <= end_ms,
+            )
+            .order_by(CryptoOracleHistory.timestamp_ms.desc())
+            .limit(1)
+        )
+        row = result.scalar_one_or_none()
+        assert row is not None
+        assert row.timestamp_ms == base_ms + 15_000
+        assert abs(row.price - (87.0 + 15 * 0.01)) < 1e-9
+
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_housekeeper_drops_aged_rows_and_preserves_fresh(monkeypatch):
+    engine, session_factory = await build_postgres_session_factory(
+        Base, "chainlink_persist_housekeeper"
+    )
+    import services.chainlink_feed as chainlink_feed
+    monkeypatch.setattr(chainlink_feed, "AsyncSessionLocal", session_factory, raising=False)
+    import models.database as models_database
+    monkeypatch.setattr(models_database, "AsyncSessionLocal", session_factory)
+
+    now_ms = int(time.time() * 1000)
+    aged_ms = now_ms - 20 * 24 * 3600 * 1000  # 20 days old → outside 14d retention
+    fresh_ms = now_ms - 60 * 1000  # 1 minute old
+
+    async with session_factory() as session:
+        session.add(
+            CryptoOracleHistory(
+                asset="BTC",
+                timestamp_ms=aged_ms,
+                source="chainlink",
+                price=50_000.0,
+            )
+        )
+        session.add(
+            CryptoOracleHistory(
+                asset="BTC",
+                timestamp_ms=fresh_ms,
+                source="chainlink",
+                price=70_000.0,
+            )
+        )
+        await session.commit()
+
+    feed = ChainlinkFeed()
+    deleted = await feed._housekeeper_once()
+    assert deleted == 1
+
+    async with session_factory() as session:
+        rows = list(
+            (
+                await session.execute(
+                    select(CryptoOracleHistory).order_by(
+                        CryptoOracleHistory.timestamp_ms.asc()
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert len(rows) == 1
+        assert rows[0].timestamp_ms == fresh_ms
+
+    await engine.dispose()

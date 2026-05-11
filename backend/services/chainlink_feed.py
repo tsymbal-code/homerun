@@ -17,6 +17,7 @@ import asyncio
 import json
 import time
 from collections import deque
+from datetime import datetime, timedelta, timezone
 from typing import Optional, Callable
 
 import websockets
@@ -35,6 +36,17 @@ RECONNECT_MAX_MS = 10_000
 # validate 5m/30m/2h motion before submitting live orders.
 HISTORY_MAX_AGE_MS = 3 * 60 * 60 * 1000
 HISTORY_MAX_ENTRIES = 40_000
+
+# ---------------------------------------------------------------------------
+# Persistence (Plan 0046) — extend the in-memory deque with a durable rolling
+# table so backtests can replay any cycle in the retention window.
+# ---------------------------------------------------------------------------
+# Throttle: at most one row per (asset, source) per 1-second slot — drop
+# intermediate readings, keep the latest sample for the slot.
+PERSIST_FLUSH_INTERVAL_S = 1.0
+# Housekeeper: prune rows older than this every six hours.
+PERSIST_RETENTION_DAYS = 14
+PERSIST_HOUSEKEEPER_INTERVAL_S = 6 * 3600
 
 # Maps RTDS symbols to our canonical asset names
 # Chainlink uses "btc/usd", Binance uses "btcusdt"
@@ -105,6 +117,13 @@ class ChainlinkFeed:
         self._on_update: Optional[Callable[[OraclePrice], None]] = None
         # Rolling price history per asset: deque of (timestamp_ms, price)
         self._history: dict[str, deque] = {}
+        # Plan 0046 persistence buffer. Per (asset, source) we keep the
+        # latest seen (timestamp_ms, price); _persist_loop drains it once
+        # per second, writing one row per (asset, source, 1s-slot).
+        self._persist_pending: dict[tuple[str, str], tuple[int, float]] = {}
+        self._persist_last_bucket: dict[tuple[str, str], int] = {}
+        self._persist_task: Optional[asyncio.Task] = None
+        self._housekeeper_task: Optional[asyncio.Task] = None
 
     @property
     def started(self) -> bool:
@@ -224,6 +243,33 @@ class ChainlinkFeed:
             return price
         return None
 
+    def _record_persist_sample(
+        self,
+        *,
+        asset: str,
+        source: str,
+        timestamp_ms: int,
+        price: float,
+    ) -> None:
+        """Stage the latest sample for the persistence flusher.
+
+        Plan 0046 — drop intermediate readings, keep only the most
+        recent sample per ``(asset, source)`` until the periodic
+        flusher writes it. The 1-second bucket throttle lives in the
+        flusher itself.
+        """
+        key = (asset.upper(), str(source or "").strip().lower())
+        if not key[0] or not key[1]:
+            return
+        try:
+            ts_int = int(timestamp_ms)
+            price_f = float(price)
+        except (TypeError, ValueError):
+            return
+        if not (price_f > 0):
+            return
+        self._persist_pending[key] = (ts_int, price_f)
+
     def update_from_chainlink_direct(
         self,
         asset: str,
@@ -258,6 +304,12 @@ class ChainlinkFeed:
         cutoff = int(time.time() * 1000) - HISTORY_MAX_AGE_MS
         while self._history[asset] and self._history[asset][0][0] < cutoff:
             self._history[asset].popleft()
+        self._record_persist_sample(
+            asset=asset,
+            source="chainlink_direct",
+            timestamp_ms=timestamp_ms,
+            price=price,
+        )
 
     def update_from_binance_direct(
         self,
@@ -304,6 +356,12 @@ class ChainlinkFeed:
         cutoff = int(time.time() * 1000) - HISTORY_MAX_AGE_MS
         while self._history[asset] and self._history[asset][0][0] < cutoff:
             self._history[asset].popleft()
+        self._record_persist_sample(
+            asset=asset,
+            source="binance_direct",
+            timestamp_ms=timestamp_ms,
+            price=mid,
+        )
 
     def on_update(self, callback: Callable[[OraclePrice], None]) -> None:
         """Register a callback for price updates."""
@@ -315,19 +373,155 @@ class ChainlinkFeed:
             return
         self._stopped = False
         self._task = asyncio.create_task(self._run_loop())
+        # Plan 0046 — durable oracle history for backtest replay.
+        if self._persist_task is None or self._persist_task.done():
+            self._persist_task = asyncio.create_task(self._persist_loop())
+        if self._housekeeper_task is None or self._housekeeper_task.done():
+            self._housekeeper_task = asyncio.create_task(self._housekeeper_loop())
         logger.info(f"ChainlinkFeed: starting connection to {self._ws_url}")
 
     async def stop(self) -> None:
         """Stop the WebSocket connection."""
         self._stopped = True
-        if self._task:
-            self._task.cancel()
+        for task_attr in ("_task", "_persist_task", "_housekeeper_task"):
+            task = getattr(self, task_attr, None)
+            if task is None:
+                continue
+            task.cancel()
             try:
-                await self._task
+                await task
             except asyncio.CancelledError:
                 pass
-        self._task = None
+            setattr(self, task_attr, None)
+        # Flush any remaining staged samples before returning so a stop
+        # right after a final tick doesn't drop the row.
+        try:
+            await self._flush_persist_buffer()
+        except Exception as exc:
+            logger.debug("ChainlinkFeed: final persist flush failed: %s", exc)
         logger.info("ChainlinkFeed: stopped")
+
+    async def _flush_persist_buffer(self) -> int:
+        """Write staged samples to ``crypto_oracle_history``.
+
+        Plan 0046 — bucket each ``(asset, source)`` sample to a
+        1-second slot; drop intermediate readings; write the latest
+        sample for each new slot. Returns the number of rows written.
+        """
+        if not self._persist_pending:
+            return 0
+        # Snapshot the pending map and clear immediately so concurrent
+        # ingestion can keep recording while we're inside the DB call.
+        pending = self._persist_pending
+        self._persist_pending = {}
+
+        rows: list[dict] = []
+        new_buckets: dict[tuple[str, str], int] = {}
+        for key, (ts_ms, price) in pending.items():
+            bucket = ts_ms // 1000
+            if self._persist_last_bucket.get(key) == bucket:
+                continue
+            rows.append(
+                {
+                    "asset": key[0],
+                    "source": key[1],
+                    "timestamp_ms": int(ts_ms),
+                    "price": float(price),
+                }
+            )
+            new_buckets[key] = bucket
+        if not rows:
+            return 0
+        try:
+            from models.database import AsyncSessionLocal, CryptoOracleHistory
+            from sqlalchemy.dialects.postgresql import insert as pg_insert
+        except Exception as exc:
+            logger.debug("ChainlinkFeed: persist deferred (model import): %s", exc)
+            # Put the staged samples back so the next flush retries.
+            for key, (ts_ms, price) in pending.items():
+                self._persist_pending.setdefault(key, (ts_ms, price))
+            return 0
+
+        try:
+            async with AsyncSessionLocal() as session:
+                stmt = pg_insert(CryptoOracleHistory).values(rows)
+                stmt = stmt.on_conflict_do_nothing(
+                    index_elements=["asset", "timestamp_ms", "source"]
+                )
+                await session.execute(stmt)
+                await session.commit()
+        except Exception as exc:
+            logger.debug("ChainlinkFeed: persist flush failed: %s", exc)
+            for key, (ts_ms, price) in pending.items():
+                self._persist_pending.setdefault(key, (ts_ms, price))
+            return 0
+
+        for key, bucket in new_buckets.items():
+            self._persist_last_bucket[key] = bucket
+        return len(rows)
+
+    async def _persist_loop(self) -> None:
+        """Background flusher — calls ``_flush_persist_buffer`` at 1 Hz."""
+        while not self._stopped:
+            try:
+                await asyncio.sleep(PERSIST_FLUSH_INTERVAL_S)
+                if self._stopped:
+                    break
+                await self._flush_persist_buffer()
+            except asyncio.CancelledError:
+                break
+            except Exception as exc:
+                logger.debug("ChainlinkFeed: persist loop tick failed: %s", exc)
+
+    async def _housekeeper_loop(self) -> None:
+        """Prune ``crypto_oracle_history`` rows older than the retention horizon.
+
+        Runs once per ``PERSIST_HOUSEKEEPER_INTERVAL_S`` (6h) and deletes
+        rows whose ``timestamp_ms`` is older than ``PERSIST_RETENTION_DAYS``
+        days.
+        """
+        # Short grace period before the first prune so startup isn't
+        # dominated by housekeeping.
+        try:
+            await asyncio.sleep(min(60.0, PERSIST_HOUSEKEEPER_INTERVAL_S))
+        except asyncio.CancelledError:
+            return
+        while not self._stopped:
+            try:
+                await self._housekeeper_once()
+            except asyncio.CancelledError:
+                break
+            except Exception as exc:
+                logger.warning(
+                    "ChainlinkFeed: housekeeper tick failed: %s", exc
+                )
+            try:
+                await asyncio.sleep(PERSIST_HOUSEKEEPER_INTERVAL_S)
+            except asyncio.CancelledError:
+                break
+
+    async def _housekeeper_once(self) -> int:
+        """Delete rows older than the retention horizon. Returns row count."""
+        try:
+            from models.database import AsyncSessionLocal, CryptoOracleHistory
+            from sqlalchemy import delete
+        except Exception as exc:
+            logger.debug("ChainlinkFeed: housekeeper deferred (import): %s", exc)
+            return 0
+        cutoff_ms = int(
+            (
+                datetime.now(timezone.utc) - timedelta(days=PERSIST_RETENTION_DAYS)
+            ).timestamp()
+            * 1000
+        )
+        async with AsyncSessionLocal() as session:
+            result = await session.execute(
+                delete(CryptoOracleHistory).where(
+                    CryptoOracleHistory.timestamp_ms < cutoff_ms
+                )
+            )
+            await session.commit()
+        return int(getattr(result, "rowcount", 0) or 0)
 
     async def _run_loop(self) -> None:
         """Reconnecting WebSocket loop."""
@@ -520,6 +714,14 @@ class ChainlinkFeed:
             cutoff = int(time.time() * 1000) - HISTORY_MAX_AGE_MS
             while self._history[asset] and self._history[asset][0][0] < cutoff:
                 self._history[asset].popleft()
+
+            # Plan 0046 — stage for durable persistence.
+            self._record_persist_sample(
+                asset=asset,
+                source=source,
+                timestamp_ms=updated_at_ms,
+                price=price,
+            )
 
 
 # ---------------------------------------------------------------------------

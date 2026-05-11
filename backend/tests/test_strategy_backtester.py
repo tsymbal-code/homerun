@@ -574,3 +574,206 @@ async def test_run_exit_backtest_supports_opened_at_fallback_column(monkeypatch)
     assert len(result.exit_decisions) == 1
     assert captured_query["model"] is _FakeLegacyTraderPositionModel
     assert len(getattr(captured_query["query"], "order_by_args", ())) == 2
+
+
+# ---------------------------------------------------------------------------
+# Plan 0046 — crypto cycle replay regression
+# ---------------------------------------------------------------------------
+
+
+def _firehose_payload(
+    *,
+    market_id: str,
+    asset: str,
+    end_ms: int,
+    reference: float,
+    spot: float,
+    distance_bps: float,
+    vwap_price: float,
+    staleness_ms: float,
+    oracle_age_ms: float,
+    seconds_left: float = 150.0,
+    outcome: str = "emitted",
+) -> dict[str, object]:
+    gates = [
+        {"name": "timeframe", "label": "5-minute timeframe", "passed": True, "score": None, "detail": "timeframe=5m"},
+        {"name": "market_id", "label": "Market id present", "passed": True, "score": None, "detail": ""},
+        {"name": "asset_enabled", "label": "Asset in config list", "passed": True, "score": None, "detail": f"asset={asset}"},
+        {"name": "end_timestamp", "label": "Cycle end timestamp parseable", "passed": True, "score": None, "detail": f"end_ts_ms={end_ms}"},
+        {"name": "midcycle_crossed", "label": "Midcycle milestone crossed", "passed": True, "score": 150.0, "detail": ""},
+        {"name": "min_seconds_to_resolution", "label": "Min seconds to resolution", "passed": True, "score": seconds_left, "detail": ""},
+        {"name": "reference_price", "label": "Reference price available", "passed": True, "score": float(reference), "detail": ""},
+        {"name": "fresh_chainlink", "label": "Fresh Chainlink oracle", "passed": True, "score": float(oracle_age_ms), "detail": "source=chainlink"},
+        {"name": "spot_price", "label": "Spot price > 0", "passed": True, "score": float(spot), "detail": ""},
+        {"name": "min_distance", "label": "Min distance from reference", "passed": True, "score": float(distance_bps), "detail": ""},
+        {"name": "clob_tokens", "label": "CLOB token ids present", "passed": True, "score": None, "detail": "count=2"},
+        {"name": "book_depth", "label": "Order book depth available", "passed": True, "score": None, "detail": f"side={'YES' if distance_bps > 0 else 'NO'} size_usd=15.00"},
+        {"name": "book_fresh", "label": "Order book fresh", "passed": True, "score": float(staleness_ms), "detail": ""},
+        {"name": "vwap_in_range", "label": "VWAP within entry range", "passed": True, "score": float(vwap_price), "detail": ""},
+    ]
+    return {
+        "strategy_slug": "crypto_5m_midcycle",
+        "source_key": "crypto",
+        "market": {
+            "market_id": market_id,
+            "slug": f"{asset.lower()}-5min-{end_ms}",
+            "question": f"{asset} 5m up-or-down",
+            "asset": asset,
+            "timeframe": "5m",
+        },
+        "outcome": outcome,
+        "gates": gates,
+        "bound_trader_ids": ["test-trader"],
+    }
+
+
+@pytest.mark.asyncio
+async def test_run_crypto_replay_detection_matches_emit_count_and_pnl(monkeypatch):
+    """Plan 0046 task 2 regression: feed synth firehose_evaluation rows +
+    oracle history, replay through ``Crypto5mMidcycleStrategy``, and
+    verify the emitted opportunity count, PnL signs, and monotonic
+    response to ``min_distance_bps``."""
+    import sys
+    from pathlib import Path
+
+    BACKEND_ROOT = Path(__file__).resolve().parents[1]
+    if str(BACKEND_ROOT) not in sys.path:
+        sys.path.insert(0, str(BACKEND_ROOT))
+
+    from models.database import Base, CryptoOracleHistory, TraderEvent
+    from services.strategies.crypto_5m_midcycle import Crypto5mMidcycleStrategy
+    from tests.postgres_test_db import build_postgres_session_factory
+
+    engine, session_factory = await build_postgres_session_factory(
+        Base, "strategy_backtester_crypto_replay"
+    )
+    import models.database as models_database
+
+    monkeypatch.setattr(models_database, "AsyncSessionLocal", session_factory)
+
+    # Synth 4 cycles spread across 24h: 2 with distance_bps high, both
+    # should be emitted. One YES that wins, one NO that wins, one YES
+    # that loses, one cycle below 5-bps that should never fire.
+    base_ms = int((datetime.now(timezone.utc) - timedelta(hours=12)).timestamp() * 1000)
+    cycles = []
+    asset = "SOL"
+    reference = 200.0
+    for idx, (end_offset_min, spot_delta_pct, vwap, will_win) in enumerate(
+        [
+            (5, 0.005, 0.60, True),    # +50 bps → YES, wins (oracle stays above)
+            (10, -0.004, 0.55, True),  # -40 bps → NO, wins (oracle below at end)
+            (15, 0.006, 0.65, False),  # +60 bps → YES, loses (oracle flips below at end)
+            (20, 0.0002, 0.50, True),  # +2 bps → below 5-bps gate, should be dropped
+        ]
+    ):
+        end_ms = base_ms + end_offset_min * 60 * 1000
+        spot = reference * (1.0 + spot_delta_pct)
+        distance_bps = (spot - reference) / reference * 10_000.0
+        cycles.append(
+            {
+                "market_id": f"5m-{asset}-{idx}",
+                "end_ms": end_ms,
+                "midcycle_ms": end_ms - 150_000,
+                "spot": spot,
+                "distance_bps": distance_bps,
+                "vwap": vwap,
+                "will_win": will_win,
+                "oracle_at_end": (
+                    reference * (1.0 + spot_delta_pct + (0.0 if will_win else -2 * spot_delta_pct))
+                ),
+                "side": "YES" if distance_bps > 0 else "NO",
+            }
+        )
+
+    async with session_factory() as session:
+        for cyc in cycles:
+            session.add(
+                CryptoOracleHistory(
+                    asset=asset,
+                    timestamp_ms=cyc["midcycle_ms"],
+                    source="chainlink",
+                    price=cyc["spot"],
+                )
+            )
+            session.add(
+                CryptoOracleHistory(
+                    asset=asset,
+                    timestamp_ms=cyc["end_ms"],
+                    source="chainlink",
+                    price=cyc["oracle_at_end"],
+                )
+            )
+            session.add(
+                TraderEvent(
+                    id=f"ev-{cyc['market_id']}",
+                    event_type="firehose_evaluation",
+                    severity="info",
+                    verbosity="whisper",
+                    source="crypto",
+                    payload_json=_firehose_payload(
+                        market_id=cyc["market_id"],
+                        asset=asset,
+                        end_ms=cyc["end_ms"],
+                        reference=reference,
+                        spot=cyc["spot"],
+                        distance_bps=cyc["distance_bps"],
+                        vwap_price=cyc["vwap"],
+                        staleness_ms=200.0,
+                        oracle_age_ms=300.0,
+                    ),
+                    created_at=datetime.fromtimestamp(
+                        cyc["midcycle_ms"] / 1000.0, tz=timezone.utc
+                    ),
+                )
+            )
+        await session.commit()
+
+    window_start = base_ms - 60 * 60 * 1000
+    window_end = base_ms + 24 * 60 * 60 * 1000
+
+    # (a) With min_distance_bps=5 the first three cycles fire and emit.
+    strategy = Crypto5mMidcycleStrategy()
+    strategy.configure(
+        {
+            **Crypto5mMidcycleStrategy.default_config,
+            "min_distance_bps": 5.0,
+            "assets": ["SOL"],
+        }
+    )
+    run = await strategy_backtester._run_crypto_replay_detection(
+        strategy,
+        strategy_slug="crypto_5m_midcycle",
+        window_ms_start=window_start,
+        window_ms_end=window_end,
+    )
+    assert run.runtime_error is None
+    assert run.emit_count == 3, f"expected 3 emitted (matches firehose log), got {run.emit_count}"
+    # PnL signs: two wins, one loss → wins exceed losses.
+    assert run.win_count == 2
+    assert run.loss_count == 1
+    assert run.total_pnl_usd != 0.0
+
+    # (c) Monotonicity: tightening the distance gate must not increase emit count.
+    emit_counts: list[int] = []
+    for threshold in (3.0, 10.0, 50.0, 70.0):
+        strat = Crypto5mMidcycleStrategy()
+        strat.configure(
+            {
+                **Crypto5mMidcycleStrategy.default_config,
+                "min_distance_bps": threshold,
+                "assets": ["SOL"],
+            }
+        )
+        run_t = await strategy_backtester._run_crypto_replay_detection(
+            strat,
+            strategy_slug="crypto_5m_midcycle",
+            window_ms_start=window_start,
+            window_ms_end=window_end,
+        )
+        emit_counts.append(run_t.emit_count)
+
+    assert emit_counts == sorted(emit_counts, reverse=True), (
+        f"emit count must decrease monotonically as min_distance_bps rises, got {emit_counts}"
+    )
+
+    await engine.dispose()

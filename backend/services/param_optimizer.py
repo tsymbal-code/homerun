@@ -131,6 +131,18 @@ class TradingParameters:
     miracle_max_no_price: float = 0.995
     miracle_min_impossibility: float = 0.70
 
+    # -- strategy_specific: crypto 5m midcycle (and any future crypto_update
+    #    binary strategy).  Optional so non-crypto sweeps still validate.
+    #    See backend/services/strategies/crypto_5m_midcycle.py:103-191 for
+    #    the live UI defaults and bounds these mirror.  Plan: 0046.
+    min_distance_bps: Optional[float] = None
+    max_entry_price: Optional[float] = None
+    min_entry_price: Optional[float] = None
+    midcycle_seconds: Optional[float] = None
+    min_seconds_to_resolution: Optional[float] = None
+    max_oracle_age_ms: Optional[float] = None
+    bet_size_usd: Optional[float] = None
+
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
@@ -381,6 +393,71 @@ DEFAULT_PARAM_SPECS: list[ParameterSpec] = [
         0.90,
         0.05,
         "Minimum impossibility score within miracle strategy",
+        "strategy_specific",
+    ),
+    # --- strategy_specific: crypto 5m midcycle (Plan 0046) ---
+    # Bounds mirror the UI schema in crypto_5m_midcycle.py:103-191.
+    ParameterSpec(
+        "min_distance_bps",
+        15.0,
+        1.0,
+        100.0,
+        1.0,
+        "Min |distance from cycle reference| in bps (crypto 5m)",
+        "strategy_specific",
+    ),
+    ParameterSpec(
+        "max_entry_price",
+        0.70,
+        0.30,
+        0.95,
+        0.05,
+        "Max VWAP entry price (crypto 5m)",
+        "strategy_specific",
+    ),
+    ParameterSpec(
+        "min_entry_price",
+        0.05,
+        0.01,
+        0.50,
+        0.05,
+        "Min VWAP entry price (crypto 5m)",
+        "strategy_specific",
+    ),
+    ParameterSpec(
+        "midcycle_seconds",
+        150.0,
+        60.0,
+        240.0,
+        10.0,
+        "Seconds into the 5m cycle at which the midcycle milestone fires",
+        "strategy_specific",
+    ),
+    ParameterSpec(
+        "min_seconds_to_resolution",
+        90.0,
+        30.0,
+        180.0,
+        10.0,
+        "Don't trade if fewer than N seconds remain (crypto 5m)",
+        "strategy_specific",
+    ),
+    ParameterSpec(
+        "max_oracle_age_ms",
+        5000.0,
+        500.0,
+        15000.0,
+        500.0,
+        "Reject Chainlink readings older than N ms (crypto 5m)",
+        "strategy_specific",
+    ),
+    ParameterSpec(
+        "bet_size_usd",
+        15.0,
+        5.0,
+        100.0,
+        5.0,
+        "Notional per trade (USD); sweeping invalidates persisted VWAP slippage",
         "strategy_specific",
     ),
 ]

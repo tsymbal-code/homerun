@@ -76,6 +76,33 @@ class ReplayDetectRun:
     step_errors: int = 0
 
 
+@dataclass
+class CryptoReplayRun:
+    """Outcome of a crypto-cycle replay against persisted firehose + oracle history.
+
+    Plan 0046 — separate from ``ReplayDetectRun`` because the crypto
+    backtester computes per-opportunity PnL inline (looking up the
+    Chainlink resolution price at each cycle's ``end_ms``) and surfaces
+    aggregate statistics the leaderboard needs.
+    """
+
+    opportunities: list[Any] = field(default_factory=list)
+    cycles_evaluated: int = 0
+    rows_without_book_snapshot: int = 0
+    rows_without_oracle_resolution: int = 0
+    emit_count: int = 0
+    win_count: int = 0
+    loss_count: int = 0
+    total_pnl_usd: float = 0.0
+    caveats: list[str] = field(default_factory=list)
+    runtime_error: Optional[str] = None
+
+    @property
+    def win_rate(self) -> float:
+        resolved = self.win_count + self.loss_count
+        return (self.win_count / resolved) if resolved > 0 else 0.0
+
+
 def _has_custom_detect_async(strategy) -> bool:
     """Check if strategy implements its own detect_async (not just inherited)."""
     method = getattr(type(strategy), "detect_async", None)
@@ -565,6 +592,559 @@ async def _run_ohlc_replay_detection(
         markets_replayed=len(market_state),
         step_errors=step_errors,
     )
+
+
+# ---------------------------------------------------------------------------
+# Crypto cycle replay — Plan 0046
+# ---------------------------------------------------------------------------
+
+
+_CRYPTO_REPLAY_GATE_SCORES = (
+    "min_seconds_to_resolution",
+    "reference_price",
+    "fresh_chainlink",
+    "spot_price",
+    "min_distance",
+    "book_fresh",
+    "vwap_in_range",
+)
+
+
+def _firehose_gate_scores(gates: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """Return ``{gate_name: {passed, score, detail}}`` for a firehose row."""
+    by_name: dict[str, dict[str, Any]] = {}
+    for raw in gates or []:
+        if not isinstance(raw, dict):
+            continue
+        name = str(raw.get("name") or "").strip()
+        if not name:
+            continue
+        by_name[name] = {
+            "passed": raw.get("passed"),
+            "score": raw.get("score"),
+            "detail": str(raw.get("detail") or ""),
+        }
+    return by_name
+
+
+def _parse_end_ts_ms_from_gates(scores: dict[str, dict[str, Any]]) -> Optional[int]:
+    detail = scores.get("end_timestamp", {}).get("detail", "")
+    if "end_ts_ms=" not in detail:
+        return None
+    try:
+        return int(detail.split("end_ts_ms=", 1)[1].strip().split()[0])
+    except (ValueError, IndexError):
+        return None
+
+
+def _build_crypto_replay_market(
+    *,
+    row_market: dict[str, Any],
+    end_ms: int,
+    reference_price: float,
+    oracle_price: float,
+    oracle_age_ms: float,
+    now_ms: int,
+    clob_tokens: tuple[str, str],
+) -> dict[str, Any]:
+    """Construct the dict shape that ``crypto_5m_midcycle.on_event`` expects.
+
+    Mirrors what the live crypto-worker would emit in a
+    ``crypto_update`` payload (without the per-source freshness budgets,
+    which the strategy reads through :func:`pick_oracle_source`).
+    """
+    updated_at_ms = max(0, now_ms - int(oracle_age_ms))
+    end_iso = datetime.fromtimestamp(end_ms / 1000.0, tz=timezone.utc).isoformat()
+    market_id = str(row_market.get("market_id") or "")
+    return {
+        "id": market_id,
+        "condition_id": market_id,
+        "slug": str(row_market.get("slug") or market_id or ""),
+        "question": str(row_market.get("question") or ""),
+        "asset": str(row_market.get("asset") or "").upper(),
+        "timeframe": str(row_market.get("timeframe") or "5m"),
+        "end_time": end_iso,
+        "price_to_beat": float(reference_price),
+        "up_price": 0.5,
+        "down_price": 0.5,
+        "liquidity": 10_000.0,
+        "clob_token_ids": list(clob_tokens),
+        "oracle_prices_by_source": {
+            "chainlink": {
+                "source": "chainlink",
+                "price": float(oracle_price),
+                "updated_at_ms": int(updated_at_ms),
+                "age_ms": float(oracle_age_ms),
+            },
+        },
+    }
+
+
+async def _oracle_at_or_before(
+    session: Any,
+    *,
+    asset: str,
+    timestamp_ms: int,
+    source: str = "chainlink",
+) -> Optional[float]:
+    """Look up the latest oracle price for *asset* at-or-before *timestamp_ms*."""
+    from models.database import CryptoOracleHistory
+    from sqlalchemy import select as _select
+
+    primary = (
+        _select(CryptoOracleHistory.price)
+        .where(
+            CryptoOracleHistory.asset == asset.upper(),
+            CryptoOracleHistory.source == source,
+            CryptoOracleHistory.timestamp_ms <= int(timestamp_ms),
+        )
+        .order_by(CryptoOracleHistory.timestamp_ms.desc())
+        .limit(1)
+    )
+    result = await session.execute(primary)
+    row = result.first()
+    if row is None:
+        # Fall back to any source if the preferred source is missing —
+        # makes the resolution lookup robust when chainlink_direct is on
+        # but the relay topic ``chainlink`` source is empty.
+        fallback = (
+            _select(CryptoOracleHistory.price)
+            .where(
+                CryptoOracleHistory.asset == asset.upper(),
+                CryptoOracleHistory.timestamp_ms <= int(timestamp_ms),
+            )
+            .order_by(CryptoOracleHistory.timestamp_ms.desc())
+            .limit(1)
+        )
+        result = await session.execute(fallback)
+        row = result.first()
+    if row is None:
+        return None
+    return float(row[0])
+
+
+async def _load_firehose_rows(
+    session: Any,
+    *,
+    strategy_slug: str,
+    window_ms_start: int,
+    window_ms_end: int,
+) -> list[Any]:
+    from models.database import TraderEvent
+    from sqlalchemy import and_, select as _select
+
+    start_dt = datetime.fromtimestamp(window_ms_start / 1000.0, tz=timezone.utc)
+    end_dt = datetime.fromtimestamp(window_ms_end / 1000.0, tz=timezone.utc)
+    stmt = (
+        _select(TraderEvent)
+        .where(
+            and_(
+                TraderEvent.event_type == "firehose_evaluation",
+                TraderEvent.source == "crypto",
+                TraderEvent.created_at >= start_dt,
+                TraderEvent.created_at <= end_dt,
+            )
+        )
+        .order_by(TraderEvent.created_at.asc())
+    )
+    result = await session.execute(stmt)
+    rows = []
+    for ev in result.scalars().all():
+        payload = ev.payload_json or {}
+        if not isinstance(payload, dict):
+            continue
+        if str(payload.get("strategy_slug") or "") != strategy_slug:
+            continue
+        rows.append(ev)
+    return rows
+
+
+async def run_crypto_strategy_optimize(
+    *,
+    strategy_slug: str,
+    window_hours: int = 24,
+    grid: dict[str, list[Any]],
+    top_k: int = 50,
+) -> dict[str, Any]:
+    """Sweep *grid* over the in-memory strategy class identified by *slug*.
+
+    Returns ``{"leaderboard": [...], "window": {...}, "caveats": [...]}``
+    where each leaderboard row carries the configured params plus
+    aggregate replay metrics (emit_count, total_pnl_usd, win_rate,
+    samples). Sorted by composite score (``total_pnl_usd * win_rate``)
+    descending.
+
+    Loads the strategy class from
+    :func:`services.strategy_loader.fresh_loader_with_db_strategies` via
+    the live in-memory registry — no ``source_code`` round-trip. The
+    grid expands every cartesian combination; per-cycle dispatch runs
+    inside the existing ``_run_crypto_replay_detection`` path so the
+    same gates (and ``firehose_evaluation`` reconstruction) are applied
+    to every candidate.
+
+    Plan: 0046.
+    """
+    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+
+    if not grid:
+        return {
+            "leaderboard": [],
+            "window": {"hours": window_hours},
+            "caveats": ["grid is empty; nothing to sweep"],
+        }
+
+    # Resolve the strategy class. backend and worker-trading run as
+    # separate processes — the global ``strategy_loader._loaded`` map in
+    # *this* process (backend) is empty by design, since strategies live
+    # in worker-trading. Load the row from the Strategy table and
+    # compile it locally for the duration of the sweep instead.
+    from models.database import AsyncSessionLocal, Strategy as StrategyModel
+    from services.strategy_loader import StrategyLoader
+
+    async with AsyncSessionLocal() as session:
+        from sqlalchemy import select as _select
+
+        result = await session.execute(
+            _select(StrategyModel).where(StrategyModel.slug == strategy_slug)
+        )
+        row = result.scalar_one_or_none()
+    if row is None or not row.source_code:
+        return {
+            "leaderboard": [],
+            "window": {"hours": window_hours},
+            "caveats": [
+                f"strategy slug '{strategy_slug}' is not present in the "
+                "strategies table or has no source_code"
+            ],
+        }
+
+    sweep_loader = StrategyLoader()
+    sweep_slug = f"_sweep_{strategy_slug}_{int(time.time() * 1000)}"
+    try:
+        loaded = sweep_loader.load(sweep_slug, row.source_code, dict(row.config or {}))
+    except Exception as exc:
+        return {
+            "leaderboard": [],
+            "window": {"hours": window_hours},
+            "caveats": [f"failed to compile strategy '{strategy_slug}': {exc}"],
+        }
+    strategy_class = type(loaded.instance)
+    default_config = dict(getattr(strategy_class, "default_config", {}) or {})
+    # The cloned instance produced by the loader is unused below; release
+    # it via ``unload`` once the sweep finishes (see ``finally``).
+
+    end_dt = _dt.now(_tz.utc)
+    start_dt = end_dt - _td(hours=int(window_hours))
+    window_ms_start = int(start_dt.timestamp() * 1000)
+    window_ms_end = int(end_dt.timestamp() * 1000)
+
+    param_names = list(grid.keys())
+    value_lists = [grid[n] for n in param_names]
+    combos = list(itertools.product(*value_lists))
+
+    caveats: list[str] = []
+    if "bet_size_usd" in param_names:
+        caveats.append(
+            "bet_size_usd swept on persisted VWAP — replayed slippage "
+            "assumes the live bet size at the time the row was logged"
+        )
+
+    leaderboard: list[dict[str, Any]] = []
+    try:
+        for combo in combos:
+            config = dict(zip(param_names, combo))
+            # Instantiate a fresh strategy for each combo so per-market state
+            # (cycle trackers, caches) does not bleed between configs.
+            instance = strategy_class()
+            merged = dict(default_config)
+            merged.update(config)
+            try:
+                instance.configure(merged)
+            except Exception as exc:
+                leaderboard.append(
+                    {
+                        "params": config,
+                        "runtime_error": f"configure failed: {exc}",
+                        "emit_count": 0,
+                        "win_count": 0,
+                        "loss_count": 0,
+                        "total_pnl_usd": 0.0,
+                        "win_rate": 0.0,
+                        "samples": 0,
+                        "composite_score": 0.0,
+                    }
+                )
+                continue
+
+            run = await _run_crypto_replay_detection(
+                instance,
+                strategy_slug=strategy_slug,
+                window_ms_start=window_ms_start,
+                window_ms_end=window_ms_end,
+                sweep_bet_size_usd="bet_size_usd" in param_names,
+            )
+            composite = float(run.total_pnl_usd) * float(run.win_rate)
+            leaderboard.append(
+                {
+                    "params": config,
+                    "runtime_error": run.runtime_error,
+                    "emit_count": int(run.emit_count),
+                    "win_count": int(run.win_count),
+                    "loss_count": int(run.loss_count),
+                    "total_pnl_usd": round(float(run.total_pnl_usd), 4),
+                    "win_rate": round(float(run.win_rate), 4),
+                    "samples": int(run.cycles_evaluated),
+                    "composite_score": round(composite, 4),
+                    "rows_without_book_snapshot": int(run.rows_without_book_snapshot),
+                    "rows_without_oracle_resolution": int(
+                        run.rows_without_oracle_resolution
+                    ),
+                }
+            )
+            caveats.extend(c for c in run.caveats if c not in caveats)
+    finally:
+        try:
+            sweep_loader.unload(sweep_slug)
+        except Exception:
+            pass
+
+    leaderboard.sort(key=lambda r: r["composite_score"], reverse=True)
+    return {
+        "leaderboard": leaderboard[: max(1, int(top_k))],
+        "window": {
+            "hours": int(window_hours),
+            "ms_start": window_ms_start,
+            "ms_end": window_ms_end,
+        },
+        "caveats": caveats,
+        "total_configs": len(combos),
+    }
+
+
+async def _run_crypto_replay_detection(
+    strategy: Any,
+    *,
+    strategy_slug: str,
+    window_ms_start: int,
+    window_ms_end: int,
+    asset: Optional[str] = None,
+    sweep_bet_size_usd: bool = False,
+) -> CryptoReplayRun:
+    """Replay persisted crypto cycles through *strategy* and compute PnL.
+
+    For each ``firehose_evaluation`` row in the window:
+
+    1. Reconstruct a synthetic ``crypto_update`` market dict from the
+       row's gate scores (reference price, oracle spot + age, end_ms).
+    2. Pull the persisted VWAP / book-freshness from the row's
+       ``vwap_in_range`` and ``book_fresh`` gate scores. If those
+       gates didn't run on the original evaluation (strategy
+       short-circuited earlier), the cycle is flagged
+       ``rows_without_book_snapshot`` and skipped — the new config can
+       only fire on cycles that originally reached the book gates.
+    3. Dispatch through the strategy's ``on_event`` (after resetting
+       the per-market CycleTracker so the midcycle milestone fires
+       deterministically).
+    4. For each emitted opportunity, look up the Chainlink resolution
+       price at ``end_ms`` and stamp PnL on the opportunity's
+       ``strategy_context`` (and roll into the run aggregates).
+    """
+    run = CryptoReplayRun()
+    if sweep_bet_size_usd:
+        run.caveats.append(
+            "bet_size_usd swept on persisted VWAP — replayed slippage "
+            "assumes the live bet size at the time the row was logged"
+        )
+
+    from models.database import AsyncSessionLocal
+    from services.data_events import DataEvent
+    from services.strategy_sdk import StrategySDK
+
+    try:
+        async with AsyncSessionLocal() as session:
+            firehose_rows = await _load_firehose_rows(
+                session,
+                strategy_slug=strategy_slug,
+                window_ms_start=window_ms_start,
+                window_ms_end=window_ms_end,
+            )
+
+        if not firehose_rows:
+            return run
+
+        # Stable per-market clob token pair — the strategy only checks
+        # that two distinct strings are present; the live token ids are
+        # not needed because we monkey-patch get_order_book_depth below.
+        def _synth_token(market_id: str, side: str) -> str:
+            # Strategy requires `len(token) > 20`; tag with side so
+            # YES/NO selection picks the correct synthetic token.
+            return f"synthetic_{side}_{market_id or 'unknown'}_token_id_padding"
+
+        # Depth lookup populated as we visit rows; the monkey-patched
+        # get_order_book_depth resolves against this map.
+        depth_by_key: dict[tuple[str, str], dict[str, Any]] = {}
+
+        def _patched_depth(market, *, side: str, size_usd: float) -> Optional[dict[str, Any]]:
+            market_id = str(getattr(market, "id", "") or getattr(market, "condition_id", "") or "")
+            return depth_by_key.get((market_id, side))
+
+        original_depth = StrategySDK.get_order_book_depth
+        StrategySDK.get_order_book_depth = staticmethod(_patched_depth)  # type: ignore[assignment]
+
+        try:
+            async with AsyncSessionLocal() as session:
+                for ev in firehose_rows:
+                    payload = ev.payload_json or {}
+                    if not isinstance(payload, dict):
+                        continue
+                    row_market = payload.get("market") or {}
+                    if not isinstance(row_market, dict):
+                        continue
+                    if asset is not None and str(row_market.get("asset") or "").upper() != asset.upper():
+                        continue
+                    scores = _firehose_gate_scores(payload.get("gates") or [])
+                    end_ms = _parse_end_ts_ms_from_gates(scores)
+                    if end_ms is None:
+                        continue
+                    ref_score = scores.get("reference_price", {}).get("score")
+                    spot_score = scores.get("spot_price", {}).get("score")
+                    age_score = scores.get("fresh_chainlink", {}).get("score")
+                    vwap_score = scores.get("vwap_in_range", {}).get("score")
+                    staleness_score = scores.get("book_fresh", {}).get("score")
+                    if ref_score is None or spot_score is None or age_score is None:
+                        # The original evaluation rejected before producing
+                        # the oracle / reference values; we cannot replay
+                        # the directional decision without that data.
+                        continue
+                    if vwap_score is None or staleness_score is None:
+                        run.rows_without_book_snapshot += 1
+                        continue
+
+                    reference_price = float(ref_score)
+                    oracle_price = float(spot_score)
+                    oracle_age_ms = float(age_score)
+                    vwap_price = float(vwap_score)
+                    staleness_ms = float(staleness_score)
+
+                    # Now-ms is fixed at midcycle. The CycleTracker uses
+                    # ``end_ms - cycle_seconds * 1000`` as cycle start;
+                    # midcycle = end_ms - 150_000.
+                    midcycle_seconds = float(
+                        getattr(strategy, "config", {}).get("midcycle_seconds", 150.0)
+                    )
+                    now_ms = int(end_ms - (300_000 - int(midcycle_seconds * 1000)))
+
+                    market_id = str(row_market.get("market_id") or "")
+                    clob_yes = _synth_token(market_id, "YES")
+                    clob_no = _synth_token(market_id, "NO")
+                    mkt = _build_crypto_replay_market(
+                        row_market=row_market,
+                        end_ms=end_ms,
+                        reference_price=reference_price,
+                        oracle_price=oracle_price,
+                        oracle_age_ms=oracle_age_ms,
+                        now_ms=now_ms,
+                        clob_tokens=(clob_yes, clob_no),
+                    )
+                    depth_payload = {
+                        "vwap_price": vwap_price,
+                        "is_fresh": staleness_ms <= 5_000.0,
+                        "staleness_ms": staleness_ms,
+                        "slippage_bps": 0.0,
+                    }
+                    depth_by_key[(market_id, "YES")] = depth_payload
+                    depth_by_key[(market_id, "NO")] = depth_payload
+
+                    # Reset the strategy's per-market CycleTracker so the
+                    # midcycle milestone fires on this synthetic event.
+                    trackers = getattr(strategy, "_cycle_trackers", None)
+                    if isinstance(trackers, dict):
+                        trackers.pop(market_id, None)
+
+                    run.cycles_evaluated += 1
+
+                    event = DataEvent(
+                        event_type="crypto_update",
+                        source="crypto-worker-backtest",
+                        timestamp=datetime.fromtimestamp(
+                            now_ms / 1000.0, tz=timezone.utc
+                        ),
+                        payload={"markets": [mkt]},
+                    )
+                    # The strategy uses ``time.time()`` for now_ms; patch
+                    # so the midcycle gate fires deterministically.
+                    import time as _time_mod
+                    saved_time = _time_mod.time
+                    _time_mod.time = lambda _ts=now_ms / 1000.0: _ts  # type: ignore[assignment]
+                    try:
+                        opps = await strategy.on_event(event)
+                    except Exception as exc:
+                        logger.warning(
+                            "crypto replay strategy.on_event failed",
+                            error=str(exc),
+                            market_id=market_id,
+                        )
+                        opps = []
+                    finally:
+                        _time_mod.time = saved_time  # type: ignore[assignment]
+
+                    if not opps:
+                        continue
+
+                    for opp in opps:
+                        side = ""
+                        positions = getattr(opp, "positions_to_take", None) or []
+                        if positions and isinstance(positions[0], dict):
+                            side = str(positions[0].get("outcome") or "").upper()
+                        asset_for_resolution = str(row_market.get("asset") or "").upper()
+                        oracle_at_end = await _oracle_at_or_before(
+                            session,
+                            asset=asset_for_resolution,
+                            timestamp_ms=end_ms,
+                        )
+                        if oracle_at_end is None:
+                            run.rows_without_oracle_resolution += 1
+                            pnl_usd: Optional[float] = None
+                            won: Optional[bool] = None
+                        else:
+                            yes_wins = oracle_at_end > reference_price
+                            won = (yes_wins and side == "YES") or (
+                                (not yes_wins) and side == "NO"
+                            )
+                            pnl_unit = (1.0 - vwap_price) if won else (-vwap_price)
+                            bet_size_usd = float(
+                                getattr(strategy, "config", {}).get("bet_size_usd", 15.0)
+                            )
+                            shares = bet_size_usd / max(1e-9, vwap_price)
+                            pnl_usd = pnl_unit * shares
+                            run.total_pnl_usd += pnl_usd
+                            if won:
+                                run.win_count += 1
+                            else:
+                                run.loss_count += 1
+                        ctx = getattr(opp, "strategy_context", None)
+                        if not isinstance(ctx, dict):
+                            ctx = {}
+                            try:
+                                setattr(opp, "strategy_context", ctx)
+                            except Exception:
+                                pass
+                        ctx["backtest_replay_ts_ms"] = int(now_ms)
+                        ctx["backtest_end_ms"] = int(end_ms)
+                        ctx["backtest_oracle_at_end"] = oracle_at_end
+                        ctx["backtest_reference_price"] = reference_price
+                        ctx["backtest_vwap_price"] = vwap_price
+                        ctx["backtest_pnl_usd"] = pnl_usd
+                        ctx["backtest_won"] = won
+                        run.emit_count += 1
+                        run.opportunities.append(opp)
+        finally:
+            StrategySDK.get_order_book_depth = original_depth  # type: ignore[assignment]
+    except Exception as exc:
+        run.runtime_error = f"crypto replay failed: {exc}"
+        logger.error("crypto replay error", error=str(exc), exc_info=exc)
+
+    return run
 
 
 # ---------------------------------------------------------------------------

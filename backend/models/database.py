@@ -1024,6 +1024,35 @@ class MLTrainingSnapshot(Base):
     )
 
 
+class CryptoOracleHistory(Base):
+    """Persistent rolling history of Chainlink/Binance oracle prices.
+
+    Source of truth for offline crypto-strategy backtests. The live
+    ``ChainlinkFeed`` keeps a ~3h in-memory deque; this table extends
+    that window to ~14 days (housekeeper-pruned) so historical replays
+    can resolve ``price_to_beat`` and end-of-cycle resolution prices
+    for any cycle in the retention window.
+
+    Plan: 0046 — offline backtest harness for crypto 5m strategies.
+    """
+
+    __tablename__ = "crypto_oracle_history"
+
+    asset = Column(String(8), primary_key=True, nullable=False)
+    timestamp_ms = Column(BigInteger, primary_key=True, nullable=False)
+    source = Column(String(32), primary_key=True, nullable=False)
+    price = Column(Float, nullable=False)
+    created_at = Column(DateTime, default=_utcnow, nullable=False)
+
+    __table_args__ = (
+        Index(
+            "idx_crypto_oracle_history_asset_ts_desc",
+            "asset",
+            text("timestamp_ms DESC"),
+        ),
+    )
+
+
 class MLRecorderConfig(Base):
     """Persistent configuration for the ML data recorder.
 

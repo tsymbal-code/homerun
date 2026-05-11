@@ -72,6 +72,76 @@ to settlement. У docstring-у — empirical 80% win rate при entry ≤ 70¢.
 - **High-news periods**. На FOMC / earnings / major пресс-релізи
   emperal-edge ламається.
 
+## Як тюнити через offline-бектест
+
+Plan 0046 додав offline-бектест для `crypto_update`-стратегій. Замість
+того, щоб запускати паралельні shadow-трейдери і чекати тижні, можна
+прогнати грід через історичні `firehose_evaluation` рядки і
+`crypto_oracle_history` за обране вікно (за замовчуванням 24 години).
+
+**Як це працює**:
+
+- VWAP/staleness/oracle-age відтворюються з `firehose_evaluation`
+  payload-у — той самий лог, що бачить firehose-tab UI. Тобто
+  бектест ніколи не "вгадує" depth, він використовує ту depth, що
+  була у живій eval-ы.
+- Resolution-price для PnL береться з `crypto_oracle_history`
+  (`order by timestamp_ms desc limit 1 where timestamp_ms <= end_ms`).
+- Sweep робить cartesian-grid combinations і повертає
+  `leaderboard` посортований за `composite_score = total_pnl_usd * win_rate`.
+
+**Curl-приклад** (виконувати з `polyhome-1`, не локально):
+
+```bash
+ssh polyhome-1 'curl -fsS -X POST http://127.0.0.1:8888/api/validation/code-backtest/optimize-strategy \
+  -H "Content-Type: application/json" \
+  -d "{
+    \"strategy_slug\": \"crypto_5m_midcycle\",
+    \"window_hours\": 168,
+    \"grid\": {
+      \"min_distance_bps\": [5, 10, 15, 20],
+      \"max_entry_price\": [0.60, 0.65, 0.70]
+    },
+    \"top_k\": 12
+  }"' | jq '.leaderboard'
+```
+
+**Як читати leaderboard**:
+
+```json
+[
+  {
+    "params": {"min_distance_bps": 10, "max_entry_price": 0.70},
+    "emit_count": 38,
+    "win_count": 31,
+    "loss_count": 7,
+    "total_pnl_usd": 184.20,
+    "win_rate": 0.8158,
+    "samples": 312,
+    "composite_score": 150.31
+  },
+  ...
+]
+```
+
+- `emit_count` — скільки можливостей би згенерувалось при цій
+  конфігурації.
+- `samples` — скільки циклів пройшло через replay (firehose-rows
+  у вікні).
+- `total_pnl_usd` — сума `(1 - vwap) * shares` для виграних і
+  `-vwap * shares` для програних.
+- `composite_score` — sort-key. Висока win-rate без об'єму = низький
+  score, тож проблема "5 trades 100% win" не виграє у грід-серу.
+
+**Caveats**:
+
+- Якщо grid містить `bet_size_usd`, replayed slippage все одно
+  відображає `bet_size_usd`, що був живим у момент логу — це
+  фундаментальна межа replay-у. API повертає це у `caveats`.
+- `firehose_evaluation` рядки логуються тільки за активних
+  trader-binding-ів. Якщо стратегія була disabled у потрібний
+  період, бектест поверне пусто.
+
 ## Посилання
 
 - [Crypto Spike Reversion](crypto-spike-reversion.md) — протилежна

@@ -215,6 +215,12 @@ read-only, sourced from `worker_control`. DB-error fallback: true.
   [`websocket-and-events.md`](websocket-and-events.md).
 - The Chainlink/`ChainlinkFeed` rolling history for price-to-beat
   fallback resolution (lines 840–1006 in `crypto_service.py`).
+  Plan 0046 added a 1 Hz throttled write of every ingested
+  reading to the `crypto_oracle_history` Postgres table (housekeeper
+  prunes rows older than 14 days every 6 hours). That table is the
+  source-of-truth for the offline crypto-strategy backtester
+  (`POST /api/validation/code-backtest/optimize-strategy`); the
+  live trading path still reads from the in-memory deque.
 - Polymarket crypto-price API (primary `price_to_beat` source).
 
 **Depended on by:**
