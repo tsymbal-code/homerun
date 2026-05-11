@@ -57,6 +57,18 @@ than each tier's retention; both tiers are DB-backed knobs in
 `app_settings`; the table's `created_at` index already exists
 (`ix_trader_events_created_at`) so deletes are O(log n) per batch.
 
+Steady-state size after the first full retention cycle:
+`firehose_evaluation` settles around **14 days × 24 h × 262 k rows/h
+≈ 88 M rows ≈ ~118 GB on disk** (Postgres overhead included).
+That is still too big for `polyhome-1` — the operator should
+**either lower the firehose retention to 3–7 days** once this
+plan ships, **or** also land a follow-up that reduces firehose
+emit rate at source (e.g., switch reject events for the dominant
+`asset_enabled`/`timeframe`/`midcycle_crossed` gates from
+WHISPER-persist to WHISPER-drop). The 14 d default is the upper
+bound the backtester needs; the operational right-size is
+expected to be lower.
+
 ## Context / References
 
 - [Architecture: websocket-and-events](../architecture/websocket-and-events.md) §
@@ -78,12 +90,9 @@ than each tier's retention; both tiers are DB-backed knobs in
 
 - `ssh polyhome-1 'cd /home/polyhome/homerun && docker compose exec -T backend pytest backend/tests/test_trader_events_retention.py -q'`
 - `ssh polyhome-1 'cd /home/polyhome/homerun && docker compose exec -T backend alembic upgrade head'`
-- `ssh polyhome-1 'cd /home/polyhome/homerun && docker compose exec -T postgres psql -U homerun -d homerun -c "select count(*) filter (where event_type='\''firehose_evaluation'\''), count(*) filter (where event_type<>'\''firehose_evaluation'\''), pg_size_pretty(pg_total_relation_size('\''trader_events'\'')) from trader_events"'` —
-  before / after a manual housekeeper kick, expect the firehose
-  count to drop to ~14 days × 24 h × 262 k/h ≈ 88 M rows in
-  steady state
+- `ssh polyhome-1 'cd /home/polyhome/homerun && docker compose exec -T postgres psql -U homerun -d homerun -c "select count(*) filter (where event_type='\''firehose_evaluation'\''), count(*) filter (where event_type<>'\''firehose_evaluation'\''), pg_size_pretty(pg_total_relation_size('\''trader_events'\'')) from trader_events"'`
 
-## Task 1: DB-backed retention knobs in `app_settings`
+### Task 1: DB-backed retention knobs in `app_settings`
 
 - [ ] Add Alembic migration adding two columns to `app_settings`:
       `trader_events_firehose_retention_days` (`Integer`, default
@@ -115,7 +124,7 @@ than each tier's retention; both tiers are DB-backed knobs in
       row.
 - [ ] Mark completed
 
-## Task 2: housekeeper background task
+### Task 2: housekeeper background task
 
 - [ ] Add `services/trader_events_retention_service.py` modelled on
       `chainlink_feed._housekeeper_loop` (`:476-541`):
@@ -158,7 +167,7 @@ than each tier's retention; both tiers are DB-backed knobs in
       * assert one structured log emitted per tier
 - [ ] Mark completed
 
-## Task 3: operational guardrails
+### Task 3: operational guardrails
 
 - [ ] Document the first-run drain cost: at the moment of activation
       the table has ≥ 14 days × 8.4 GB/day = **~118 GB** of
@@ -180,7 +189,7 @@ than each tier's retention; both tiers are DB-backed knobs in
       cadence, and the DB-backed knobs.
 - [ ] Mark completed
 
-## Task 4: close
+### Task 4: close
 
 - [ ] Smoke-verify on `polyhome-1`: kick the housekeeper once
       manually (`docker compose exec backend python -c
