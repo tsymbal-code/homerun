@@ -457,6 +457,14 @@ class _CryptoMarketFetcher:
         self._markets: list[Market] = []
         self._last_fetch: float = 0.0
         self._shared_client = None
+        # Plan 0045: snapshot of clob_token_ids this strategy last asked
+        # the Polymarket WS feed to subscribe. Diffed on every refresh
+        # so rotated-out markets get unsubscribed — otherwise every
+        # 5 m / 15 m crypto-cycle rollover dripped 16-32 new tokens
+        # into the shared ``_subscribed_assets`` set without ever
+        # removing the prior cycle, blowing past Polymarket's per-
+        # connection cap within hours.
+        self._ws_subscribed_tokens: set[str] = set()
 
     @property
     def is_stale(self) -> bool:
@@ -473,17 +481,31 @@ class _CryptoMarketFetcher:
                 self._subscribe_tokens_to_ws(fetched)
         return self._markets
 
-    @staticmethod
-    def _subscribe_tokens_to_ws(markets: list[Market]) -> None:
-        """Fire-and-forget: subscribe crypto market CLOB tokens to the
-        WebSocket price feed so we get real-time bid/ask updates instead
-        of relying on stale HTTP polling."""
+    def _subscribe_tokens_to_ws(self, markets: list[Market]) -> None:
+        """Diff-based subscribe: add new tokens, drop rotated-out ones.
+
+        Plan 0045 root-cause fix mirror. The previous additive
+        ``subscribe(token_ids)`` left every prior cycle's tokens in
+        ``_subscribed_assets`` forever; over hours that pushed the set
+        past Polymarket's per-connection cap and the server silently
+        stopped streaming books for the freshest entries (including
+        the crypto-lane 5m markets the crypto_5m_midcycle strategy
+        depends on for ``book_depth``). Match the diff pattern in
+        ``MarketRuntime._sync_crypto_subscriptions`` and
+        ``ArbitrageScanner`` fast-scan.
+        """
         import asyncio
 
-        token_ids = []
+        new_active: set[str] = set()
         for m in markets:
-            token_ids.extend(t for t in m.clob_token_ids if len(t) > 20)
-        if not token_ids:
+            for t in m.clob_token_ids:
+                stripped = str(t or "").strip()
+                if len(stripped) > 20:
+                    new_active.add(stripped)
+        previous = self._ws_subscribed_tokens
+        to_subscribe = new_active - previous
+        to_unsubscribe = previous - new_active
+        if not to_subscribe and not to_unsubscribe:
             return
 
         try:
@@ -494,13 +516,31 @@ class _CryptoMarketFetcher:
                 return
 
             loop = asyncio.get_event_loop()
-            if loop.is_running():
-                asyncio.ensure_future(feed_mgr.polymarket_feed.subscribe(token_ids=token_ids))
-            else:
-                loop.run_until_complete(feed_mgr.polymarket_feed.subscribe(token_ids=token_ids))
+            if to_unsubscribe:
+                tokens_list = sorted(to_unsubscribe)
+                try:
+                    if loop.is_running():
+                        asyncio.ensure_future(feed_mgr.polymarket_feed.unsubscribe(tokens_list))
+                    else:
+                        loop.run_until_complete(feed_mgr.polymarket_feed.unsubscribe(tokens_list))
+                except Exception as un_exc:
+                    logger.debug(
+                        "BtcEthDirectionalEdge: WS unsubscribe failed (non-critical): %s",
+                        un_exc,
+                    )
+                    to_unsubscribe = set()
+            if to_subscribe:
+                tokens_list = sorted(to_subscribe)
+                if loop.is_running():
+                    asyncio.ensure_future(feed_mgr.polymarket_feed.subscribe(token_ids=tokens_list))
+                else:
+                    loop.run_until_complete(feed_mgr.polymarket_feed.subscribe(token_ids=tokens_list))
+            self._ws_subscribed_tokens = (previous - to_unsubscribe) | new_active
             logger.debug(
-                "BtcEthDirectionalEdge: subscribed %d crypto tokens to WS feed",
-                len(token_ids),
+                "BtcEthDirectionalEdge: WS diff sub=%d unsub=%d total=%d",
+                len(to_subscribe),
+                len(to_unsubscribe),
+                len(self._ws_subscribed_tokens),
             )
         except Exception as e:
             logger.debug("BtcEthDirectionalEdge: WS subscription failed (non-critical): %s", e)
