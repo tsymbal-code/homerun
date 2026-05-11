@@ -87,66 +87,62 @@ prologue.
 
 ### Task 1: Drop the mode filter
 
-- [ ] In [`backend/services/strategies/_firehose.py`](../../backend/services/strategies/_firehose.py),
-      remove the `if mode_lower != "live": continue` block at lines
-      134-136. Add a one-line comment pointing at this plan and
-      explaining the cross-mode contract (mirror the comment style
-      used in [`trader_binding_cache.py`](../../backend/services/trader_binding_cache.py)).
-- [ ] Update the module docstring at the top of `_firehose.py` to
-      replace any "only live traders" language with the cross-mode
-      contract.
+- [x] In [`backend/services/strategies/_firehose.py`](../../backend/services/strategies/_firehose.py),
+      removed the `if mode_lower != "live": continue` block. Added a
+      cross-mode contract comment pointing at this plan (commit
+      `6b50ee83`).
+- [x] Updated the module docstring with the cross-mode contract.
 
 ### Task 2: Regression test
 
-- [ ] Add `backend/tests/test_firehose_binding_cache.py` with at
-      least:
-      - `test_refresh_includes_shadow_traders` — seeds one live +
-        one shadow trader bound to the same strategy, refreshes the
-        cache, asserts both trader_ids are in
-        `_strategy_to_trader_ids[slug]`.
-      - `test_refresh_skips_disabled_traders` — a trader with
-        `is_enabled=False` is excluded regardless of mode (this
-        guards against accidentally widening the filter too much).
-      - `test_refresh_skips_disabled_strategy_in_source_configs` —
-        an enabled trader with `strategy_params.enabled=False` for
-        a slug is excluded for that slug only.
-      - `test_emit_should_fire_returns_true_for_shadow_trader` —
-        end-to-end via `_emit_should_fire(slug)` returns
-        `(True, [shadow_trader_id])` after refresh.
+- [x] Added `backend/tests/test_firehose_binding_cache.py` (5 tests,
+      commit `6b50ee83` + fix `5a118908`):
+      - `test_refresh_includes_shadow_traders`
+      - `test_refresh_skips_disabled_traders`
+      - `test_refresh_skips_per_strategy_disabled_in_source_configs`
+      - `test_emit_should_fire_returns_true_for_shadow_only_binding`
+      - `test_emit_should_fire_returns_false_when_orchestrator_disabled`
+      5/5 passing on the worker-trading container.
 
 ### Task 3: Temporary diagnostic in `crypto_5m_midcycle._emit_reject`
 
-- [ ] Add a `logger.info` call inside `_emit_reject` in
-      [`backend/services/strategies/crypto_5m_midcycle.py`](../../backend/services/strategies/crypto_5m_midcycle.py)
-      that fires ONLY at `MURMUR` / `VOICE` verbosity (the post-
-      milestone gates — bounded volume, ~1-2 lines per market per
-      cycle). Format: include `slug`, `asset`, and the
-      `(name, passed, score, detail)` tuples for every gate
-      collected so far. Mark the block with a `# Plan 0044 follow-up`
-      comment and a note to remove it after one week of live
-      `firehose_evaluation` traffic confirms the same data is
-      visible via the persistent path.
-- [ ] Confirm no `WHISPER`-tier rejections (timeframe / asset /
-      milestone gates) trigger the log — those fire on every market
-      every tick and would drown the log stream.
+- [x] Added MURMUR/VOICE-only `logger.info("crypto_5m_midcycle gate
+      reject", …)` inside `_emit_reject` (commit `6b50ee83`).
+- [x] WHISPER-tier rejections (timeframe / asset / milestone) do
+      not trigger the log — verified in live logs.
 
 ### Task 4: Deploy and verify
 
-- [ ] Run validation commands locally on the worker-trading
-      container (via `docker cp tests/` workaround per repo norm).
-- [ ] `./deploy/sync_remote.sh` to ship.
-- [ ] On `polyhome-1`: keep the `BTC - 5min` trader in shadow.
-      Observe over the next 5-min cycle:
-      - `SELECT count(*) FROM trader_events WHERE event_type='firehose_evaluation' AND created_at > NOW() - INTERVAL '10 minutes';` → > 0.
-      - `docker compose logs --since=5m worker-trading | grep 'crypto_5m_midcycle gate reject'` → entries showing
-        which gate failed for SOL and XRP 5m markets.
-- [ ] Record the verdict and the **identified blocker gate** in a
-      "## Live verification" section in this plan file. Move to
-      `docs/plans/completed/`.
+- [x] Validation commands ran on `worker-trading` container post-
+      deploy (5/5 firehose tests green).
+- [x] Deployed via `./deploy/sync_remote.sh` (containers healthy).
+- [x] Live verification on `polyhome-1`: `firehose_evaluation` rows
+      now land for the BTC - 5min shadow trader. The diagnostic log
+      identified ``book_depth`` as the blocker gate, escalated into
+      [Plan 0045](0045-diagnose-ws-cache-empty-for-subscribed-crypto-tokens.md).
 
 ### Task 5: Remove the temporary log (after verification)
 
-- [ ] Once Task 4 confirms `firehose_evaluation` events flow for
-      shadow traders, file a follow-up commit removing the
-      Task 3 `logger.info` (with `Plan: 0044` trailer noting the
-      cleanup). Target window: within 7 days of Task 4 completion.
+- [ ] **Pending.** The `crypto_5m_midcycle gate reject` info log is
+      still in code as of plan-close; tracked together with the
+      other Plan 0044 / 0045 diagnostic logs in Plan 0045 Task 6.
+      Target removal: within 7 days of Plan 0045 close, once the
+      persistent firehose path has been confirmed stable.
+
+## Live verification
+
+Observed at 2026-05-11 08:38–09:07 UTC on the `BTC - 5min` shadow
+trader on `polyhome-1`:
+
+- Pre-fix (same trader, same shadow mode): zero
+  `firehose_evaluation` rows over the prior session.
+- Post-fix: 7991 `firehose_evaluation` rows over 10 minutes
+  immediately after deploy (whisper-tier ~10044 / 5 min, murmur-
+  tier 2 / 5 min). The MURMUR firehose payloads carried the full
+  gate-by-gate breakdown, immediately surfacing `book_depth:
+  passed=false` as the blocker for the BTC - 5min trader. Without
+  Plan 0044 this would have stayed silent.
+
+Verdict: **firehose telemetry now flows for shadow traders.**
+Plan 0044 is complete; the live observability it unlocked drove
+the Plan 0045 root-cause diagnosis. Move to `completed/`.

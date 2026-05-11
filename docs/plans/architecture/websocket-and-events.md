@@ -185,6 +185,103 @@ Confirmed `EventType` values used across the codebase:
 | Add a new Redis channel | Pick a name that does not collide with `signal_*`, `trader_*`, `wallet_*`. Add a publisher and a bridge consumer. Keep payload JSON-serialisable; never assume delivery. |
 | Add an in-process `EventType` | Add the constant in `event_dispatcher.py`; document the producer and consumer side-by-side; do not invent new EventTypes from a one-off subscriber. |
 
+## Polymarket WS subscription discipline (Plan 0045)
+
+> **Last verified: 2026-05-11 10:21 UTC (commits `2b44929b` through
+> `7d7791ac`).**
+
+The Polymarket market-channel WS
+(`wss://ws-subscriptions-clob.polymarket.com/ws/market`) imposes a
+soft per-connection subscription cap that **silently drops the
+freshest entries** once exceeded. Live capture in Plan 0045 saw
+the server actively streaming books for **~9-26 active tokens**
+while our local `_subscribed_assets` set held **6800+** stale
+entries — every new subscribe past the live limit was acked but
+never honoured. The cap was reproduced on a fresh process: a
+clean `PolymarketWSFeed.subscribe([4 fresh tokens])` returned full
+book data inside 1 s, while the live worker's identical call sat
+silent because the connection's slot budget was already saturated
+by accumulated subscriptions.
+
+The cap is hard-coded on the server side; we cannot raise it.
+**Every producer that calls `PolymarketWSFeed.subscribe()` must
+diff against its previous active set and unsubscribe rotated-out
+tokens**, otherwise its scope grows monotonically and starves
+later subscribers in shared infrastructure.
+
+### Producers + their discipline
+
+| Producer | Site | Pattern | Notes |
+|---|---|---|---|
+| Crypto lane | [`market_runtime.py:_sync_crypto_subscriptions`](../../../backend/services/market_runtime.py) | Diff vs `self._crypto_subscribed_tokens` snapshot, unsubscribe stale, subscribe new | Runs every crypto refresh (~5 s); steady-state ~16 tokens |
+| Scanner fast-scan | [`scanner.py:scan_fast`](../../../backend/services/scanner.py) | Diff vs `self._ws_subscribed_tokens`; **gated** on `settings.SCANNER_WS_SUBSCRIBE_ENABLED` (default OFF) | When toggle flips OFF mid-run, drains its own snapshot via `unsubscribe()` on the next scan |
+| `btc_eth_*` strategies | [`btc_eth_directional_edge`](../../../backend/services/strategies/btc_eth_directional_edge.py), [`btc_eth_maker_quote`](../../../backend/services/strategies/btc_eth_maker_quote.py), [`btc_eth_convergence`](../../../backend/services/strategies/btc_eth_convergence.py) — each owns a `_BatchedCryptoMarketCache._subscribe_tokens_to_ws` | Diff vs per-cache `self._ws_subscribed_tokens` snapshot | Only fires when the strategy is enabled in `strategies.enabled` — disabled today on `polyhome-1` |
+| `intent_runtime` hot-prewarm | [`intent_runtime.py:_ensure_hot_subscriptions`](../../../backend/services/intent_runtime.py) call sites at lines 1252 / 1757 / 1997 / 2509 | All four sites gated on `_allow_hot_subscription_for_source(source)` — scanner-source skipped unless the scanner toggle is on; other sources (crypto, traders, discovery, …) keep the full hot-prewarm | Without the gate, every scanner opportunity dripped 1-2 tokens into the set per emit |
+| Recorder bulk subscriber | [`recorder_subscription_service.py:_ensure_subscribed`](../../../backend/services/recorder_subscription_service.py) | **No diff** — bulk-subscribes top-N-liquid (default 8000) markets every 60 s. **Gated** on `settings.RECORDER_SUBSCRIBE_ENABLED` (default OFF). When off, the loop idles instead of subscribing. | Was the hidden Plan 0045 producer (single `subscribe()` call added 6268 tokens in one shot). Operators who run backtests flip on via Settings → Scanner |
+| Trader reconciliation | [`trader_reconciliation_worker.py:1377`](../../../backend/workers/trader_reconciliation_worker.py) | Subscribes only LIVE-mode open-order tokens | Bounded by open-order count; for shadow-only deployments this is always 0 |
+| Live position marks (`main.py`) | [`main.py:667, 752`](../../../backend/main.py) | Subscribes wallet-position tokens | Backend process, separate `PolymarketWSFeed` singleton; not in worker-trading's set |
+| Fast submit (`fast_submit.py:859`) | One-shot subscribe of the fill token immediately before submission | Single-shot, scope=1 token | Bounded |
+
+### Operator-facing DB toggles in Settings → Scanner
+
+Both default OFF; flip on only when the workflow that needs them is
+in play.
+
+| Toggle | Column | Runtime attr | Effect when OFF |
+|---|---|---|---|
+| Scanner WS price overlay | `app_settings.scanner_ws_subscribe_enabled` | `settings.SCANNER_WS_SUBSCRIBE_ENABLED` | Scanner falls back to HTTP polling; its hot-tier candidate tokens stay out of `_subscribed_assets` |
+| Recorder bulk subscriber | `app_settings.recorder_subscribe_enabled` | `settings.RECORDER_SUBSCRIBE_ENABLED` | `recorder_subscription_service.run_loop` idles every 60 s; no bulk top-N-liquid subscribe |
+
+Toggles are re-read every loop tick, so flipping ON via UI takes
+effect within one cycle (≤ 60 s recorder, ≤ next fast-scan for
+scanner) without restarting the worker.
+
+### Rule for new producers
+
+When adding a new code path that calls
+`feed_manager.polymarket_feed.subscribe(...)`, **do not** call it
+additively. The required shape:
+
+```python
+new_active: set[str] = set(...)             # the tokens you need NOW
+previous = self._<scope>_subscribed_tokens  # last snapshot
+to_subscribe = new_active - previous
+to_unsubscribe = previous - new_active
+if to_unsubscribe:
+    await feed.unsubscribe(sorted(to_unsubscribe))
+if to_subscribe:
+    await feed.subscribe(sorted(to_subscribe))
+self._<scope>_subscribed_tokens = (previous - to_unsubscribe) | new_active
+```
+
+If the producer is operator-toggleable, add a DB column to
+`app_settings`, expose it via `ScannerSettingsModel`, mirror the
+runtime attribute in `config.py:apply_app_settings`, and add a
+Settings → Scanner toggle pattern matching
+`scanner_ws_subscribe_enabled`. Default OFF for any producer that
+is not strictly required by the trading hot path.
+
+### Diagnostic logs still in code (TEMP)
+
+Plan 0045 left four short-lived INFO logs in place for one week
+of stable-trading verification (target removal: 2026-05-18). They
+are clearly marked with `(TEMP plan 0044)` / `(TEMP plan 0045)`
+in the log message:
+
+- `Polymarket WS diag (TEMP plan 0045)` — every 30 s heartbeat
+  dump from `_heartbeat_loop`, sizes + message-type counters.
+- `Polymarket WS subscribe call (TEMP plan 0045)` — per-call
+  caller-frame attribution from inside `subscribe()`.
+- `crypto_5m_midcycle WS subscribe issued (TEMP)` — per-event
+  log inside `_ensure_ws_subscribed_for_5m`.
+- `crypto_5m_midcycle gate reject` — MURMUR-tier rejection log
+  inside `_emit_reject` (kept until `firehose_evaluation` is
+  battle-tested as the persistent path).
+
+All four go in a single cleanup commit referenced from Plan 0045
+Task 6. Until then they live in code and are safe to ignore
+operationally — log volume is bounded (≤ 5 lines / 30 s).
+
 ## Known footguns
 
 - **Polymarket user-channel exclusivity.** Two processes with the
