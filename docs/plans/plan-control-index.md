@@ -96,6 +96,7 @@ notes.
 | 0049 | [Retention housekeeper for `trader_events` (esp. firehose_evaluation)](completed/0049-trader-events-retention-housekeeper.md) | R        | 0044          |
 | 0050 | [Auto-resync SYSTEM strategies from disk on every container boot](0050-auto-resync-system-strategies-on-boot.md) | B        | 0041          |
 | 0051 | [REST book-fallback for crypto_5m_last_outcome](completed/0051-rest-book-fallback-for-crypto-5m-last-outcome.md) | B        | 0047          |
+| 0052 | [Grace period in expire_source_signals_except](0052-grace-period-in-expire-source-signals-except.md) | R        | 0011, 0047, 0051 |
 
 When adding a row: keep this table sorted by ID ascending. Don't
 re-number plans — gaps in IDs are normal and expected (deleted or
