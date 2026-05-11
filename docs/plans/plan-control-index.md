@@ -97,7 +97,7 @@ notes.
 | 0050 | [Auto-resync SYSTEM strategies from disk on every container boot](0050-auto-resync-system-strategies-on-boot.md) | B        | 0041          |
 | 0051 | [REST book-fallback for crypto_5m_last_outcome](completed/0051-rest-book-fallback-for-crypto-5m-last-outcome.md) | B        | 0047          |
 | 0052 | [Grace period in expire_source_signals_except](completed/0052-grace-period-in-expire-source-signals-except.md) | R        | 0011, 0047, 0051 |
-| 0053 | [Fast-trader signal cache miss between signal_bus INSERT and intent_runtime read](0053-fast-trader-signal-cache-miss-between-signal-bus-insert-and-runtime-read.md) | R        | 0010, 0011, 0032, 0044, 0052 |
+| 0053 | [Fast-trader signal cache miss between signal_bus INSERT and intent_runtime read](backlog/0053-fast-trader-signal-cache-miss-between-signal-bus-insert-and-runtime-read.md) | R        | 0010, 0011, 0032, 0044, 0052 |
 
 When adding a row: keep this table sorted by ID ascending. Don't
 re-number plans — gaps in IDs are normal and expected (deleted or
