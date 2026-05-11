@@ -709,6 +709,22 @@ class PolymarketWSFeed:
         # Stats
         self.stats = FeedStats()
 
+        # Plan 0045 diagnostic — TEMPORARY. Tracks message-type
+        # distribution and last-seen book tokens so we can compare
+        # ``_subscribed_assets`` size vs actual incoming book-update
+        # coverage. Remove once the WS-cache-empty root cause is fixed
+        # and live verification on `polyhome-1` confirms book_depth gate
+        # passes for crypto 5m markets.
+        self._diag_msg_total: int = 0
+        self._diag_msg_book_top: int = 0
+        self._diag_msg_book_nested: int = 0
+        self._diag_msg_trade: int = 0
+        self._diag_msg_ignored: int = 0
+        self._diag_msg_apply_book_no_asset: int = 0
+        self._diag_msg_apply_book_empty: int = 0
+        self._diag_recent_book_tokens: list[str] = []  # last 8 (FIFO)
+        self._diag_last_dump_at: float = 0.0
+
     # -- public API ---------------------------------------------------------
 
     @property
@@ -984,6 +1000,39 @@ class PolymarketWSFeed:
                     # Connection confirmed alive — touch cached prices so quiet
                     # markets don't go stale while the feed is healthy.
                     self._cache.touch_all()
+
+                    # Plan 0045 diagnostic — TEMPORARY. Every 30 s,
+                    # dump the subscribe/cache-coverage diff so we can
+                    # rank H1 (subscribed_assets vs server desync), H2
+                    # (parser silent-drop), and H3 (server-side cap).
+                    now_mono = time.monotonic()
+                    if now_mono - self._diag_last_dump_at >= 30.0:
+                        self._diag_last_dump_at = now_mono
+                        try:
+                            entries_count = len(getattr(self._cache, "_entries", {}) or {})
+                        except Exception:
+                            entries_count = -1
+                        subs = list(self._subscribed_assets)
+                        sample = subs[-6:] if len(subs) > 6 else subs
+                        sample_with_book = [
+                            (t[:18] + "…", self._cache.get_order_book(t) is not None)
+                            for t in sample
+                        ]
+                        logger.info(
+                            "Polymarket WS diag (TEMP plan 0045)",
+                            subscribed_assets_count=len(subs),
+                            cache_entries_count=entries_count,
+                            msg_total=self._diag_msg_total,
+                            msg_book_top=self._diag_msg_book_top,
+                            msg_book_nested=self._diag_msg_book_nested,
+                            msg_trade=self._diag_msg_trade,
+                            msg_ignored=self._diag_msg_ignored,
+                            apply_book_no_asset=self._diag_msg_apply_book_no_asset,
+                            apply_book_empty=self._diag_msg_apply_book_empty,
+                            recent_book_tokens=[t[:18] + "…" for t in self._diag_recent_book_tokens],
+                            recent_subs_with_book=sample_with_book,
+                            state=str(self._state),
+                        )
                 except asyncio.TimeoutError:
                     consecutive_misses += 1
                     logger.warning(
@@ -1003,9 +1052,16 @@ class PolymarketWSFeed:
 
     def _handle_message(self, data: dict, recv_time_epoch: float) -> None:
         """Route an incoming WebSocket message to the right handler."""
+        # Plan 0045 diagnostic — TEMPORARY: count every incoming
+        # message so the heartbeat dump can show the parser-shape
+        # distribution. Remove together with the rest of the
+        # ``_diag_*`` block once the WS-cache-empty fix verifies live.
+        self._diag_msg_total += 1
+
         # Trade execution messages (from "trades" channel)
         event_type = data.get("event_type", "")
         if event_type == "trade" or ("price" in data and "size" in data and "side" in data and "bids" not in data):
+            self._diag_msg_trade += 1
             self._apply_trade(data, recv_time_epoch)
             return
 
@@ -1018,23 +1074,30 @@ class PolymarketWSFeed:
 
         # If bids/asks are directly on the top-level dict, apply immediately
         if "bids" in data or "asks" in data:
+            self._diag_msg_book_top += 1
             self._apply_book_update(data, recv_time_epoch)
             return
 
         # Nested payload under "data" key (common Polymarket wrapper pattern)
         nested = data.get("data")
         if isinstance(nested, dict):
+            self._diag_msg_book_nested += 1
             self._apply_book_update(nested, recv_time_epoch)
         elif isinstance(nested, list):
+            self._diag_msg_book_nested += 1
             for item in nested:
                 if isinstance(item, dict):
                     self._apply_book_update(item, recv_time_epoch)
-        # Silently ignore heartbeat acks, subscribe confirmations, etc.
+        else:
+            # Heartbeat acks, subscribe confirmations, malformed envelopes.
+            self._diag_msg_ignored += 1
 
     def _apply_book_update(self, data: dict, recv_time_epoch: float) -> None:
         """Parse bids/asks arrays and push into PriceCache."""
         asset_id = data.get("asset_id") or data.get("token_id") or data.get("market", "")
         if not asset_id:
+            # Plan 0045 diagnostic — TEMPORARY.
+            self._diag_msg_apply_book_no_asset += 1
             return
 
         raw_bids = data.get("bids", [])
@@ -1047,6 +1110,20 @@ class PolymarketWSFeed:
 
         if bids or asks:
             self._cache.update(asset_id, bids, asks, exchange_ts=exchange_ts)
+            # Plan 0045 diagnostic — TEMPORARY: ring-buffer of last 8
+            # tokens we actually wrote to cache. Compared against
+            # _subscribed_assets at heartbeat-dump time to confirm we
+            # do receive books for the tokens we think we subscribed.
+            tok_str = str(asset_id)
+            try:
+                self._diag_recent_book_tokens.append(tok_str)
+                if len(self._diag_recent_book_tokens) > 8:
+                    self._diag_recent_book_tokens.pop(0)
+            except Exception:
+                pass
+        else:
+            # Plan 0045 diagnostic — TEMPORARY.
+            self._diag_msg_apply_book_empty += 1
 
         # Crypto latency harness: record book-update wire arrival per
         # token.  Polymarket's CLOB book is one of the inputs the
