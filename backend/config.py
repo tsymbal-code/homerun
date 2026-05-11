@@ -88,6 +88,13 @@ class Settings(BaseSettings):
     # crypto lane's book streams. Flip on via Settings → Scanner
     # for arbitrage workflows that need live scanner-market ticks.
     SCANNER_WS_SUBSCRIBE_ENABLED: bool = False
+    # Plan 0045: recorder bulk WS subscriber toggle. Default OFF —
+    # the every-60s top-N-liquid bulk subscribe stays disabled so
+    # ``_subscribed_assets`` stays bounded for trading workflows.
+    # Flip on via Settings → Scanner when running backtests /
+    # microstructure pipelines that need the recorder's price-tick
+    # history.
+    RECORDER_SUBSCRIBE_ENABLED: bool = False
     WS_RECONNECT_MAX_DELAY: float = 60.0  # Max reconnect backoff seconds
     WS_PRICE_STALE_SECONDS: float = 30.0  # UI/discovery staleness budget for cached prices
     WS_EXECUTION_PRICE_STALE_SECONDS: float = 10.0  # Trader execution staleness budget for cached WS prices
@@ -949,6 +956,8 @@ async def apply_search_filters():
         ("SCANNER_STRICT_WS_MAX_AGE_MS", "scanner_strict_ws_max_age_ms", 30000),
         # Plan 0045: scanner WS subscription toggle.
         ("SCANNER_WS_SUBSCRIBE_ENABLED", "scanner_ws_subscribe_enabled", False),
+        # Plan 0045: recorder bulk WS subscriber toggle.
+        ("RECORDER_SUBSCRIBE_ENABLED", "recorder_subscribe_enabled", False),
         # Trading safety limits (used by live_execution_service order validation + /trader-orchestrator/live/status)
         ("MAX_TRADE_SIZE_USD", "max_trade_size_usd", 100.0),
         ("MAX_DAILY_TRADE_VOLUME", "max_daily_trade_volume", 1000.0),

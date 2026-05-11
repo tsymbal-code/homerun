@@ -1504,6 +1504,17 @@ class AppSettings(Base):
     # on via Settings → Scanner.
     scanner_ws_subscribe_enabled = Column(Boolean, default=False, nullable=False, server_default="false")
 
+    # Plan 0045: Recorder bulk WS subscriber toggle. When False (default)
+    # the ``recorder_subscription_service`` exits at startup and skips
+    # the every-60s bulk subscribe of the top-N-liquid markets. Without
+    # this toggle the recorder pushed ``_subscribed_assets`` to 6800+
+    # (6268 in a single call captured in Plan 0045 attribution log),
+    # starving Polymarket's per-connection cap and silently dropping the
+    # crypto-lane's freshest book streams that ``crypto_5m_midcycle``
+    # depends on for ``book_depth``. Operators who run backtests or
+    # microstructure pipelines flip this back on via Settings → Scanner.
+    recorder_subscribe_enabled = Column(Boolean, default=False, nullable=False, server_default="false")
+
     # Cross-Platform Arbitrage
     cross_platform_enabled = Column(Boolean, default=True)
 

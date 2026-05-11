@@ -357,6 +357,9 @@ def scanner_payload(
         "scanner_ws_subscribe_enabled": bool(
             getattr(settings, "scanner_ws_subscribe_enabled", False)
         ),
+        "recorder_subscribe_enabled": bool(
+            getattr(settings, "recorder_subscribe_enabled", False)
+        ),
     }
 
 
@@ -836,6 +839,10 @@ def apply_update_request(settings: AppSettings, request: Any) -> dict[str, bool]
         # to False on missing/None.
         if getattr(scan, "scanner_ws_subscribe_enabled", None) is not None:
             settings.scanner_ws_subscribe_enabled = bool(scan.scanner_ws_subscribe_enabled)
+        # Plan 0045: recorder bulk WS subscriber toggle. Same default
+        # / falling-back semantics as the scanner WS toggle above.
+        if getattr(scan, "recorder_subscribe_enabled", None) is not None:
+            settings.recorder_subscribe_enabled = bool(scan.recorder_subscribe_enabled)
         raw_filter_tags = getattr(scan, "market_filter_tags", None)
         previous_tags = list(getattr(settings, "market_filter_tags", None) or [])
         normalised_tags: list[str] = []

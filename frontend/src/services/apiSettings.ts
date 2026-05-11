@@ -75,6 +75,7 @@ export interface ScannerSettings {
   market_filter_tags: string[]
   crypto_lane_enabled: boolean
   scanner_ws_subscribe_enabled: boolean
+  recorder_subscribe_enabled: boolean
 }
 
 export interface MarketFilterAvailableTag {

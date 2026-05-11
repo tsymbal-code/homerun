@@ -62,14 +62,18 @@ def _recorder_enabled() -> bool:
     ``crypto_5m_midcycle.book_depth`` rejections captured in the Plan
     0045 live-verification logs).
 
-    Operators who need the recorder (running backtests, building
-    microstructure datasets, etc.) flip this on by setting the
-    ``HOMERUN_RECORDER_ENABLED`` env var to a truthy string
-    (``1``/``true``/``yes``/``on``). Default OFF keeps the WS feed
-    bounded for trading workflows.
+    Backed by ``settings.RECORDER_SUBSCRIBE_ENABLED`` (DB column
+    ``app_settings.recorder_subscribe_enabled``, loaded via
+    ``apply_app_settings`` and flipped from the Settings UI at
+    Settings → Scanner). Read on every loop tick so flipping the
+    toggle takes effect within one ``_LOOP_INTERVAL_SECONDS`` cycle.
+    Default OFF keeps the WS feed bounded for trading workflows.
     """
-    raw = os.environ.get("HOMERUN_RECORDER_ENABLED", "").strip().lower()
-    return raw in {"1", "true", "yes", "on"}
+    try:
+        from config import settings as _cfg
+        return bool(getattr(_cfg, "RECORDER_SUBSCRIBE_ENABLED", False))
+    except Exception:
+        return False
 
 
 @dataclass
@@ -292,24 +296,40 @@ async def loop_tick() -> None:
 async def run_loop() -> None:
     """Long-running loop entry-point — call from host worker.
 
-    Plan 0045: short-circuits when ``HOMERUN_RECORDER_ENABLED`` env
-    var is unset/false (default). Keeps the WS feed's subscription
-    set bounded for trading workflows that don't need the recorder's
-    bulk top-N-liquid subscription.
+    Plan 0045: re-checks ``settings.RECORDER_SUBSCRIBE_ENABLED`` on
+    every tick so the operator can flip the toggle from Settings → UI
+    and have it take effect within one ``_LOOP_INTERVAL_SECONDS``
+    cycle without restarting the worker. When disabled the loop
+    idles instead of issuing the bulk subscribe — keeping the WS
+    feed's subscription set bounded for trading workflows that don't
+    need the recorder's bulk top-N-liquid subscription.
     """
-    if not _recorder_enabled():
-        logger.info(
-            "Recorder subscription loop disabled "
-            "(HOMERUN_RECORDER_ENABLED not set) — exiting cleanly. "
-            "Set the env var to enable bulk top-N-liquid subscription."
-        )
-        return
     # Stagger startup so the first tick happens after the catalog is
     # warm but before the first scanner pass produces stale opps.
     await asyncio.sleep(20.0)
+    last_log_state: bool | None = None
     while True:
         try:
-            await loop_tick()
+            enabled = _recorder_enabled()
+            # Log only on state transitions so the loop doesn't spam
+            # one line per tick forever.
+            if enabled != last_log_state:
+                if enabled:
+                    logger.info(
+                        "Recorder subscription loop enabled "
+                        "(settings.RECORDER_SUBSCRIBE_ENABLED=True) — "
+                        "issuing bulk top-N-liquid subscribe on this cycle."
+                    )
+                else:
+                    logger.info(
+                        "Recorder subscription loop idle "
+                        "(settings.RECORDER_SUBSCRIBE_ENABLED=False). "
+                        "Flip on via Settings → Scanner to start "
+                        "bulk top-N-liquid subscription."
+                    )
+                last_log_state = enabled
+            if enabled:
+                await loop_tick()
         except asyncio.CancelledError:
             raise
         except Exception:

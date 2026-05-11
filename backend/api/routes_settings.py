@@ -259,6 +259,20 @@ class ScannerSettingsModel(BaseModel):
             "scanner-source arbitrage workflows."
         ),
     )
+    recorder_subscribe_enabled: bool = Field(
+        default=False,
+        description=(
+            "Plan 0045: when True, the recorder subscription service "
+            "bulk-subscribes the top-N-liquid (default 8000) markets "
+            "to the shared Polymarket WS feed every 60 s so the "
+            "microstructure recorder can capture price ticks for "
+            "backtesting. When False (default), the recorder loop "
+            "idles and never issues subscribe — keeping the "
+            "subscription cap available for the trading hot path. "
+            "Flip on when running backtests / microstructure "
+            "pipelines that need the price-tick history."
+        ),
+    )
 
     @field_validator("market_filter_tags", mode="before")
     @classmethod
