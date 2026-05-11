@@ -518,6 +518,17 @@ class MarketRuntime:
         self._crypto_markets_by_lookup: dict[str, dict[str, Any]] = {}
         self._crypto_token_to_market_ids: dict[str, set[str]] = {}
         self._crypto_asset_to_market_ids: dict[str, set[str]] = {}
+        # Plan 0045: snapshot of clob_token_ids we last asked the
+        # Polymarket WS feed to subscribe on behalf of the crypto lane.
+        # On each ``_sync_crypto_subscriptions`` refresh we diff this
+        # against the new active set, unsubscribe the tokens that
+        # rotated out, and subscribe the new ones. Without the diff
+        # the shared ``_subscribed_assets`` set grew monotonically (live
+        # capture: 7600+ tokens for 9 actual book deliveries) and
+        # Polymarket's per-connection subscription cap silently
+        # dropped the freshest entries — leaving the ``book_depth``
+        # strategy gate to reject every 5 m crypto market.
+        self._crypto_subscribed_tokens: set[str] = set()
         self._event_catalog_markets: dict[str, dict[str, Any]] = {}
         self._event_catalog_updated_at: str | None = None
         self._last_crypto_refresh_at: str | None = None
@@ -1589,19 +1600,63 @@ class MarketRuntime:
             )
 
     async def _sync_crypto_subscriptions(self) -> None:
+        """Reconcile the Polymarket WS subscription set with the
+        crypto lane's currently-tracked clob_token_ids.
+
+        Plan 0045 root-cause fix: previously this method only called
+        ``subscribe(active_tokens)``, leaving older tokens permanently
+        in ``_subscribed_assets``. Combined with the scanner's similar
+        behaviour the shared set climbed to 7000+ entries on a fresh
+        worker-trading boot — far past Polymarket's per-connection
+        subscription cap — and the server silently dropped the
+        freshest entries, including the very crypto markets the
+        strategies needed depth data for.
+
+        Now we keep a per-runtime snapshot of the tokens this lane is
+        responsible for and diff it on every refresh:
+
+        - ``to_subscribe`` — new active tokens not previously asked for;
+        - ``to_unsubscribe`` — tokens we asked for last time but that
+          rotated out of the current active set.
+
+        Other producers (scanner, btc_eth_* strategies) manage their
+        own ranges of ``_subscribed_assets``; this fix only touches
+        the crypto-lane scope.
+        """
         feed_manager = self._feed_manager
         if feed_manager is None or not getattr(feed_manager, "_started", False):
             return
-        active_tokens = sorted(
-            {
-                str(token_id or "").strip()
-                for market in self._crypto_markets
-                for token_id in (market.get("clob_token_ids") or [])
-                if str(token_id or "").strip()
-            }
+        active_tokens: set[str] = {
+            str(token_id or "").strip()
+            for market in self._crypto_markets
+            for token_id in (market.get("clob_token_ids") or [])
+            if str(token_id or "").strip()
+        }
+        previous_tokens = self._crypto_subscribed_tokens
+        to_subscribe = active_tokens - previous_tokens
+        to_unsubscribe = previous_tokens - active_tokens
+        if to_unsubscribe:
+            try:
+                await feed_manager.polymarket_feed.unsubscribe(sorted(to_unsubscribe))
+            except Exception as exc:
+                # Unsubscribe is best-effort: if it fails we keep the
+                # tokens in our snapshot so a later refresh retries.
+                # The book-depth gate will still recover once the
+                # subscribe path delivers fresh data — the leak we are
+                # fighting is on the additive side, not removal.
+                logger.debug(
+                    "Crypto lane WS unsubscribe failed (non-critical): %s", exc
+                )
+                to_unsubscribe = set()
+        if to_subscribe:
+            await feed_manager.polymarket_feed.subscribe(sorted(to_subscribe))
+        # Snapshot only after both calls — if unsubscribe raised and we
+        # cleared to_unsubscribe above, those tokens are still
+        # ``feed._subscribed_assets`` and must remain in our snapshot so
+        # the next refresh retries the diff.
+        self._crypto_subscribed_tokens = (
+            (previous_tokens - to_unsubscribe) | active_tokens
         )
-        if active_tokens:
-            await feed_manager.polymarket_feed.subscribe(active_tokens)
 
     async def _backfill_oracle_history_from_binance(self) -> None:
         """Seed ``chainlink_feed._history`` from Binance klines on startup.
