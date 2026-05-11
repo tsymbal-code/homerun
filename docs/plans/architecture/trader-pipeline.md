@@ -715,7 +715,68 @@ post-fetch drop count at `_last_stage_timings_ms["consumed_set_filtered"]`.
 | Submission-side defence layer (9 modules between decision and fill) | [execution-defense.md](execution-defense.md) |
 | Operator-applied runtime knob-twists (rollback recipes) | [`../../operational/runtime-tweaks.md`](../../operational/runtime-tweaks.md) |
 
-Last verified: 2026-05-10 (Plan 0035: amended the
+## Per-trader strategy parameters (plan 0041)
+
+The UI **Trading Panel → Tune → Parameters → Save Parameters**
+persists per-trader overrides into
+``traders.source_configs_json[].strategy_params`` (per
+``(trader_id, source_key, strategy_key)`` row). Plan 0041 made
+these overrides honoured at **signal-generation** time (not only
+at order submit). The mechanism:
+
+1. The opportunity dispatcher in
+   [`market_runtime._dispatch_with_per_trader_fanout`](../../../backend/services/market_runtime.py)
+   reads the trader→strategy binding map from
+   [`trader_binding_cache`](../../../backend/services/trader_binding_cache.py)
+   (3 s soft-TTL, 30 s hard-stale ceiling — cross-mode: covers
+   live AND shadow traders).
+2. For every subscribed strategy slug that has at least one bound
+   trader, the dispatcher invokes a per-trader strategy instance
+   via
+   [`StrategyLoader.get_or_clone_for_trader`](../../../backend/services/strategy_loader.py).
+   The clone is lazily produced by
+   [`BaseStrategy.clone_for_trader`](../../../backend/services/strategies/base.py)
+   with its config merged as
+   ``default_config ∪ strategies.config ∪ traders.source_configs_json[].strategy_params``.
+   The clone owns its own ``_state``, ``_cycle_trackers``, and
+   filter diagnostics — there is no cross-trader leakage by
+   construction.
+3. Each opportunity the per-trader clone emits is tagged with
+   ``intended_trader_id`` (set by the dispatcher, never by the
+   strategy itself).
+4. ``intent_runtime.publish_opportunities`` persists
+   ``intended_trader_id`` into ``trade_signals.payload_json`` so
+   the scope survives worker restart. It also folds the trader id
+   into the dedupe key so two per-trader clones emitting on the
+   same market produce two distinct ``trade_signals`` rows.
+5. ``intent_runtime.list_unconsumed_signals(trader_id=...)`` now
+   filters out snapshots whose ``intended_trader_id`` is set to
+   a different trader. ``intended_trader_id = None`` keeps the
+   legacy multi-trader-visible routing (used by sources with no
+   per-trader bindings at all).
+6. Cache invalidation. ``StrategyLoader.invalidate_per_trader``
+   fires from ``unload`` / ``reconfigure_loaded`` (global
+   reload) and may be called by the trader-update route to take
+   effect immediately. Without an explicit call the 3 s
+   ``trader_binding_cache`` TTL still propagates the change.
+
+A trader whose ``strategy_params`` for a slug is an empty dict
+still goes through the per-trader path; its effective config
+mirrors the global ``strategies.config``, and its opportunities
+are scoped to the trader id (so adding a second trader with
+non-empty params later does not retroactively cross-contaminate).
+
+The fan-out also preserves the original safety machinery
+(``event_dispatcher.dispatch`` with its 60 s handler timeout +
+force-kill) on the singleton path. Per-trader clones run with a
+narrower ``_PER_TRADER_ON_EVENT_TIMEOUT_SECONDS = 15.0`` ceiling.
+
+Last verified: 2026-05-11 (Plan 0041: documented the per-trader
+clone + binding cache + opportunity scope. Real-diff against
+``strategy_loader.py``, ``market_runtime.py``,
+``intent_runtime.py`` confirms the cache, the fan-out, the
+dedupe-key prefix, and the ``list_unconsumed_signals`` filter
+all in place.); previously 2026-05-10 (Plan 0035: amended the
 `allow_taker_limit_buy_above_signal` row in the Step 5 risk-limit
 table to point at `_chase_up_execution_caps` and the
 entry-band-vs-execution-price split. Real-diff against

@@ -338,6 +338,7 @@ Active plans (canonical order, prerequisites and categories live in
 - [0035 — Split entry-band cap from execution-price cap in shadow chase-up](0035-split-entry-band-from-execution-price-cap.md)
 - [0036 — Per-entry audit of the HIGH-tier knob matrix](0036-high-knob-matrix-per-entry-audit.md)
 - [0037 — Verify Plan 0035 chase-cap drop on 2026-05-11](0037-verify-plan-0035-chase-cap-drop-2026-05-11.md)
+- [0041 — Per-trader strategy params must affect signal generation](0041-per-trader-strategy-params-must-affect-signal-generation.md)
 
 Architecture notes:
 
