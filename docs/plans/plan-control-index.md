@@ -90,6 +90,7 @@ notes.
 | 0043 | [Evict stale per-trader strategy instances on binding-cache refresh](backlog/0043-evict-stale-per-trader-strategy-instances-from-binding-cache.md) | R        | 0041          |
 | 0044 | [Firehose binding cache must include shadow traders](completed/0044-firehose-binding-cache-include-shadow-traders.md) | R        | 0041          |
 | 0045 | [Diagnose why WS cache is empty for tokens already in `_subscribed_assets`](completed/0045-diagnose-ws-cache-empty-for-subscribed-crypto-tokens.md) | R        | 0044          |
+| 0046 | [Offline backtest harness for crypto 5m strategies](backlog/0046-offline-backtest-for-crypto-strategies.md) | F        | 0044, 0045    |
 
 When adding a row: keep this table sorted by ID ascending. Don't
 re-number plans — gaps in IDs are normal and expected (deleted or
