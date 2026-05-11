@@ -4,10 +4,14 @@
 > [`docs/plans/README.md`](README.md) — task format, validation
 > commands, "Mark completed" pattern, move to
 > [`completed/`](completed/) on close. Every commit produced by
-> this plan carries a `Plan: 0038` git trailer (see
-> [Commits and traceability](README.md#commits-and-traceability)).
+> this plan was opened as Plan: 0038 (commits `9bed8182`,
+> `b3518a27`) — the file was renumbered to **0042** after merge to
+> resolve a number collision with the pre-existing completed plan
+> `0038-flag-three-trader-risk-knobs-as-dead.md`. The git trailers
+> on those two commits still read `Plan: 0038`; future commits
+> referencing this plan should carry `Plan: 0042`.
 > Ordering, category, and prerequisites for this plan live in
-> [`plan-control-index.md`](plan-control-index.md).
+> [`../plan-control-index.md`](../plan-control-index.md).
 
 ## Overview
 
