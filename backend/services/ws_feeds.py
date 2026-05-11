@@ -776,10 +776,35 @@ class PolymarketWSFeed:
         """
         if not token_ids:
             return
+        # Plan 0045 attribution — TEMPORARY. Log the caller frame so we
+        # can identify the hidden producer that keeps pushing
+        # ``_subscribed_assets`` past Polymarket's per-connection cap.
+        # Walks one frame up past ``subscribe`` itself; falls back to
+        # "unknown" if frame info is unavailable (defensive). Remove
+        # once root cause is identified and patched. We deliberately
+        # log BEFORE the lock so the timing aligns with whoever
+        # triggered the call.
+        try:
+            import inspect as _inspect
+            outer = _inspect.stack()[1]
+            caller_loc = f"{outer.filename.rsplit('/', 1)[-1]}:{outer.lineno}:{outer.function}"
+        except Exception:
+            caller_loc = "unknown"
+        # Sample the diff size BEFORE we mutate the set so the log
+        # records ``new`` for new IDs about to be added, not 0.
         async with self._sub_lock:
             new_ids = [tid for tid in token_ids if tid not in self._subscribed_assets]
             self._subscribed_assets.update(token_ids)
             should_send = bool(new_ids) and self._ws and self._state == ConnectionState.CONNECTED
+            current_total = len(self._subscribed_assets)
+        logger.info(
+            "Polymarket WS subscribe call (TEMP plan 0045)",
+            caller=caller_loc,
+            requested=len(token_ids),
+            new=len(new_ids),
+            total_after=current_total,
+            will_send=bool(should_send),
+        )
         if should_send:
             _SUBSCRIBE_CHUNK = 100
             for i in range(0, len(new_ids), _SUBSCRIBE_CHUNK):
