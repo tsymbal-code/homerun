@@ -133,8 +133,7 @@ Code-mutating phases get unit tests once we know the fix shape.
 - `ssh polyhome-1 "cd /home/polyhome/homerun && docker compose exec -T postgres psql -U homerun -d homerun -c \"SELECT id, runtime_sequence, status, created_at FROM trade_signals WHERE strategy_type='crypto_5m_last_outcome' AND created_at > NOW() - INTERVAL '30 minutes' ORDER BY created_at;\""` — used to count missed-by-trader signals.
 - `ssh polyhome-1 "cd /home/polyhome/homerun && docker compose logs --since=15m worker-trading 2>&1 | rg -F 'eff366f86217484b98950ea836099a02' | head -40"` — fast-trader cycle log filter.
 - `ssh polyhome-1 "cd /home/polyhome/homerun && docker compose logs --since=15m worker-trading 2>&1 | rg -F 'signal_cache' | head -20"` — cache subscriber/bootstrap log lines.
-- After fix lands and tests exist:
-  `docker compose exec backend pytest -q backend/tests/test_signal_cache_runtime_freshness.py` (file to be created in Task 4).
+- `docker compose exec backend pytest -q backend/tests/test_signal_cache_runtime_freshness.py` — after Task 4 lands; file is created by that task.
 
 ## Out of scope
 
@@ -167,7 +166,7 @@ For trader `eff366f86217484b98950ea836099a02` over the
   `count(trader_decisions) == count(trade_signals)` for the
   trader, OR equivalently `executed / (executed + expired) ≥ 90 %`.
 
-## Task 1: Pin which layer dropped the signal
+### Task 1: Pin which layer dropped the signal
 
 - [ ] On `polyhome-1`, capture a structured log dump for the next
   full miss event. Add `LOG_LEVEL=DEBUG` for the
@@ -223,7 +222,7 @@ For trader `eff366f86217484b98950ea836099a02` over the
   layer is identified by elimination.
 - [ ] Mark completed
 
-## Task 2: Pick a fix shape based on Task 1's evidence
+### Task 2: Pick a fix shape based on Task 1's evidence
 
 The fix shape depends on which branch Task 1 lands in. Each
 branch has a clean-cut, no-back-compat fix listed below; this
@@ -287,7 +286,7 @@ task is to pick exactly ONE.
   Task 3 below before writing code.
 - [ ] Mark completed
 
-## Task 3: Implement the fix
+### Task 3: Implement the fix
 
 - [ ] Implement the chosen branch from Task 2. Single-concern
   diff: do NOT bundle two branches even if both look related.
@@ -301,7 +300,7 @@ task is to pick exactly ONE.
   code per `agents.md` § Core Principles.
 - [ ] Mark completed
 
-## Task 4: Tests
+### Task 4: Tests
 
 - [ ] Create
   `backend/tests/test_signal_cache_runtime_freshness.py`. The
@@ -334,7 +333,7 @@ task is to pick exactly ONE.
   the bug.
 - [ ] Mark completed
 
-## Task 5: Live verification on polyhome-1
+### Task 5: Live verification on polyhome-1
 
 - [ ] `./deploy/sync_remote.sh` from the local checkout.
 - [ ] `docker compose restart worker-trading backend` (rolled in
@@ -351,7 +350,7 @@ task is to pick exactly ONE.
   with the new evidence — the chosen branch was wrong.
 - [ ] Mark completed
 
-## Task 6: Doc + close-out
+### Task 6: Doc + close-out
 
 - [ ] Update [`docs/plans/architecture/copy-trade-pipeline.md`](architecture/copy-trade-pipeline.md):
   add a one-paragraph note under the section corresponding to the
