@@ -130,6 +130,34 @@ class Settings(BaseSettings):
     # racing the projection loop in dev / under heavy load.
     INTENT_RUNTIME_SKELETON_RETENTION_MAX_AGE_SECONDS: int = 3600
 
+    # Plan 0049: trader_events two-tier retention horizons. The
+    # ``firehose_evaluation`` tier is the bulk (~262k rows/h after
+    # Plan 0044) so a tight 7-day window keeps the table bounded
+    # (~44M rows / ~59 GB at steady state). All other event types
+    # (decision / order / provider_health / circuit_breaker etc.)
+    # are low-volume audit/diagnostic and stay 90 days. Both knobs
+    # are DB-backed via ``app_settings`` and re-read by the
+    # housekeeper each cycle (see
+    # ``services.trader_events_retention_service``).
+    TRADER_EVENTS_FIREHOSE_RETENTION_DAYS: int = 7
+    TRADER_EVENTS_OTHER_RETENTION_DAYS: int = 90
+    # Cadence of the housekeeper sweep itself. 6h matches the
+    # ``chainlink_feed._housekeeper_loop`` cadence we mirror; the
+    # first run after startup is delayed 60 s so it doesn't
+    # collide with worker-plane bringup.
+    TRADER_EVENTS_HOUSEKEEPER_INTERVAL_SECONDS: int = 21600
+    # First-run grace period before the housekeeper kicks. Keeps
+    # the news plane's startup phase clean of long-running DELETE
+    # batches.
+    TRADER_EVENTS_HOUSEKEEPER_STARTUP_DELAY_SECONDS: int = 60
+    # Max rows deleted per batch — the firehose backlog can run
+    # into the hundreds of millions on first activation, so we
+    # delete in 50k-row chunks with a short pause between batches
+    # to avoid runaway autovacuum / replica lag / table-level
+    # locks. See plan 0049 § Task 2 for the rationale.
+    TRADER_EVENTS_HOUSEKEEPER_BATCH_SIZE: int = 50_000
+    TRADER_EVENTS_HOUSEKEEPER_BATCH_PAUSE_SECONDS: float = 0.1
+
     # Scanner Settings
     SCAN_WATCHDOG_SECONDS: int = 600  # Max seconds before a scan cycle is killed
     SCANNER_HEARTBEAT_INTERVAL_SECONDS: float = 5.0  # Worker heartbeat persistence cadence
@@ -965,6 +993,9 @@ async def apply_search_filters():
         ("SCANNER_WS_SUBSCRIBE_ENABLED", "scanner_ws_subscribe_enabled", False),
         # Plan 0045: recorder bulk WS subscriber toggle.
         ("RECORDER_SUBSCRIBE_ENABLED", "recorder_subscribe_enabled", False),
+        # Plan 0049: trader_events two-tier retention horizons.
+        ("TRADER_EVENTS_FIREHOSE_RETENTION_DAYS", "trader_events_firehose_retention_days", 7),
+        ("TRADER_EVENTS_OTHER_RETENTION_DAYS", "trader_events_other_retention_days", 90),
         # Trading safety limits (used by live_execution_service order validation + /trader-orchestrator/live/status)
         ("MAX_TRADE_SIZE_USD", "max_trade_size_usd", 100.0),
         ("MAX_DAILY_TRADE_VOLUME", "max_daily_trade_volume", 1000.0),

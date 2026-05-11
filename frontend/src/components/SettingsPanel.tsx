@@ -275,6 +275,8 @@ export default function SettingsPanel({
     cleanup_wallet_activity_rollup_days: 60,
     cleanup_wallet_activity_dedupe_enabled: true,
     llm_usage_retention_days: 30,
+    trader_events_firehose_retention_days: 7,
+    trader_events_other_retention_days: 90,
     market_cache_hygiene_enabled: true,
     market_cache_hygiene_interval_hours: 6,
     market_cache_retention_days: 120,
@@ -451,6 +453,8 @@ export default function SettingsPanel({
         cleanup_wallet_activity_rollup_days: settings.maintenance?.cleanup_wallet_activity_rollup_days ?? 60,
         cleanup_wallet_activity_dedupe_enabled: settings.maintenance?.cleanup_wallet_activity_dedupe_enabled ?? true,
         llm_usage_retention_days: settings.maintenance?.llm_usage_retention_days ?? 30,
+        trader_events_firehose_retention_days: settings.maintenance?.trader_events_firehose_retention_days ?? 7,
+        trader_events_other_retention_days: settings.maintenance?.trader_events_other_retention_days ?? 90,
         market_cache_hygiene_enabled: settings.maintenance?.market_cache_hygiene_enabled ?? true,
         market_cache_hygiene_interval_hours: settings.maintenance?.market_cache_hygiene_interval_hours ?? 6,
         market_cache_retention_days: settings.maintenance?.market_cache_retention_days ?? 120,
@@ -2516,6 +2520,58 @@ export default function SettingsPanel({
                               max={3650}
                               className="mt-1 text-sm"
                             />
+                          </div>
+                        </div>
+
+                        <div className="space-y-2">
+                          <div>
+                            <p className="text-sm font-medium">Trader events retention</p>
+                            <p className="text-xs text-muted-foreground">
+                              Two-tier retention for the <code>trader_events</code> firehose.
+                              Apply requires no restart — housekeeper picks up at next 6 h tick.
+                            </p>
+                          </div>
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                            <div>
+                              <Label className="text-xs text-muted-foreground">Firehose Retention (days)</Label>
+                              <Input
+                                type="number"
+                                value={maintenanceForm.trader_events_firehose_retention_days}
+                                onChange={(e) => {
+                                  const value = Number.parseInt(e.target.value, 10)
+                                  setMaintenanceForm(p => ({
+                                    ...p,
+                                    trader_events_firehose_retention_days: Number.isNaN(value) ? p.trader_events_firehose_retention_days : value,
+                                  }))
+                                }}
+                                min={1}
+                                max={365}
+                                className="mt-1 text-sm"
+                              />
+                              <p className="text-xs text-muted-foreground mt-1">
+                                Drives the bulk of <code>trader_events</code> volume (~99%).
+                              </p>
+                            </div>
+                            <div>
+                              <Label className="text-xs text-muted-foreground">Other Events Retention (days)</Label>
+                              <Input
+                                type="number"
+                                value={maintenanceForm.trader_events_other_retention_days}
+                                onChange={(e) => {
+                                  const value = Number.parseInt(e.target.value, 10)
+                                  setMaintenanceForm(p => ({
+                                    ...p,
+                                    trader_events_other_retention_days: Number.isNaN(value) ? p.trader_events_other_retention_days : value,
+                                  }))
+                                }}
+                                min={1}
+                                max={3650}
+                                className="mt-1 text-sm"
+                              />
+                              <p className="text-xs text-muted-foreground mt-1">
+                                Audit trail (decision / order / provider_health / circuit_breaker).
+                              </p>
+                            </div>
                           </div>
                         </div>
 

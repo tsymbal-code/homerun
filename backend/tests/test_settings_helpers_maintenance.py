@@ -56,6 +56,8 @@ def test_apply_update_request_sets_llm_usage_retention_days():
         cleanup_wallet_activity_rollup_days=75,
         cleanup_wallet_activity_dedupe_enabled=False,
         llm_usage_retention_days=14,
+        trader_events_firehose_retention_days=7,
+        trader_events_other_retention_days=90,
         market_cache_hygiene_enabled=True,
         market_cache_hygiene_interval_hours=4,
         market_cache_retention_days=120,
@@ -73,3 +75,5 @@ def test_apply_update_request_sets_llm_usage_retention_days():
     assert settings.cleanup_trade_signal_days == 21
     assert settings.cleanup_wallet_activity_rollup_days == 75
     assert settings.cleanup_wallet_activity_dedupe_enabled is False
+    assert settings.trader_events_firehose_retention_days == 7
+    assert settings.trader_events_other_retention_days == 90

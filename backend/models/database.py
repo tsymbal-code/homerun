@@ -1582,6 +1582,22 @@ class AppSettings(Base):
     cleanup_wallet_activity_rollup_days = Column(Integer, default=60)
     cleanup_wallet_activity_dedupe_enabled = Column(Boolean, default=True)
     llm_usage_retention_days = Column(Integer, default=30)
+    # Plan 0049: trader_events two-tier retention. Plan 0044's
+    # cross-mode firehose telemetry pushes ~262k firehose_evaluation
+    # rows/h into trader_events; without retention the table reaches
+    # 30 GB in 4 days. The housekeeper in
+    # ``services.trader_events_retention_service`` deletes rows
+    # older than these horizons on a 6h cadence — the firehose tier
+    # uses a tight 7-day window (covers Plan 0046/0048's typical
+    # 24h backtest replay with comfortable headroom), the other
+    # tier keeps the low-volume audit trail (decision / order /
+    # provider_health / circuit_breaker) for 90 days.
+    trader_events_firehose_retention_days = Column(
+        Integer, default=7, nullable=False, server_default="7"
+    )
+    trader_events_other_retention_days = Column(
+        Integer, default=90, nullable=False, server_default="90"
+    )
     market_cache_hygiene_enabled = Column(Boolean, default=True)
     market_cache_hygiene_interval_hours = Column(Integer, default=6)
     market_cache_retention_days = Column(Integer, default=120)

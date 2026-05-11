@@ -305,6 +305,34 @@ def test_idempotent_within_same_cycle(strategy, fresh_cache):
     assert second is None
 
 
+def test_retries_within_cycle_when_book_not_ready_at_milestone(strategy, fresh_cache):
+    """If the WS cache is empty at exactly entry_seconds_after_start
+    the strategy must retry on later ticks within the same cycle —
+    not waste the whole cycle waiting for a one-shot milestone."""
+    _observe(
+        strategy,
+        _market(condition_id="0xa", reference=80_000.0, end_ms=END_MS),
+        now_ms=START_MS + 5_000,
+    )
+    new_market = _market(
+        condition_id="0xb",
+        reference=80_050.0,
+        end_ms=END_MS + CYCLE_MS,
+        yes_token=YES_TOKEN_B,
+        no_token=NO_TOKEN_B,
+    )
+    # First milestone tick: book NOT seeded → rejection at book_depth.
+    first = strategy._evaluate_market(new_market, now_ms=END_MS + 30_000)
+    assert first is None
+    # Operator's WS cache populates 10 seconds later.
+    _seed_book(fresh_cache, YES_TOKEN_B, ask_price=0.55)
+    # Second tick on the same cycle (40 s into cycle) → MUST emit now
+    # rather than waiting for the next cycle.
+    second = strategy._evaluate_market(new_market, now_ms=END_MS + 40_000)
+    assert second is not None
+    assert second.strategy_context["side"] == "YES"
+
+
 # ---------------------------------------------------------------------------
 # VWAP entry band
 # ---------------------------------------------------------------------------
@@ -414,6 +442,36 @@ def test_per_asset_state_is_isolated(fresh_cache):
 # ---------------------------------------------------------------------------
 # Happy path full payload
 # ---------------------------------------------------------------------------
+
+
+def test_emitted_edge_percent_is_raw_max_roi_and_positive(strategy, fresh_cache):
+    """Trader's ``_base_evaluate`` rejects signals with ``edge_percent < 0``.
+    We report raw max-ROI (= (1 - vwap)/vwap * 100), not expected-value
+    adjusted by the 0.5 coin-flip prior — otherwise every VWAP > 0.50
+    would emit a negative-edge signal and never get past the trader."""
+    _observe(
+        strategy,
+        _market(condition_id="0xa", reference=80_000.0, end_ms=END_MS),
+        now_ms=START_MS + 5_000,
+    )
+    _seed_book(fresh_cache, YES_TOKEN_B, ask_price=0.65)  # VWAP > 0.5
+    opp = strategy._evaluate_market(
+        _market(
+            condition_id="0xb",
+            reference=80_050.0,
+            end_ms=END_MS + CYCLE_MS,
+            yes_token=YES_TOKEN_B,
+            no_token=NO_TOKEN_B,
+        ),
+        now_ms=END_MS + 30_000,
+    )
+    assert opp is not None
+    # ``custom_roi_percent`` lands on ``opp.roi_percent`` — that is the
+    # field the signal bridge copies into ``trade_signals.edge_percent``,
+    # which is what ``BaseStrategy._base_evaluate`` then gates on.
+    # Edge for vwap=0.65 → (1-0.65)/0.65 * 100 ≈ 53.85%.
+    assert opp.roi_percent > 0
+    assert opp.roi_percent == pytest.approx(53.85, abs=0.5)
 
 
 def test_happy_path_opportunity_carries_full_context(strategy, fresh_cache):

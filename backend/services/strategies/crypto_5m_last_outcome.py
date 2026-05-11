@@ -42,7 +42,6 @@ from services.strategies._firehose import (
     emit_evaluation_nowait,
 )
 from services.strategies.base import BaseStrategy
-from services.strategy_helpers.cycle_tracker import CycleTracker
 from services.strategy_sdk import StrategySDK
 from utils.converters import to_float
 from utils.logger import get_logger
@@ -236,9 +235,14 @@ class Crypto5mLastOutcomeStrategy(BaseStrategy):
         # JUST ended (the one whose winner the upcoming cycle should
         # follow). ``None`` until the first rollover for that asset.
         self._last_outcome: dict[str, Optional[str]] = {}
-        # Per-market CycleTracker — fires the entry milestone exactly
-        # once per cycle and self-resets on cycle rollover.
-        self._cycle_trackers: dict[str, CycleTracker] = {}
+        # Set of market_ids we have already emitted an opportunity for.
+        # Once a cycle's emit succeeds we stop re-firing for that cycle;
+        # on the next cycle the market_id changes so it falls out of
+        # this set naturally. We intentionally do NOT use a one-shot
+        # CycleTracker milestone — the book is often not yet populated
+        # at our 30 s threshold, so the strategy must keep retrying
+        # within the cycle until the book-depth / VWAP gates pass.
+        self._emitted_market_ids: set[str] = set()
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -450,23 +454,26 @@ class Crypto5mLastOutcomeStrategy(BaseStrategy):
             asset=asset, market_id=market_id, reference=reference,
         )
 
-        # Gate 3: entry-milestone crossed. CycleTracker self-resets
-        # when end_ts_ms changes, so one emit per cycle is automatic.
-        tracker = self._cycle_trackers.get(market_id)
-        if tracker is None or tracker.cycle_seconds != 300.0:
-            tracker = CycleTracker(
-                cycle_seconds=300.0, milestones_s=(entry_milestone,),
-            )
-            self._cycle_trackers[market_id] = tracker
-        crossed = tracker.crossed(end_ms_value, now_ms=now_ms)
+        # Gate 3: entry-milestone passed AND not yet emitted for this
+        # cycle. We deliberately allow re-evaluation on every tick once
+        # ``entry_seconds_after_start`` has elapsed — the order book
+        # often isn't populated at the first tick after rollover, and
+        # missing the depth gate at exactly 30 s used to silently waste
+        # the whole cycle. Once an Opportunity is built, the market_id
+        # is added to ``_emitted_market_ids`` and subsequent ticks for
+        # the same cycle short-circuit here.
         seconds_into_cycle = max(0.0, 300.0 - (end_ms_value - now_ms) / 1000.0)
-        milestone_passed = entry_milestone in crossed
+        already_emitted = market_id in self._emitted_market_ids
+        milestone_elapsed = seconds_into_cycle + 1e-3 >= entry_milestone
+        milestone_passed = milestone_elapsed and not already_emitted
         gates.append(GateResult(
-            "entry_milestone", "Entry milestone crossed", milestone_passed,
+            "entry_milestone", "Entry milestone crossed (not yet emitted)",
+            milestone_passed,
             score=seconds_into_cycle,
             detail=(
                 f"milestone={entry_milestone:.0f}s "
-                f"elapsed={seconds_into_cycle:.1f}s"
+                f"elapsed={seconds_into_cycle:.1f}s "
+                f"emitted={already_emitted}"
             ),
         ))
         if not milestone_passed:
@@ -532,13 +539,30 @@ class Crypto5mLastOutcomeStrategy(BaseStrategy):
         # All gates passed — build the Opportunity.
         edge_per_share = 1.0 - vwap_price
         edge_percent = (edge_per_share / vwap_price) * 100.0 if vwap_price > 0 else 0.0
-        # No empirical win-rate estimate for this strategy yet (it has
-        # never run live). Use 0.50 — pure coin-flip prior — so the
-        # ROI / risk numbers reported into the firehose carry no false
-        # precision. Operators can interpret a downstream PnL series
-        # to set a better prior once data accumulates.
+        # We have no empirical win-rate yet (the strategy has never
+        # run live), so the ``confidence`` we report is the neutral
+        # coin-flip prior 0.50. ``edge_percent`` here is the **raw
+        # max-ROI** if YES wins — NOT an expected-value adjustment by
+        # the prior — because:
+        #
+        # (1) The user explicitly asked for "no additional filters" —
+        #     applying a coin-flip prior to edge would gate every emit
+        #     to negative ROI at VWAP > 0.50 and the strategy could
+        #     never collect data to refine the prior.
+        # (2) ``BaseStrategy._base_evaluate`` checks
+        #     ``edge_percent >= min_edge_percent`` on the trader, and
+        #     the operator is the one who picks an honest threshold
+        #     (e.g. min_edge_percent=10 means "I want at least 10%
+        #     possible upside per share"). The composition
+        #     `edge × confidence` gives them expected value if they
+        #     want it.
+        # (3) Once we accumulate live PnL, the prior gets revised; the
+        #     edge convention stays the same as midcycle's so cross-
+        #     strategy comparisons are apples-to-apples (midcycle
+        #     packs win_prob into custom_roi but its empirical
+        #     win_prob is 0.80 and emits never go negative there).
         win_prob_estimate = 0.50
-        expected_payout = win_prob_estimate * 1.0
+        expected_payout = 1.0  # Polymarket pays $1 per winning share
         token_id = typed_market.clob_token_ids[0 if side == "YES" else 1]
 
         slug = str(market.get("slug") or market_id)
@@ -578,8 +602,7 @@ class Crypto5mLastOutcomeStrategy(BaseStrategy):
             ],
             is_guaranteed=False,
             skip_fee_model=True,
-            custom_roi_percent=edge_percent * win_prob_estimate
-            - (1.0 - win_prob_estimate) * 100.0,
+            custom_roi_percent=edge_percent,  # raw max-ROI if we win
             custom_risk_score=1.0 - win_prob_estimate,
             confidence=win_prob_estimate,
         )
@@ -593,6 +616,12 @@ class Crypto5mLastOutcomeStrategy(BaseStrategy):
                 extra={"reason": "create_opportunity returned None"},
             )
             return None
+
+        # Mark the cycle as emitted so the milestone gate short-circuits
+        # for the remainder of this market's ticks. Cleared implicitly
+        # on cycle rollover because the new cycle has a different
+        # market_id.
+        self._emitted_market_ids.add(market_id)
 
         emit_emit_nowait(
             strategy_slug="crypto_5m_last_outcome",

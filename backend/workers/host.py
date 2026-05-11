@@ -587,6 +587,30 @@ class WorkerHost:
             except asyncio.CancelledError:
                 raise
 
+    async def _run_trader_events_retention_loop(self) -> None:
+        """Run the plan-0049 trader_events two-tier retention housekeeper.
+
+        Lives on the ``news`` plane: lowest hot-path budget (the
+        trading plane stays clear of long-running DELETE batches)
+        and there's already pattern for low-priority periodic
+        background work here. The service does its own startup
+        grace, 6 h cadence, batched DELETEs, and Redis-based
+        idempotency lease — see
+        ``services.trader_events_retention_service``.
+        """
+        try:
+            from services.trader_events_retention_service import _housekeeper_loop
+
+            await _housekeeper_loop()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning(
+                "trader_events retention loop crashed",
+                plane=self._plane_name,
+                exc_info=exc,
+            )
+
     async def _run_recorder_subscription_loop(self) -> None:
         """Run the proactive recorder subscription service.
 
@@ -1035,6 +1059,20 @@ class WorkerHost:
             self._background_tasks.append(asyncio.create_task(
                 self._run_recorder_subscription_loop(),
                 name="recorder-subscription",
+            ))
+
+        # Plan 0049: trader_events two-tier retention housekeeper.
+        # Lives on the ``news`` plane (lowest hot-path budget; the
+        # trading plane MUST stay clear of long-running DELETE
+        # batches that drain the firehose backlog). The legacy
+        # ``all`` plane runs it too so single-process dev mode keeps
+        # the table bounded. Without this loop, plan 0044's cross-mode
+        # firehose telemetry produces ~8.4 GB/day of audit rows that
+        # never get pruned.
+        if self._plane_name in {"news", "all"}:
+            self._background_tasks.append(asyncio.create_task(
+                self._run_trader_events_retention_loop(),
+                name="trader-events-retention",
             ))
 
         if self._enabled("load_strategy_registry"):

@@ -9,22 +9,13 @@
 > Ordering, category, and prerequisites for this plan live in
 > [`plan-control-index.md`](../plan-control-index.md).
 >
-> **Status: BACKLOG.** Activate when one of:
-> (a) `trader_events` table size exceeds **30 GB** on the
->     `polyhome-1` Postgres instance (current rate observed
->     2026-05-11: ~8.4 GB/day, so this triggers at roughly
->     T+4 days from the Plan 0044 firehose deploy), OR
-> (b) `pg_database_size('homerun')` exceeds **40 GB**, OR
-> (c) host `/dev/sda1` usage exceeds **40 %**, OR
-> (d) operator wants to land it pre-emptively before any of the
->     above thresholds.
->
-> The Plan 0044 firehose-binding-cache change (cross-mode telemetry)
-> is what unlocked the volume — `firehose_evaluation` rows now land
-> for every shadow bot's every tick, ~5 rows/s/asset per bot. This
-> plan is the planned follow-up. Do NOT roll back Plan 0044 to
-> "fix" the volume — the telemetry is wanted; only retention is
-> missing.
+> **Status: ACTIVE.** Activated 2026-05-11 by operator under
+> trigger (d) — pre-emptive landing before the 30 GB / 40 % thresholds
+> hit. The Plan 0044 firehose-binding-cache change is what unlocked
+> the volume — `firehose_evaluation` rows now land for every shadow
+> bot's every tick, ~5 rows/s/asset per bot. This plan is the
+> planned follow-up. Do NOT roll back Plan 0044 to "fix" the volume
+> — the telemetry is wanted; only retention is missing.
 
 ## Overview
 
@@ -95,47 +86,47 @@ here.
 
 ### Task 1: DB-backed retention knobs in `app_settings`
 
-- [ ] Add Alembic migration adding two columns to `app_settings`:
+- [x] Add Alembic migration adding two columns to `app_settings`:
       `trader_events_firehose_retention_days` (`Integer`, default
       **7**, nullable false) and
       `trader_events_other_retention_days` (`Integer`, default 90,
       nullable false). Migration file lives at
-      `backend/alembic/versions/<date>_add_trader_events_retention_knobs.py`.
-- [ ] Mirror the columns in
+      `backend/alembic/versions/202605110004_add_trader_events_retention_knobs.py`.
+- [x] Mirror the columns in
       [`backend/models/database.py`](../../../backend/models/database.py)
       `AppSettings` ORM alongside the other `*_enabled` /
       `*_seconds` knobs.
-- [ ] Hook through `apply_search_filters` /
+- [x] Hook through `apply_search_filters` /
       `apply_runtime_settings_overrides` in
       [`backend/config.py`](../../../backend/config.py) so the
       values are reflected on the in-memory `settings` singleton
       (same pattern as `SCANNER_WS_SUBSCRIBE_ENABLED` from Plan
       0045). Keys: `TRADER_EVENTS_FIREHOSE_RETENTION_DAYS` /
       `TRADER_EVENTS_OTHER_RETENTION_DAYS`.
-- [ ] Wire the two fields into the Settings panel
+- [x] Wire the two fields into the Settings panel
       ([`frontend/src/components/SettingsPanel.tsx`](../../../frontend/src/components/SettingsPanel.tsx))
       under a new "Trader events retention" subsection with a
       visible "Apply requires no restart — housekeeper picks up at
       next 6 h tick" hint.
-- [ ] Regression test:
+- [x] Regression test:
       `backend/tests/test_app_settings_retention_knobs.py` asserts
       defaults, GET round-trip, PUT round-trip, and that
       `apply_search_filters` (called from FastAPI startup) populates
       `config.settings.TRADER_EVENTS_*_RETENTION_DAYS` from the DB
       row.
-- [ ] Mark completed
+- [x] Mark completed
 
 ### Task 2: housekeeper background task
 
-- [ ] Add `services/trader_events_retention_service.py` modelled on
+- [x] Add `services/trader_events_retention_service.py` modelled on
       `chainlink_feed._housekeeper_loop` (`:476-541`):
       * `_housekeeper_loop` — async task; first tick after 60 s
         startup delay, then every 6 h
       * `_housekeeper_once` — two `DELETE FROM trader_events
         WHERE created_at < NOW() - INTERVAL '...'` statements, one
-        per tier, using the current values of
-        `settings.TRADER_EVENTS_FIREHOSE_RETENTION_DAYS` and
-        `settings.TRADER_EVENTS_OTHER_RETENTION_DAYS`
+        per tier, reading the current values from `app_settings`
+        each cycle (so operator changes propagate within one
+        cycle without restarting the worker plane).
       * Each delete is **batched at 50 000 rows / iteration** (use
         `DELETE … WHERE ctid IN (SELECT ctid … LIMIT 50000)` and
         loop until 0 rows affected) so we don't lock the table for
@@ -144,21 +135,20 @@ here.
       * Emits one structured `info` log per run with `rows_deleted`,
         `tier`, `elapsed_ms`. No new firehose row — we are not
         feeding the snake.
-- [ ] Start the task from the `worker-news` plane's startup
-      lifespan (it has the lightest hot-path budget and an existing
-      pattern for low-priority periodic background work — confirm
-      from
-      [`backend/workers/`](../../../backend/workers/) which file
-      owns its lifespan; the housekeeper does not need to run on
-      every worker).
-- [ ] Idempotency: on startup, if a previous housekeeper run is
-      still alive (detected via Redis-key heartbeat
-      `trader_events_housekeeper_running` with 1 h TTL), skip this
-      cycle and log a warn. Belt-and-suspenders against two
-      workers racing.
-- [ ] Regression test:
+- [x] Start the task from the `worker-news` plane's startup
+      lifespan in
+      [`backend/workers/host.py`](../../../backend/workers/host.py)
+      (`_initialize_services`); the legacy `all` plane runs it
+      too so single-process dev mode keeps the table bounded.
+- [x] Idempotency: each `_housekeeper_once` run sets a Redis
+      heartbeat key (`trader_events_housekeeper_running`) with NX
+      + 1 h TTL; if another worker already holds the lease the
+      call returns `skipped=1` and logs a warn. Soft-fails to
+      "always acquire" when Redis is disabled so single-host dev
+      still runs the sweep.
+- [x] Regression test:
       `backend/tests/test_trader_events_retention.py`:
-      * insert 10 firehose rows aged 1-20 days + 5 non-firehose
+      * insert 20 firehose rows aged 1-20 days + 91 non-firehose
         rows aged 30-120 days
       * call `_housekeeper_once()`
       * assert rows aged > `firehose_retention_days` for firehose
@@ -166,34 +156,37 @@ here.
       * assert rows aged > `other_retention_days` for non-firehose
         are deleted, others preserved
       * assert one structured log emitted per tier
-- [ ] Mark completed
+      * extra coverage: DB-backed override path, idempotent re-runs,
+        Redis-lease skip path, batched-delete drain loop, dry-run
+        summary, cooperative shutdown via `stop_event`.
+- [x] Mark completed
 
 ### Task 3: operational guardrails
 
-- [ ] Document the first-run drain cost: by the time activation
+- [x] Document the first-run drain cost: by the time activation
       triggers fire (see policy header — threshold (a) is
       `trader_events` > 30 GB, ~T+4 d), the backlog is already
       well past the new 7-day retention floor, so the first
       housekeeper run must delete every row older than 7 days
       in a single sitting. Worst case if activation is delayed
       to threshold (b)/(c): ≥ 14 days × 8.4 GB/day ≈ ~118 GB
-      to prune. First housekeeper kick must therefore prune
+      to prune. First housekeeper kick prunes
       `firehose_evaluation` in 50 000-row batches with pauses to
-      avoid runaway autovacuum or replica lag. Add a "First-run"
-      subsection to the strategy doc / runbook noting that the
-      first 24 h after enabling the housekeeper should be
-      monitored.
-- [ ] Add a small CLI helper at
+      avoid runaway autovacuum or replica lag. The "First-run"
+      subsection lives in the architecture note (see next bullet)
+      noting that the first 24 h after enabling the housekeeper
+      should be monitored.
+- [x] Add a small CLI helper at
       `scripts/trader_events_housekeeper_dry_run.py` that prints
       `(rows_to_delete, oldest_row, bytes_estimate)` per tier
       **without deleting**. Lets the operator preview before turning
       retention down further.
-- [ ] Update
+- [x] Update
       [architecture/websocket-and-events.md](../architecture/websocket-and-events.md)
       with a "Retention" subsection under "Polymarket WS
       subscription discipline" describing the two tiers, the 6 h
       cadence, and the DB-backed knobs.
-- [ ] Mark completed
+- [x] Mark completed
 
 ### Task 4: close
 

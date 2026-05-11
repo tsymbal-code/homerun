@@ -187,8 +187,9 @@ Confirmed `EventType` values used across the codebase:
 
 ## Polymarket WS subscription discipline (Plan 0045)
 
-> **Last verified: 2026-05-11 10:21 UTC (commits `2b44929b` through
-> `7d7791ac`).**
+> **Last verified: 2026-05-11 15:00 UTC (commits `2b44929b` through
+> `68cf8dbd` — Plan 0045 WS-subscription discipline plus Plan 0049
+> trader_events retention housekeeper).**
 
 The Polymarket market-channel WS
 (`wss://ws-subscriptions-clob.polymarket.com/ws/market`) imposes a
@@ -260,6 +261,60 @@ runtime attribute in `config.py:apply_app_settings`, and add a
 Settings → Scanner toggle pattern matching
 `scanner_ws_subscribe_enabled`. Default OFF for any producer that
 is not strictly required by the trading hot path.
+
+### Retention (Plan 0049)
+
+> Plan 0044's cross-mode firehose binding cache made every shadow
+> bot's every tick land a `firehose_evaluation` row in
+> `trader_events` (~262 k rows / h ≈ 8.4 GB / day after Postgres
+> overhead). Without retention the table reaches 30 GB in 4 days
+> and the `polyhome-1` host's `/dev/sda1` runs out within a month.
+> Plan 0049 added a two-tier housekeeper that keeps the table
+> bounded.
+
+Two retention horizons, both DB-backed
+([`app_settings.trader_events_firehose_retention_days`](../../../backend/models/database.py)
+and `app_settings.trader_events_other_retention_days`):
+
+| Tier | Default | Covers | Why |
+|---|---|---|---|
+| `firehose_evaluation` | **7 days** | The bulk (~99 % of volume); every shadow-bot tick. | Backtester (Plan 0046) reaches back at most 24 h; A/B-test windows are days, not months. Steady-state size: ~44 M rows ≈ ~59 GB on disk. |
+| Everything else | **90 days** | Low-volume audit trail (`decision`, `order`, `provider_health`, `circuit_breaker`, ...). | Diagnostic / regulatory; volume is negligible. |
+
+Service:
+[`backend/services/trader_events_retention_service.py`](../../../backend/services/trader_events_retention_service.py).
+6 h cadence, 60 s startup grace, 50 000-row batches with 100 ms
+pauses between batches (avoids runaway autovacuum / replica lag /
+table-level locks on the first run that drains the backlog).
+Each cycle reads the DB-backed knobs first, so flipping them in
+Settings → DB Maintenance takes effect within ≤ 6 h without a
+worker restart.
+
+Lives on the `news` worker plane (the trading plane MUST stay clear
+of long-running DELETE batches; news has the lightest hot-path
+budget) — wired from
+[`backend/workers/host.py`](../../../backend/workers/host.py)
+`_initialize_services`. Idempotency lease via Redis key
+`trader_events_housekeeper_running` (NX + 1 h TTL); soft-fails to
+"always acquire" when Redis is disabled so single-host dev still
+runs the sweep.
+
+Operator dry-run (no DELETE):
+
+```bash
+ssh polyhome-1 'cd /home/polyhome/homerun && docker compose exec -T \
+    backend python -m scripts.trader_events_housekeeper_dry_run --json'
+```
+
+**First-run cost.** The first sweep after the housekeeper lands
+must drain every row older than 7 days in one sitting. By the time
+the activation triggers fire (table size > 30 GB ⇒ T+4 days), that
+backlog is already past the new 7-day floor; if activation is
+delayed to threshold (b)/(c) (>=14 d × 8.4 GB/day ≈ ~118 GB), the
+50 000-row batches with pauses are what keeps Postgres responsive
+during the drain. Monitor `pg_total_relation_size('trader_events')`
+and `docker compose logs -f worker-news --since 1h` for the first
+24 h after enabling.
 
 ### Diagnostic logs still in code (TEMP)
 
@@ -341,4 +396,4 @@ operationally — log volume is bounded (≤ 5 lines / 30 s).
 | What happens after a trader event reaches execution | [`execution-and-fills.md`](execution-and-fills.md) |
 | Three-plane runtime overview | [`system-overview.md`](system-overview.md) |
 
-Last verified: 2026-05-08
+Last verified: 2026-05-11

@@ -93,7 +93,7 @@ notes.
 | 0046 | [Offline backtest harness for crypto 5m strategies](completed/0046-offline-backtest-for-crypto-strategies.md) | F        | 0044, 0045    |
 | 0047 | [Crypto 5m last-outcome-follow strategy](completed/0047-crypto-5m-last-outcome-follow-strategy.md) | B        | —             |
 | 0048 | [2026-05-12 — first crypto_5m_midcycle param sweep on 24h](backlog/0048-2026-05-12-crypto-5m-midcycle-param-sweep.md) | D        | 0046          |
-| 0049 | [Retention housekeeper for `trader_events` (esp. firehose_evaluation)](backlog/0049-trader-events-retention-housekeeper.md) | R        | 0044          |
+| 0049 | [Retention housekeeper for `trader_events` (esp. firehose_evaluation)](0049-trader-events-retention-housekeeper.md) | R        | 0044          |
 
 When adding a row: keep this table sorted by ID ascending. Don't
 re-number plans — gaps in IDs are normal and expected (deleted or
@@ -390,6 +390,27 @@ Only notes that aren't obvious from the title. All plans must follow
   CI job split (unit-fast / db-slow), Hypothesis property tests
   for FIFO/Kelly/Cox-PH, `respx` cassettes, mutation testing.
   Each is a follow-up.
+- **Plan 0049 — Retention housekeeper for `trader_events`.**
+  Refactor / hardening (R). Direct follow-up to plan 0044, which
+  unlocked the volume that triggered this plan. Plan 0044's
+  cross-mode firehose binding cache made `trader_events` accrete
+  ~262 k `firehose_evaluation` rows / hour (~8.4 GB / day after
+  Postgres overhead) — without retention the table reaches 30 GB
+  in 4 days and the host's `/dev/sda1` runs out within a month.
+  Adds: two DB-backed knobs in `app_settings`
+  (`trader_events_firehose_retention_days` default **7**,
+  `trader_events_other_retention_days` default **90**); a
+  background housekeeper in
+  `services/trader_events_retention_service.py` running on the
+  `news` worker plane at 6 h cadence with 50 000-row batched
+  DELETEs (avoids runaway autovacuum / replica lag during the
+  first-run drain); Redis-key idempotency lease; a Settings → DB
+  Maintenance subsection for runtime tuning; and a
+  `scripts/trader_events_housekeeper_dry_run.py` CLI for previewing
+  how much volume the next sweep would prune. Activated 2026-05-11
+  pre-emptively under trigger (d). DO NOT roll back plan 0044 to
+  "fix" the firehose volume — the cross-mode telemetry is
+  intentional; only retention was missing.
 - **Plan 0039 — Migrate Polymarket integration to CLOB V2.**
   Backend feature (B). **Completed 2026-05-10.** Polymarket cut
   over from CLOB V1 to V2 on 2026-04-28 — V1 exchange contracts

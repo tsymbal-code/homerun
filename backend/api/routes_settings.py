@@ -640,6 +640,24 @@ class MaintenanceSettings(BaseModel):
             "Delete LLM usage log rows older than this many days (0 disables). Current-month rows are always retained."
         ),
     )
+    trader_events_firehose_retention_days: int = Field(
+        default=7,
+        ge=1,
+        le=365,
+        description=(
+            "Delete trader_events rows with event_type='firehose_evaluation' older than this many days. "
+            "Plan 0049 — applied by the housekeeper on a 6h cadence. Apply requires no restart."
+        ),
+    )
+    trader_events_other_retention_days: int = Field(
+        default=90,
+        ge=1,
+        le=3650,
+        description=(
+            "Delete trader_events rows with event_type<>'firehose_evaluation' older than this many days. "
+            "Plan 0049 — covers the low-volume audit trail (decision/order/provider_health/circuit_breaker)."
+        ),
+    )
     market_cache_hygiene_enabled: bool = Field(
         default=True,
         description="Enable automatic market metadata hygiene cleanup",
