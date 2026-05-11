@@ -1100,6 +1100,28 @@ class IntentRuntime:
             max_age_seconds=max_age_seconds,
         )
 
+    @staticmethod
+    def _allow_hot_subscription_for_source(source: str | None) -> bool:
+        """Plan 0045: gate hot WS subscription on the scanner-WS flag.
+
+        Scanner emits many opportunities per scan; without the gate the
+        intent runtime would feed every scanner-source token to
+        ``polymarket_feed.subscribe`` here, defeating the scanner-side
+        toggle that operators flip off to keep the Polymarket WS
+        per-connection cap clear for crypto-lane book streams. Other
+        sources (``crypto``, ``traders``, etc.) keep their hot-subscribe
+        prewarm because they have stronger latency requirements and
+        don't push the volume.
+        """
+        normalized = str(source or "").strip().lower()
+        if normalized != "scanner":
+            return True
+        try:
+            from config import settings as _cfg
+            return bool(getattr(_cfg, "SCANNER_WS_SUBSCRIBE_ENABLED", False))
+        except Exception:
+            return False
+
     async def _ensure_hot_subscriptions(self, token_ids: list[str]) -> None:
         normalized = _normalize_token_ids(token_ids)
         if not normalized:
@@ -1226,6 +1248,8 @@ class IntentRuntime:
         if not token_ids:
             return
 
+        if not self._allow_hot_subscription_for_source(normalized_source):
+            return
         await self._ensure_hot_subscriptions(token_ids)
         if wait_token_ids:
             await self._wait_for_fresh_ws_quotes(
@@ -1730,7 +1754,9 @@ class IntentRuntime:
                 }
             )
             await self._publish_signal_stats()
-        if token_ids:
+        if token_ids and self._allow_hot_subscription_for_source(
+            snapshot_copy.get("source") if snapshot_copy is not None else None
+        ):
             self._start_task(
                 self._ensure_hot_subscriptions(token_ids),
                 name=f"intent-runtime-defer-prewarm-{normalized_signal_id}",
@@ -1969,7 +1995,15 @@ class IntentRuntime:
                 if snapshot["dedupe_key"]:
                     self._signal_ids_by_dedupe_key[snapshot["dedupe_key"]] = snapshot["id"]
                 self._source_signal_ids.setdefault(snapshot["source"], set()).add(snapshot["id"])
-                if status in _SIGNAL_ACTIVE_STATUSES:
+                if (
+                    status in _SIGNAL_ACTIVE_STATUSES
+                    and self._allow_hot_subscription_for_source(snapshot.get("source"))
+                ):
+                    # Plan 0045: skip scanner-source tokens here when
+                    # the SCANNER_WS_SUBSCRIBE_ENABLED flag is off — the
+                    # hydrate-time WS subscribe was a major contributor
+                    # to the 7000+ ``_subscribed_assets`` leak that
+                    # pushed Polymarket past its per-connection cap.
                     tokens_to_subscribe.update(snapshot.get("required_token_ids") or [])
                 if defer_reason is not None:
                     self._set_deferred_state_locked(
@@ -2504,7 +2538,7 @@ class IntentRuntime:
                     existing["status"] = "expired"
                     existing["updated_at"] = _to_iso(now)
 
-        if prewarm_token_ids:
+        if prewarm_token_ids and self._allow_hot_subscription_for_source(normalized_source):
             self._start_task(
                 self._ensure_hot_subscriptions(sorted(prewarm_token_ids)),
                 name=f"intent-runtime-prewarm-{normalized_source or 'signals'}",
