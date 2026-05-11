@@ -97,6 +97,7 @@ notes.
 | 0050 | [Auto-resync SYSTEM strategies from disk on every container boot](0050-auto-resync-system-strategies-on-boot.md) | B        | 0041          |
 | 0051 | [REST book-fallback for crypto_5m_last_outcome](completed/0051-rest-book-fallback-for-crypto-5m-last-outcome.md) | B        | 0047          |
 | 0052 | [Grace period in expire_source_signals_except](completed/0052-grace-period-in-expire-source-signals-except.md) | R        | 0011, 0047, 0051 |
+| 0053 | [Fast-trader signal cache miss between signal_bus INSERT and intent_runtime read](0053-fast-trader-signal-cache-miss-between-signal-bus-insert-and-runtime-read.md) | R        | 0010, 0011, 0032, 0044, 0052 |
 
 When adding a row: keep this table sorted by ID ascending. Don't
 re-number plans — gaps in IDs are normal and expected (deleted or
@@ -442,6 +443,34 @@ Only notes that aren't obvious from the title. All plans must follow
   cycles). That defect now owns its own plan (proposed Plan 0053);
   it is NOT a `signal_bus` problem and `expire_source_signals_except`
   needs no further changes.
+- **Plan 0053 — Fast-trader signal cache miss between
+  `signal_bus` INSERT and `intent_runtime` read.** Refactor /
+  hardening (R, secondary D for the diagnostic Task 1). Direct
+  follow-up to plan 0052: with the projection-sweep race closed,
+  the trader `eff366f86217484b98950ea836099a02` (fast-tier
+  Crypto 5m Last Outcome) still misses ~50 % of signals — but
+  now they live their full 60 s grace window in `trade_signals`
+  with `status='pending'` while the trader's
+  `worker-trading` cycles report `runtime_list_signals=0.6 ms
+  returning 0 rows + signal_source: cache + 0 rows`. Both the
+  in-process `IntentRuntime._signals_by_id` map and the
+  Redis-backed `signal_cache._signals` dict agree the new signal
+  doesn't exist for this trader. Plan 0053's Task 1 is purely
+  diagnostic: capture three missed-signal lifecycles and identify
+  by elimination whether the dropping layer is (A) Redis pub/sub
+  on the `signal_payloads` channel, (A2) skeleton-INSERT not
+  publishing, (B) `runtime_sequence` left NULL by a regression in
+  Plan 0009's allow-list, or (C) the fast-trader's
+  `cursor_runtime_sequence` advanced past a slow-allocated
+  signal. Tasks 2-6 then implement the matching fix shape (each
+  branch has a clean-cut, ≤80 LOC fix outlined in the plan body),
+  ship a regression test that pins the missed-signal-in-grace-
+  window invariant, and verify on `polyhome-1` against the same
+  30-min trader_decisions / trade_signals count comparison Plan
+  0052 used. Pre-fix baseline pinned 2026-05-11 19:00 UTC: 18
+  trade_signals → 8 trader_decisions for the 18:30-19:00 window;
+  post-fix pass criterion is `count(trader_decisions) ≥
+  0.9 × count(trade_signals)`.
 - **Plan 0049 — Retention housekeeper for `trader_events`.**
   Refactor / hardening (R). Direct follow-up to plan 0044, which
   unlocked the volume that triggered this plan. Plan 0044's
