@@ -4,7 +4,7 @@
 > [`docs/plans/README.md`](../README.md) — task format, validation
 > commands, "Mark completed" pattern, move to
 > [`completed/`](../completed/) on close. Every commit produced by
-> this plan carries a `Plan: 0034` git trailer (see
+> this plan carries a `Plan: 0040` git trailer (see
 > [Commits and traceability](../README.md#commits-and-traceability)).
 > Ordering, category, and prerequisites for this plan live in
 > [`plan-control-index.md`](../plan-control-index.md).
@@ -235,6 +235,6 @@ the same Python class can run in either role.
       `POLYMARKET_CLIENT_MODE` rollback recipe (set to
       `inprocess` + redeploy → reverts to today's behaviour
       without code changes).
-- [ ] `git mv docs/plans/0034-...md docs/plans/completed/`.
+- [ ] `git mv docs/plans/0040-...md docs/plans/completed/`.
 - [ ] Update [`plan-control-index.md`](../plan-control-index.md).
 - [ ] Mark completed

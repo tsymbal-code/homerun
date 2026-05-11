@@ -84,6 +84,7 @@ notes.
 | 0037 | [Verify Plan 0035 chase-cap drop on 2026-05-11](0037-verify-plan-0035-chase-cap-drop-2026-05-11.md) | D        | 0035          |
 | 0038 | [Flag three additional `TRADER_RISK_DEFAULTS` knobs as dead-code in the UI](completed/0038-flag-three-trader-risk-knobs-as-dead.md) | U        | 0031, 0036    |
 | 0039 | [Migrate Polymarket integration to CLOB V2](completed/0039-migrate-to-polymarket-clob-v2.md) | B        | —             |
+| 0040 | [Extract Polymarket HTTP client into a separate process](backlog/0040-extract-polymarket-http-client-into-separate-process.md) | B        | —             |
 
 When adding a row: keep this table sorted by ID ascending. Don't
 re-number plans — gaps in IDs are normal and expected (deleted or
