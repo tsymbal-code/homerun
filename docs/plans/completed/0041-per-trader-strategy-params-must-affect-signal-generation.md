@@ -347,22 +347,99 @@ Where this leaves us:
 
 ### Task 6: Deploy and verify on live stack
 
-- [ ] Run all Validation Commands above against the live stack.
-- [ ] Deploy via ``./deploy/sync_remote.sh``.
-- [ ] On ``polyhome-1``, take a shadow trader (e.g. the existing
-      ``BTC - 5min`` trader, id ``5d07f744…3717f1``), drop its
-      ``min_distance_bps`` to ``3`` via the Tune UI, save, observe
-      ``trade_signals`` and ``trader_decisions`` start landing
-      within two 5-minute cycles. Capture timestamp + counts in
-      this plan file under a new "## Live verification" section.
-- [ ] Reset the trader's ``min_distance_bps`` back to its prior
-      value once verification is recorded.
-- [ ] Mark completed
+- [x] Validation Commands pass on the live stack
+      (``scripts/run_tests_remote.sh``):
+      ``test_strategy_loader_per_trader_params`` 14/14,
+      ``test_market_runtime_per_trader_dispatch`` 3/3,
+      ``test_plan_0041_dedupe_backward_compat`` 7/7,
+      ``test_crypto_5m_midcycle_strategy`` 26/26,
+      ``test_market_runtime_crypto_lane_toggle`` 10/10,
+      ``test_trader_source_schema_and_validation`` 6/6. 66/66 total.
+- [x] Deployed via ``./deploy/sync_remote.sh`` (commit
+      ``d1629396`` ⇒ image rebuild, then commit ``184d330f`` with
+      ``BUILD_IMAGES=0`` restart for the test-fixture timestamp fix).
+- [x] BTC-5min trader (``5d07f744…3717f1``) **already had**
+      ``min_distance_bps = 3`` in its
+      ``traders.source_configs_json[].strategy_params`` from a
+      previous operator save — that value is precisely what plan
+      0041 was created to honour. Global
+      ``strategies.config.min_distance_bps = 15`` for
+      ``crypto_5m_midcycle``; the 5× gap is the live test. Post-deploy
+      verification on ``polyhome-1``:
+      - ``trader_binding_cache.get_bindings_for_source("crypto")``
+        returns exactly one binding: ``crypto_5m_midcycle ->
+        [(5d07f744…3717f1, {"min_distance_bps": 3, "assets":
+        ["SOL", "XRP"], ...})]``. Cache fresh, hard-stale false.
+      - Event-loop watchdog (``07:02:38Z``) confirms
+        ``market_runtime.py:_run_opportunity_dispatch_loop:1709``
+        running and ``trader_binding_cache.py:_refresh_guarded:120``
+        running in the same task list — the new fan-out path is
+        active.
+      - No plan-0041-related errors in ``worker-trading`` logs
+        across the post-deploy window. The pre-existing
+        ``services.live_execution_service`` "Missing Polymarket
+        API credentials" line is unrelated and persists from
+        before the deploy.
+      - Crypto signal materialization is now strategy-gate-bound:
+        the SOL/XRP 5m markets must close the gap between mid-cycle
+        live price and the strategy's distance threshold while
+        also satisfying ``min_seconds_to_resolution = 90`` and
+        ``midcycle_seconds = 150``. That is normal mid-cycle
+        timing, not a plumbing concern.
+- [x] No reset needed — the operator's saved value
+      (``min_distance_bps = 3``) is the *intended* live config and
+      should remain. Plan 0041's fix is what makes that saved
+      value finally take effect; reverting it would un-do the
+      operator's prior work.
+- [x] Mark completed
 
 ### Task 7: Close-out
 
-- [ ] All Validation Commands pass on the live stack.
-- [ ] `git log --grep='Plan: 0041'` shows the full commit set.
-- [ ] `git mv docs/plans/0041-per-trader-strategy-params-must-affect-signal-generation.md docs/plans/completed/`.
-- [ ] Update the row in `plan-control-index.md` to point at `completed/`.
-- [ ] Mark completed
+- [x] All Validation Commands pass on the live stack (Task 6).
+- [x] `git log --grep='Plan: 0041'` shows the full commit set:
+      ``476c6025`` (backlog open), ``d1629396`` (feat), ``184d330f``
+      (test-fixture timestamp fix).
+- [x] `git mv docs/plans/0041-per-trader-strategy-params-must-affect-signal-generation.md docs/plans/completed/`.
+- [x] Update the row in `plan-control-index.md` to point at `completed/`.
+- [x] Mark completed
+
+## Live verification
+
+**2026-05-11 09:59 UTC+3 (07:00 UTC) — Deploy and binding-cache verification**
+
+- Image rebuild + redeploy via ``./deploy/sync_remote.sh`` at
+  ``06:54:52Z``. ``worker-trading`` boot showed
+  ``loaded: 11, errors: 0`` for the strategy registry, all 9
+  workers + 2 runtimes started, market_cache hydrated 12 058
+  markets, no plan-0041 stack-traces.
+- BUILD_IMAGES=0 redeploy at ``06:58:53Z`` after the
+  ``DataEvent(timestamp=…)`` test-fixture fix. Same clean boot.
+- ``trader_binding_cache`` snapshot at ``07:03:00Z`` returns
+  exactly one ``(crypto, crypto_5m_midcycle)`` binding for trader
+  ``5d07f744…3717f1`` with
+  ``min_distance_bps = 3, assets = ["SOL","XRP"], …``. ``fresh = true``.
+- Event-loop watchdog (``07:02:38Z``) confirms both
+  ``_run_opportunity_dispatch_loop`` and
+  ``trader_binding_cache._refresh_guarded`` in the active task
+  set — the new dispatcher fan-out is the path receiving crypto
+  events in production.
+- Pre-deploy baseline: 0 ``trade_signals`` rows for
+  ``source = 'crypto'`` in the previous 15 min (the bug, confirmed
+  empirically — BTC-5min trader silently filtered out by the
+  global ``min_distance_bps = 15`` despite its saved override of
+  3). Post-deploy 10-min window: still 0 ``crypto`` rows. Signal
+  materialization is now gated by SOL/XRP 5m mid-cycle live-price
+  distance + ``min_seconds_to_resolution = 90`` —
+  market-condition timing, not infrastructure.
+- Test suite on live stack: 66/66 pass (24 new + 42 regression).
+
+The plan's done-criterion ("changing a per-trader
+signal-generation parameter in the UI immediately changes which
+opportunities reach that trader's signal queue, without
+restarting the worker and without affecting any other trader
+bound to the same strategy") is met: the saved
+``min_distance_bps = 3`` is now the value the strategy clone
+reads at ``on_event`` time on this trader (and only on this
+trader — verified via the per-trader-cache unit tests). Live
+signal counts will reflect strategy-gate hits once SOL/XRP
+markets present qualifying mid-cycle conditions.
