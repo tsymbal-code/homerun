@@ -190,12 +190,21 @@ here.
 
 ### Task 4: close
 
-- [ ] Smoke-verify on `polyhome-1`: kick the housekeeper once
-      manually (`docker compose exec backend python -c
-      "from services.trader_events_retention_service import
-      _housekeeper_once; import asyncio; print(asyncio.run(_housekeeper_once()))"`),
-      confirm `pg_total_relation_size('trader_events')` drops by
-      the expected amount (depending on backlog).
-- [ ] Move this plan from `backlog/` to `completed/` and update
+- [x] Smoke-verify on `polyhome-1`: housekeeper kicked manually
+      from `backend` container (returned
+      `{"firehose_rows_deleted":0, "other_rows_deleted":0,
+      "elapsed_ms_total":507, "skipped":0}`) and the auto-scheduled
+      run inside `worker-news` fired at T+60 s after plane bringup
+      (`2026-05-11T15:33:34Z`, both tiers logged
+      `rows_deleted=0`). Drain was zero because, at first run, the
+      newest data in `trader_events` was only ~5 d old (table size
+      was 1823 MB / 1.15 M firehose rows, all from today; non-
+      firehose 140 k rows from past 5 d) — every row was inside its
+      retention horizon. The drop in `pg_total_relation_size` will
+      land naturally on the first sweep after data ages past 7 d
+      (firehose tier) or 90 d (other tier); end-to-end DELETE path
+      is exercised by `test_housekeeper_deletes_old_firehose_and_old_other`
+      and `test_housekeeper_batched_delete_drains_large_backlog`.
+- [x] Move this plan from `docs/plans/` to `completed/` and update
       `plan-control-index.md`.
-- [ ] Mark completed
+- [x] Mark completed

@@ -103,10 +103,13 @@ async def test_housekeeper_deletes_old_firehose_and_old_other(
         _patch_isolated_session_factory(monkeypatch, session_factory)
         await _seed_app_settings(session_factory)
 
-        # Firehose rows aged 1..20 days. With the default 7-day
-        # firehose horizon, ages 8..20 must be deleted (13 rows);
-        # ages 1..7 must survive (7 rows).
-        for day in range(1, 21):
+        # Firehose rows clearly INSIDE the 7-day horizon (1..6 days
+        # old) and clearly OUTSIDE it (8..20 days old). Skip age=7
+        # to avoid the boundary case where the housekeeper's own
+        # ``now`` snapshot lands microseconds after the seed-time
+        # snapshot — a row seeded at exactly 7d shifts past the
+        # cutoff and gets deleted, breaking the count assertion.
+        for day in list(range(1, 7)) + list(range(8, 21)):
             await _seed_event(
                 session_factory,
                 event_id=f"firehose-{day}d",
@@ -114,10 +117,9 @@ async def test_housekeeper_deletes_old_firehose_and_old_other(
                 age_days=day,
             )
 
-        # Non-firehose audit rows aged 30..120 days. With the
-        # default 90-day other horizon, only ages 91..120 must
-        # be deleted (30 rows); 30..90 (61 rows) survive.
-        for day in range(30, 121):
+        # Non-firehose audit rows: 30..89 inside the 90-day horizon,
+        # 91..120 outside. Skip age=90 for the same boundary reason.
+        for day in list(range(30, 90)) + list(range(91, 121)):
             await _seed_event(
                 session_factory,
                 event_id=f"order-{day}d",
@@ -125,8 +127,8 @@ async def test_housekeeper_deletes_old_firehose_and_old_other(
                 age_days=day,
             )
 
-        # Sanity: 20 + 91 = 111 rows present pre-sweep.
-        assert len(await _existing_event_ids(session_factory)) == 111
+        # Sanity: 19 firehose + 90 order = 109 rows present pre-sweep.
+        assert len(await _existing_event_ids(session_factory)) == 109
 
         from services.trader_events_retention_service import _housekeeper_once
 
@@ -140,16 +142,16 @@ async def test_housekeeper_deletes_old_firehose_and_old_other(
         assert summary["other_batches"] >= 1
 
         remaining = await _existing_event_ids(session_factory)
-        assert len(remaining) == 7 + 61
+        assert len(remaining) == 6 + 60
 
-        # Surviving firehose rows are exactly those aged 1..7 days.
-        for day in range(1, 8):
+        # Surviving firehose rows are exactly those aged 1..6 days.
+        for day in range(1, 7):
             assert f"firehose-{day}d" in remaining
         for day in range(8, 21):
             assert f"firehose-{day}d" not in remaining
 
-        # Surviving order rows are exactly those aged 30..90 days.
-        for day in range(30, 91):
+        # Surviving order rows are exactly those aged 30..89 days.
+        for day in range(30, 90):
             assert f"order-{day}d" in remaining
         for day in range(91, 121):
             assert f"order-{day}d" not in remaining
