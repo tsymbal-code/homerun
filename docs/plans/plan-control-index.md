@@ -93,6 +93,7 @@ notes.
 | 0046 | [Offline backtest harness for crypto 5m strategies](completed/0046-offline-backtest-for-crypto-strategies.md) | F        | 0044, 0045    |
 | 0047 | [Crypto 5m last-outcome-follow strategy](completed/0047-crypto-5m-last-outcome-follow-strategy.md) | B        | —             |
 | 0048 | [2026-05-12 — first crypto_5m_midcycle param sweep on 24h](backlog/0048-2026-05-12-crypto-5m-midcycle-param-sweep.md) | D        | 0046          |
+| 0049 | [Retention housekeeper for `trader_events` (esp. firehose_evaluation)](backlog/0049-trader-events-retention-housekeeper.md) | R        | 0044          |
 
 When adding a row: keep this table sorted by ID ascending. Don't
 re-number plans — gaps in IDs are normal and expected (deleted or
