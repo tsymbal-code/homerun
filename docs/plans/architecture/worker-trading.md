@@ -387,6 +387,91 @@ Source data (lane off):
   `cap_add: [SYS_PTRACE]` was re-applied for the capture and
   reverted immediately after (plan 0006 Task 7).
 
+### After plan 0054 (2026-05-12, firehose backpressure tightened)
+
+The crypto fast-binary lane was re-enabled some time after plan
+0006 was archived. Without the lane gated, the firehose emission
+path returned as the dominant load contributor — strategies
+inside `worker-trading` emitted **~61 firehose events / second**,
+99.9 % of them `verbosity=whisper` (per-gate per-market evaluations
+that no consumer renders by default).
+
+The Plan 0054 pre-fix evidence
+([`work-artifacts/0054-pre-fix-evidence.md`](../work-artifacts/0054-pre-fix-evidence.md))
+captured the resulting starvation pattern for the
+`Focused - 0x10c95474a8` shadow trader at
+`interval_seconds=5`:
+
+- **CPU 95.3 %** on the trading core (steady-state).
+- **Coverage 82.6 %** signal → decision (target ≥ 90 %).
+- **p99 lag 16 420 ms** (target ≤ 5 000 ms).
+- **9 consumption gaps ≥ 30 s** in 30 min, max gap **5 min 28 s**.
+- `trader_decisions.payload_json` avg **5 KB**, max **8 KB**
+  (rules out a Postgres-side / β explanation).
+
+Two changes landed:
+
+1. **Min-verbosity floor** (`FIREHOSE_MIN_VERBOSITY`, default
+   `murmur`) in
+   [`backend/services/strategies/_firehose.py`](../../../backend/services/strategies/_firehose.py).
+   Every `emit_*_nowait` / `emit_*` short-circuits **before**
+   `_fire_and_forget` allocates an asyncio task when
+   `tier_rank(verbosity) < _MIN_VERBOSITY_RANK`. The rank is
+   cached on first emit (process-startup-only knob, no live
+   tuning by design).
+2. **In-flight budget 256 → 64.** The existing per-loop ceiling
+   was tightened from 256 to 64 in
+   [`_INFLIGHT_TASK_BUDGET`](../../../backend/services/strategies/_firehose.py).
+   Pre-fix sampling at 30 s cadence never observed > 0 in-flight
+   in steady-state — the budget is a defensive cap for transient
+   stalls (e.g. binding-cache refresh blocking on a slow DB
+   query), not the main lever.
+
+Post-fix measurements (see "Post-fix" section of the same
+evidence artifact for the raw numbers):
+
+| Metric | Pre-fix (06:10–06:16 UTC) | Post-fix (06:28–06:58 UTC) | Δ |
+|---|---:|---:|---|
+| CPU (steady-state)           | 95.3 %     | 98.5 %     | ≈ same (noise) |
+| Coverage signal→decision     | 82.6 %     | 52.3 %     | **fails** acceptance — see "cursor race" below |
+| p99 lag (consumed signals)   | 16 420 ms  | 13 908 ms  | small improvement |
+| Consumption gaps ≥ 30 s      | 9          | 3          | **−67 %** |
+| `Trader cycle slow` / 30 min | 2          | **0**      | **−100 %** |
+| Firehose events / s          | 61 (99.9 % whisper) | **0.087** (murmur+voice) | **−99.86 %** |
+| `firehose dropping` warnings | n/a (budget=256, never bit) | 0 (budget=64, never bit) | no saturation |
+
+**Plan 0054 lands its α target completely.** The
+WHISPER `firehose_evaluation` stream is collapsed entirely
+(−100 %), the worker no longer queues ~60 fire-and-forget
+observability tasks per second, and per-cycle latency
+warnings fall to zero. CPU stays single-core saturated —
+the other hotspots
+([`Measured CPU profile`](#measured-cpu-profile-2026-05-07))
+have re-emerged as the new dominant load now that the
+firehose path is gone.
+
+**Out of scope of plan 0054** (and therefore not addressed by this
+section): the **normal-tier cursor race**. In the post-fix
+30-minute window, 41 of 86 lead-wallet signals were never inserted
+into `trader_signal_consumption` at all — the worker was idle when
+those signals would have been due, not busy with firehose work.
+This is the same pattern as
+[`backlog/0053-...md`](../backlog/0053-fast-trader-signal-cache-miss-between-signal-bus-insert-and-runtime-read.md)
+branch (C) at the normal-priority tier. The α-fix could not close
+the gap because the residual is structural: `runtime_sequence`
+advances past pending rows when newer rows commit first. Coverage
+acceptance (≥ 90 %) is therefore deferred to **Plan 0057**
+(and, in parallel, **Plan 0055** which targets the
+`traders_copy_trade` processor concurrency ceiling — the
+operator's complementary diagnosis of the same Plan 0054
+residual). Plan 0054 stays merged — its fix is load-bearing for any future
+trader density beyond a single shadow bot.
+
+Source data:
+
+- [`work-artifacts/0054-pre-fix-evidence.md`](../work-artifacts/0054-pre-fix-evidence.md)
+- Plan: [`completed/0054-cap-firehose-emission-load.md`](../completed/0054-cap-firehose-emission-load.md)
+
 ## Why a bigger box helped only halfway
 
 The 2026-05-07 resource bump (4→8 vCPU, 7.6→15 GiB RAM) gave
@@ -655,4 +740,4 @@ build pipeline for something else" item, not a solo project.
 - [Trader Pipeline](trader-pipeline.md) — sibling note covering the
   business-side data flow rather than the process model.
 
-Last verified: 2026-05-08
+Last verified: 2026-05-12

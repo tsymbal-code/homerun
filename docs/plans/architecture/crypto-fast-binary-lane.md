@@ -292,8 +292,9 @@ control row.
 
 Series IDs are DB-overridable via `AppSettings`
 ([`config.py:422-437`](../../../backend/config.py)). Defaults
-shipped in the env are the production values for
-`polyhome-1`.
+shipped in the env are the production values for the
+branch-derived target (`<HOMERUN_HOST>`, see
+[deploy-targets.md](deploy-targets.md)).
 
 `ThreadPoolExecutor(max_workers=16)` for parallel Gamma fetches —
 hard-coded, not tunable. With 16 series this is one worker per

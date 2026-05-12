@@ -35,7 +35,7 @@ __tablename__ `traders`, ~line 3784). Окремої таблиці
 Рядок із live-стану дивимось так:
 
 ```bash
-ssh polyhome-1 'cd /home/polyhome/homerun && docker compose exec -T \
+ssh <HOMERUN_HOST> 'cd /home/polyhome/homerun && docker compose exec -T \
   postgres psql -U homerun -d homerun -x -c \
   "SELECT id, name, mode, latency_class, is_enabled, is_paused, \
    block_new_orders, interval_seconds, last_run_at \
@@ -106,7 +106,7 @@ ssh polyhome-1 'cd /home/polyhome/homerun && docker compose exec -T \
 > подивіться `app_settings.settings_json.global_runtime.live_risk_clamps`.
 
 ```bash
-ssh polyhome-1 'cd /home/polyhome/homerun && docker compose exec -T \
+ssh <HOMERUN_HOST> 'cd /home/polyhome/homerun && docker compose exec -T \
   postgres psql -U homerun -d homerun -c \
   "SELECT settings_json->'\''global_runtime'\''->'\''live_risk_clamps'\'' \
    FROM app_settings WHERE id=1"'
@@ -267,11 +267,14 @@ API:
 
 ## SQL-рецепти для діагностики
 
-> Завжди через SSH, бо постгрес тільки на `polyhome-1`.
+> Завжди через SSH, бо постгрес тільки на віддаленому хості
+> (`<HOMERUN_HOST>` — це `polyhome-prod` для `main` і `polyhome-1`
+> для `dev`, див.
+> [`docs/plans/architecture/deploy-targets.md`](../plans/architecture/deploy-targets.md)).
 
 ```bash
 # Розподіл рішень за останні 24 год для конкретного бота
-ssh polyhome-1 'cd /home/polyhome/homerun && docker compose exec -T \
+ssh <HOMERUN_HOST> 'cd /home/polyhome/homerun && docker compose exec -T \
   postgres psql -U homerun -d homerun -c \
   "SELECT decision, count(*) FROM trader_decisions \
    WHERE trader_id = '\''<TRADER_ID>'\'' \
@@ -279,7 +282,7 @@ ssh polyhome-1 'cd /home/polyhome/homerun && docker compose exec -T \
    GROUP BY decision ORDER BY count(*) DESC"'
 
 # Топ причин blocked / skipped
-ssh polyhome-1 'cd /home/polyhome/homerun && docker compose exec -T \
+ssh <HOMERUN_HOST> 'cd /home/polyhome/homerun && docker compose exec -T \
   postgres psql -U homerun -d homerun -c \
   "SELECT reason, count(*) FROM trader_decisions \
    WHERE trader_id='\''<TRADER_ID>'\'' \
@@ -288,13 +291,13 @@ ssh polyhome-1 'cd /home/polyhome/homerun && docker compose exec -T \
    GROUP BY reason ORDER BY count(*) DESC LIMIT 20"'
 
 # Поточні відкриті позиції + ордери
-ssh polyhome-1 'cd /home/polyhome/homerun && docker compose exec -T \
+ssh <HOMERUN_HOST> 'cd /home/polyhome/homerun && docker compose exec -T \
   postgres psql -U homerun -d homerun -c \
   "SELECT (SELECT count(*) FROM trader_positions WHERE trader_id='\''<TID>'\'' AND status='\''open'\'') AS open_positions, \
           (SELECT count(*) FROM trader_orders    WHERE trader_id='\''<TID>'\'' AND status='\''open'\'') AS open_orders"'
 
 # Детальний risk_snapshot з останнього blocked-рішення
-ssh polyhome-1 'cd /home/polyhome/homerun && docker compose exec -T \
+ssh <HOMERUN_HOST> 'cd /home/polyhome/homerun && docker compose exec -T \
   postgres psql -U homerun -d homerun -x -c \
   "SELECT created_at, reason, risk_snapshot_json \
    FROM trader_decisions \
@@ -302,7 +305,7 @@ ssh polyhome-1 'cd /home/polyhome/homerun && docker compose exec -T \
    ORDER BY created_at DESC LIMIT 1"'
 
 # Останні revisions конфігу
-ssh polyhome-1 'cd /home/polyhome/homerun && docker compose exec -T \
+ssh <HOMERUN_HOST> 'cd /home/polyhome/homerun && docker compose exec -T \
   postgres psql -U homerun -d homerun -c \
   "SELECT id, actor, created_at \
    FROM trader_config_revisions \

@@ -10,6 +10,15 @@ This file is the **rollback reference** when a tuning experiment
 needs to be undone — every entry records the *before* and *after*
 values plus the exact rollback recipe.
 
+> **Host references in this journal are historical.** Past entries
+> name the literal host (`polyhome-1`, `polyhome-prod`) that was
+> correct on the day the entry was written and must not be
+> rewritten retroactively. Future entries should use the
+> branch-derived `<HOMERUN_HOST>` placeholder, with the resolved
+> alias spelled out in the entry's `Verification` block —
+> consult [`docs/plans/architecture/deploy-targets.md`](../plans/architecture/deploy-targets.md)
+> for the SSOT mapping.
+
 ## Format
 
 Each entry is appended to "Entries", newest at the bottom. Never

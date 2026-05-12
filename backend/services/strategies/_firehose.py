@@ -93,24 +93,39 @@ _binding_refresh_lock: asyncio.Lock | None = None
 _binding_refresh_inflight: bool = False
 
 # ---------------------------------------------------------------------------
-# Fix OO — Firehose emission backpressure.
+# Plan 0054 — Firehose emission backpressure (tightened).
 #
-# Pre-fix observation: stall dumps showed 1000+ tasks parked at
-# ``_firehose.py:emit_evaluation:327`` and ``emit_emit:391``.  Every
-# crypto_update tick, six strategies each emit several gate/eval/emit
-# events per market they consider — easily 300-600 fire-and-forget
-# tasks per second.  When the binding cache refresh blocked on a slow
-# DB query (or audit-write Redis publish hiccupped), tasks accumulated
-# faster than they drained, saturating the event loop and pushing
-# orchestrator cycles to 30-90 s.
+# Original observation (kept for historical context): stall dumps
+# showed 1000+ tasks parked at ``_firehose.py:emit_evaluation`` and
+# ``emit_emit``.  Every crypto_update tick, six strategies each emit
+# several gate/eval/emit events per market they consider, and the
+# fire-and-forget scheduling overhead alone was filling the event
+# loop.  Plan 0054 measured steady-state at ~150 in-flight peak
+# (2026-05-12), so the original 256 ceiling was unnecessarily
+# generous and the budget never bit in steady-state.
 #
 # Firehose events are observability, not load-bearing.  Drop them
-# under pressure rather than letting them gum up the event loop.  The
-# budget below is generous enough to never bite during normal
-# operation but hard-caps the leak surface area.
-_INFLIGHT_TASK_BUDGET = 256
+# under pressure rather than letting them gum up the event loop.
+# Two layers of backpressure now apply, in order:
+#
+# 1. **Min-verbosity floor (Plan 0054).** ``emit_*_nowait`` /
+#    ``emit_*`` short-circuit BEFORE building or scheduling the
+#    coroutine when ``tier_rank(verbosity) <
+#    _MIN_VERBOSITY_RANK``.  This is a pre-budget drop and bumps
+#    ``_below_floor_emission_drops``, not ``_dropped_emission_tasks``.
+#    Default floor is ``MURMUR`` (rank 2), which matches the UI's
+#    default volume dial and drops the WHISPER-tier per-gate
+#    evaluations that dominate the firehose load.
+# 2. **In-flight budget.** When the budget is saturated,
+#    ``_fire_and_forget`` closes the coroutine without scheduling
+#    and bumps ``_dropped_emission_tasks``.  64 is the post-Plan-0054
+#    ceiling — 2.5× the peak measured against a 5 strategy × 16
+#    market × 12 gate fan-out with the WHISPER stream already
+#    suppressed by the floor.
+_INFLIGHT_TASK_BUDGET = 64
 _inflight_emission_tasks: int = 0
 _dropped_emission_tasks: int = 0
+_below_floor_emission_drops: int = 0
 
 
 async def _refresh_binding_cache() -> None:
@@ -252,6 +267,55 @@ def tier_rank(verbosity: str | None) -> int:
     return _TIER_RANK.get(str(verbosity).strip().lower(), 0)
 
 
+# Plan 0054 — Min-verbosity floor (pre-budget, pre-task drop).
+#
+# ``_MIN_VERBOSITY_RANK`` is resolved lazily on the first emit call
+# and cached for the lifetime of the process.  Strategies fire
+# ``emit_*_nowait`` hundreds of times per second; reading
+# ``settings.FIREHOSE_MIN_VERBOSITY`` per call would itself
+# contribute to the load this floor exists to reduce.
+#
+# The knob is process-startup-only by design: changing
+# ``FIREHOSE_MIN_VERBOSITY`` in env requires a worker-trading
+# restart to take effect.  Live tuning via ``app_settings`` would
+# race with the cached read.  See Task 3 of plan 0054 in
+# ``docs/plans/completed/0054-cap-firehose-emission-load.md``.
+_MIN_VERBOSITY_RANK: int | None = None
+
+
+def _resolve_min_verbosity_rank() -> int:
+    """Read ``settings.FIREHOSE_MIN_VERBOSITY`` once and convert to rank.
+
+    Falls back to MURMUR (rank 2) when unset, unknown, or unreadable.
+    Imported lazily to avoid an import cycle if a strategy is loaded
+    before ``config`` finishes initialising.
+    """
+    try:
+        from config import settings  # local import — see docstring
+        raw = getattr(settings, "FIREHOSE_MIN_VERBOSITY", MURMUR)
+    except Exception:
+        raw = MURMUR
+    rank = tier_rank(raw)
+    return rank if rank > 0 else _TIER_RANK[MURMUR]
+
+
+def _below_floor(verbosity: str | None) -> bool:
+    """Return True when this verbosity is below the configured floor.
+
+    Side-effect: bumps ``_below_floor_emission_drops`` on True so the
+    counter surfaced via ``get_firehose_stats()`` reflects every
+    pre-budget drop.  Single-threaded asyncio context — no lock
+    needed on the increment.
+    """
+    global _MIN_VERBOSITY_RANK, _below_floor_emission_drops
+    if _MIN_VERBOSITY_RANK is None:
+        _MIN_VERBOSITY_RANK = _resolve_min_verbosity_rank()
+    if tier_rank(verbosity) < _MIN_VERBOSITY_RANK:
+        _below_floor_emission_drops += 1
+        return True
+    return False
+
+
 @dataclass(slots=True)
 class GateResult:
     """One gate evaluated for one market.
@@ -355,6 +419,7 @@ def get_firehose_stats() -> dict[str, int]:
     return {
         "inflight_emission_tasks": _inflight_emission_tasks,
         "dropped_emission_tasks_total": _dropped_emission_tasks,
+        "below_floor_emission_drops": _below_floor_emission_drops,
         "inflight_budget": _INFLIGHT_TASK_BUDGET,
     }
 
@@ -368,6 +433,8 @@ async def emit_gate(
     extra: dict[str, Any] | None = None,
 ) -> None:
     """Emit a single-gate decision (typically a rejection)."""
+    if _below_floor(verbosity):
+        return
     should_emit, bound_trader_ids = await _emit_should_fire(strategy_slug)
     if not should_emit:
         return
@@ -414,6 +481,8 @@ def emit_gate_nowait(
     Use from sync code paths (most strategy gates).  Hot path is
     unaffected.
     """
+    if _below_floor(verbosity):
+        return
     _fire_and_forget(
         emit_gate(
             strategy_slug=strategy_slug,
@@ -440,6 +509,8 @@ async def emit_evaluation(
     decision tree, including gates that didn't run because an
     earlier one short-circuited.
     """
+    if _below_floor(verbosity):
+        return
     should_emit, bound_trader_ids = await _emit_should_fire(strategy_slug)
     if not should_emit:
         return
@@ -484,6 +555,8 @@ def emit_evaluation_nowait(
     verbosity: str = WHISPER,
     extra: dict[str, Any] | None = None,
 ) -> None:
+    if _below_floor(verbosity):
+        return
     _fire_and_forget(
         emit_evaluation(
             strategy_slug=strategy_slug,
@@ -504,6 +577,8 @@ async def emit_emit(
     extra: dict[str, Any] | None = None,
 ) -> None:
     """An Opportunity was produced (passed every gate).  VOICE tier."""
+    if _below_floor(VOICE):
+        return
     should_emit, bound_trader_ids = await _emit_should_fire(strategy_slug)
     if not should_emit:
         return
@@ -543,6 +618,8 @@ def emit_emit_nowait(
     detail: str = "",
     extra: dict[str, Any] | None = None,
 ) -> None:
+    if _below_floor(VOICE):
+        return
     _fire_and_forget(
         emit_emit(
             strategy_slug=strategy_slug,

@@ -74,8 +74,10 @@ predictable.
 
 ### Postgres allocation on the production host
 
-The compose `postgres` service is sized for the production host
-`polyhome-1` (7.6 GiB total RAM, no swap). The relevant `command:`
+The compose `postgres` service is sized for the standard production
+host (`<HOMERUN_HOST>` — both `polyhome-prod` and `polyhome-1` are
+stack-identical 4-vCPU / 7.6 GiB RAM / no swap nodes, see
+[deploy-targets.md](deploy-targets.md)). The relevant `command:`
 flags in [docker-compose.yml](../../../docker-compose.yml) are:
 
 | Setting | Value | Why |

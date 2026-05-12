@@ -1,5 +1,8 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "_comment_1": "This is the single config file where literal SSH hostnames are legitimate.",
+  "_comment_2": "JSON-schema patterns do not support placeholders, so every allowed ssh recipe must be mirrored for both branch-derived targets.",
+  "_comment_3": "Mapping: main -> polyhome-prod, dev -> polyhome-1. Authoritative reference: docs/plans/architecture/deploy-targets.md.",
   "permissions": {
     "allow": [
       "Bash(git status:*)",
@@ -29,7 +32,17 @@
       "Bash(ssh polyhome-1 'cd /home/polyhome/homerun && docker compose logs --tail=*')",
       "Bash(ssh polyhome-1 'cd /home/polyhome/homerun && docker compose logs -n *')",
       "Bash(ssh polyhome-1 'cd /home/polyhome/homerun && docker compose exec -T postgres psql -U homerun -d homerun -c \"select*')",
-      "Bash(ssh polyhome-1 'cd /home/polyhome/homerun && docker compose exec -T postgres psql -U homerun -d homerun -c \"\\\\d*')"
+      "Bash(ssh polyhome-1 'cd /home/polyhome/homerun && docker compose exec -T postgres psql -U homerun -d homerun -c \"\\\\d*')",
+      "Bash(ssh polyhome-prod 'docker compose ps*')",
+      "Bash(ssh polyhome-prod 'docker compose logs --tail=*')",
+      "Bash(ssh polyhome-prod 'docker compose logs -n *')",
+      "Bash(ssh polyhome-prod 'curl -fsS http://127.0.0.1:8888/health*')",
+      "Bash(ssh polyhome-prod 'curl -fsS http://127.0.0.1:8888/api/*')",
+      "Bash(ssh polyhome-prod 'cd /home/polyhome/homerun && docker compose ps*')",
+      "Bash(ssh polyhome-prod 'cd /home/polyhome/homerun && docker compose logs --tail=*')",
+      "Bash(ssh polyhome-prod 'cd /home/polyhome/homerun && docker compose logs -n *')",
+      "Bash(ssh polyhome-prod 'cd /home/polyhome/homerun && docker compose exec -T postgres psql -U homerun -d homerun -c \"select*')",
+      "Bash(ssh polyhome-prod 'cd /home/polyhome/homerun && docker compose exec -T postgres psql -U homerun -d homerun -c \"\\\\d*')"
     ],
     "deny": [
       "Bash(curl http://localhost:*)",
@@ -46,7 +59,9 @@
       "Bash(git clean -fd*)",
       "Bash(docker compose down -v*)",
       "Bash(ssh polyhome-1 'rm -rf*')",
-      "Bash(ssh polyhome-1 'docker compose down*')"
+      "Bash(ssh polyhome-1 'docker compose down*')",
+      "Bash(ssh polyhome-prod 'rm -rf*')",
+      "Bash(ssh polyhome-prod 'docker compose down*')"
     ]
   },
   "hooks": {

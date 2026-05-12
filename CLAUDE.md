@@ -23,10 +23,16 @@ deployment, the database, logs, or "why doesn't X work":**
 ## The single most important fact
 
 **This project does NOT run on your local machine.** The application
-stack lives on remote server `polyhome-1` (SSH alias resolved via the
-operator's `~/.ssh/config`) under `/home/polyhome/homerun`. Locally is
-**editor + git only** — no postgres, no backend, no scanner, no Vite
-dev server.
+stack lives on a remote server (SSH alias resolved via the operator's
+`~/.ssh/config`) under `/home/polyhome/homerun`. Locally is **editor
++ git only** — no postgres, no backend, no scanner, no Vite dev
+server.
+
+The remote target is **branch-derived**: which server you talk to is
+selected by the current git branch, not by an editor preference. See
+[Which server am I on?](#which-server-am-i-on) below for the mapping
+recipe and the authoritative table in
+[`docs/plans/architecture/deploy-targets.md`](docs/plans/architecture/deploy-targets.md).
 
 Concretely:
 
@@ -37,47 +43,66 @@ Concretely:
 - `alembic upgrade head` locally — runs against an empty SQLite/PG, not
   the production schema.
 
+## Which server am I on?
+
+Run `git branch --show-current` as the first command of every session
+and substitute the result in the table below:
+
+| Branch | Environment | SSH alias       | Remote path                |
+|--------|-------------|-----------------|----------------------------|
+| `main` | production  | `polyhome-prod` | `/home/polyhome/homerun`   |
+| `dev`  | staging     | `polyhome-1`    | `/home/polyhome/homerun`   |
+
+Substitute the resolved alias for the placeholder `<HOMERUN_HOST>` in
+every command example below. The deploy script enforces this mapping
+and refuses cross-target syncs without `FORCE_HOST=1` — verify with
+`bash deploy/sync_remote.sh --dry-run-host` before any sync.
+
+Authoritative reference and `FORCE_HOST` semantics live in
+[`docs/plans/architecture/deploy-targets.md`](docs/plans/architecture/deploy-targets.md).
+
 Every diagnostic command must be wrapped in SSH:
 
 ```bash
 # Stack status
-ssh polyhome-1 'cd /home/polyhome/homerun && docker compose ps'
+ssh <HOMERUN_HOST> 'cd /home/polyhome/homerun && docker compose ps'
 
 # Logs (one-shot)
-ssh polyhome-1 'cd /home/polyhome/homerun && docker compose logs --tail=200 backend'
+ssh <HOMERUN_HOST> 'cd /home/polyhome/homerun && docker compose logs --tail=200 backend'
 
 # Stream logs
-ssh polyhome-1 'cd /home/polyhome/homerun && docker compose logs -f backend'
+ssh <HOMERUN_HOST> 'cd /home/polyhome/homerun && docker compose logs -f backend'
 
 # Hit the API (loopback only — basic auth bypassed)
-ssh polyhome-1 'curl -fsS http://127.0.0.1:8888/api/strategies' | jq
+ssh <HOMERUN_HOST> 'curl -fsS http://127.0.0.1:8888/api/strategies' | jq
 
 # Inspect the live database
-ssh polyhome-1 'cd /home/polyhome/homerun && docker compose exec -T postgres \
+ssh <HOMERUN_HOST> 'cd /home/polyhome/homerun && docker compose exec -T postgres \
   psql -U homerun -d homerun -c "select id, llm_provider from app_settings"'
 
 # Run a Python snippet inside the live backend image
-ssh polyhome-1 'cd /home/polyhome/homerun && docker compose exec -T backend python -c "..."'
+ssh <HOMERUN_HOST> 'cd /home/polyhome/homerun && docker compose exec -T backend python -c "..."'
 ```
 
 The full command catalog is in [`deploy/AGENTS.md`](deploy/AGENTS.md).
 
 ## Deploy cycle
 
-There is **no CI** that pushes to the server. Code reaches `polyhome-1`
-only when the operator runs `./deploy/sync_remote.sh` from this local
-checkout. `git push` does nothing for the running stack.
+There is **no CI** that pushes to the server. Code reaches the
+branch-derived target server only when the operator runs
+`./deploy/sync_remote.sh` from this local checkout. `git push` does
+nothing for the running stack.
 
 ```bash
 # Local: edit, commit, then deploy
-./deploy/sync_remote.sh                    # rsync + remote redeploy
+./deploy/sync_remote.sh                       # rsync + remote redeploy
 DEPLOY_AFTER_SYNC=0 ./deploy/sync_remote.sh   # sync without restart
 
 # Restart on server without rebuild (use GHCR images)
-ssh polyhome-1 'cd /home/polyhome/homerun && BUILD_IMAGES=0 bash deploy/remote_redeploy.sh'
+ssh <HOMERUN_HOST> 'cd /home/polyhome/homerun && BUILD_IMAGES=0 bash deploy/remote_redeploy.sh'
 
 # Restart a single container
-ssh polyhome-1 'cd /home/polyhome/homerun && docker compose restart backend'
+ssh <HOMERUN_HOST> 'cd /home/polyhome/homerun && docker compose restart backend'
 ```
 
 ## Documentation conventions
@@ -100,6 +125,11 @@ ssh polyhome-1 'cd /home/polyhome/homerun && docker compose restart backend'
 
 - Don't `git pull` on the server. The tree is rsynced, not cloned —
   there is no upstream to pull from.
+- Don't `git checkout`-and-sync without first running
+  `git branch --show-current` and confirming the resolved target.
+  The deploy script enforces branch → host with `FORCE_HOST=1` as
+  the only override — bypass on muscle memory and you push prod
+  code onto stage (or vice versa).
 - Don't edit files directly on the server (vim/nano over SSH). The
   next `sync_remote.sh --delete` will overwrite them.
 - Don't delete or `chown` `/home/polyhome/homerun/data/postgres/` —
@@ -148,5 +178,6 @@ ssh polyhome-1 'cd /home/polyhome/homerun && docker compose restart backend'
 | **Crypto fast-binary lane (parallel BTC/ETH/SOL/XRP pipeline + operator toggle)** | [`docs/plans/architecture/crypto-fast-binary-lane.md`](docs/plans/architecture/crypto-fast-binary-lane.md) |
 | **Pre-scanner market gating (regime / quality / monitor / prioritiser / depth / categories)** | [`docs/plans/architecture/market-quality-and-prioritization.md`](docs/plans/architecture/market-quality-and-prioritization.md) |
 | **Runtime knob-twists (DB-only, not in git): rollback recipes** | [`docs/operational/runtime-tweaks.md`](docs/operational/runtime-tweaks.md) |
+| **Branch-derived deploy targets (which SSH alias for which branch + the `<HOMERUN_HOST>` placeholder)** | [`docs/plans/architecture/deploy-targets.md`](docs/plans/architecture/deploy-targets.md) |
 | Active plan queue and ordering | [`docs/plans/plan-control-index.md`](docs/plans/plan-control-index.md) |
 | UI walkthrough, sandbox/demo mode | [`docs/UI_AND_DEMO_MODE.md`](docs/UI_AND_DEMO_MODE.md) |

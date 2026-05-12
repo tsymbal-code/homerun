@@ -7,12 +7,30 @@
 # CLAUDE.md and deploy/AGENTS.md so the agent doesn't waste a turn running
 # commands against an empty local stack.
 #
+# The reminder names the branch-derived target host so the example commands
+# the agent sees are already host-correct. The `case` block below mirrors
+# the one in `deploy/sync_remote.sh` and `scripts/run_tests_remote.sh`;
+# the authoritative branch → host mapping lives in
+# `docs/plans/architecture/deploy-targets.md`.
+#
 # Side effects: stdout only. No file writes, no network calls. Designed to
 # finish in well under 100 ms.
 #
 # To disable temporarily: chmod -x .claude/hooks/remind-ssh.sh.
 
 set -euo pipefail
+
+resolve_homerun_target() {
+  # Writes "branch host env_label" to stdout, or "unknown - -" when the
+  # branch is unmapped (detached HEAD, not a git repo, third environment).
+  local branch
+  branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)"
+  case "${branch}" in
+    main) printf '%s %s %s\n' "${branch}" "polyhome-prod" "PRODUCTION" ;;
+    dev)  printf '%s %s %s\n' "${branch}" "polyhome-1"    "STAGING" ;;
+    *)    printf '%s %s %s\n' "${branch}" "-"             "-" ;;
+  esac
+}
 
 # The payload is small JSON; if python3 is missing or the parse fails, just
 # exit silently — the hook must never block the user prompt.
@@ -33,20 +51,40 @@ fi
 pattern='localhost:[0-9]+|127\.0\.0\.1:[0-9]+|psql -h localhost|psql -h 127\.0\.0\.1|docker compose up|curl http://(localhost|127\.0\.0\.1)|alembic upgrade head'
 
 if echo "$prompt" | grep -qiE "$pattern"; then
-  cat <<'EOF'
+  read -r branch host env_label < <(resolve_homerun_target)
+
+  if [[ "${host}" == "-" ]]; then
+    cat <<EOF
 
 [homerun reminder] Heads up: this project does NOT run on localhost.
-The application stack lives on remote server `polyhome-1` under
-`/home/polyhome/homerun`. Local Postgres / backend / workers / Vite
-do not exist. Diagnostic commands must be wrapped:
+The application stack lives on a branch-derived remote server under
+\`/home/polyhome/homerun\`. Current branch \`${branch}\` is not mapped
+to a known target — resolve it from the SSOT before running any
+ssh/deploy command:
 
-    ssh polyhome-1 'cd /home/polyhome/homerun && docker compose ps'
-    ssh polyhome-1 'cd /home/polyhome/homerun && docker compose logs --tail=200 backend'
-    ssh polyhome-1 'curl -fsS http://127.0.0.1:8888/api/...'
-    ssh polyhome-1 'cd /home/polyhome/homerun && docker compose exec -T postgres psql -U homerun -d homerun -c "..."'
+    docs/plans/architecture/deploy-targets.md
 
-Full catalog: deploy/AGENTS.md. Rationale: CLAUDE.md § "The single most important fact".
+Then wrap diagnostic commands as:
+
+    ssh <HOMERUN_HOST> 'cd /home/polyhome/homerun && docker compose ps'
+    ssh <HOMERUN_HOST> 'cd /home/polyhome/homerun && docker compose logs --tail=200 backend'
+
+Full catalog: deploy/AGENTS.md.
 EOF
+  else
+    cat <<EOF
+
+[homerun reminder] Heads up: this project does NOT run on localhost.
+Current branch: ${branch} → target server: ${host} (${env_label}).
+All diagnostic commands must be wrapped:
+
+    ssh ${host} 'cd /home/polyhome/homerun && docker compose ps'
+    ssh ${host} 'cd /home/polyhome/homerun && docker compose logs --tail=200 backend'
+    ssh ${host} 'curl -fsS http://127.0.0.1:8888/api/...'
+
+Full catalog: deploy/AGENTS.md. Mapping: docs/plans/architecture/deploy-targets.md.
+EOF
+  fi
 fi
 
 exit 0

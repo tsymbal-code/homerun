@@ -158,6 +158,25 @@ class Settings(BaseSettings):
     TRADER_EVENTS_HOUSEKEEPER_BATCH_SIZE: int = 50_000
     TRADER_EVENTS_HOUSEKEEPER_BATCH_PAUSE_SECONDS: float = 0.1
 
+    # Plan 0054: ingest-side floor on strategy firehose emissions.
+    # Strategies emit per-gate evaluation events at multiple
+    # verbosity tiers (whisper / murmur / voice / shout). Under
+    # high load, WHISPER-tier emissions (per-market per-gate
+    # evaluations) dominate worker-trading's event loop. This
+    # knob sets the minimum tier the firehose will SCHEDULE; any
+    # emit below the floor is closed at the call site before
+    # ``_fire_and_forget`` allocates an asyncio task and before
+    # ``_inflight_emission_tasks`` ticks. Default MURMUR matches
+    # the UI's default volume dial and drops the ~99 % of
+    # WHISPER traffic that no consumer renders anyway. Set
+    # ``FIREHOSE_MIN_VERBOSITY=whisper`` (env-only) and restart
+    # ``worker-trading`` to restore the prior behaviour for a
+    # debug session. The knob is **process-startup-only** —
+    # ``services.strategies._firehose`` caches the resolved rank
+    # on first emit; a live ``app_settings`` toggle would race
+    # with that cache, so this field has no DB column.
+    FIREHOSE_MIN_VERBOSITY: str = "murmur"
+
     # Scanner Settings
     SCAN_WATCHDOG_SECONDS: int = 600  # Max seconds before a scan cycle is killed
     SCANNER_HEARTBEAT_INTERVAL_SECONDS: float = 5.0  # Worker heartbeat persistence cadence

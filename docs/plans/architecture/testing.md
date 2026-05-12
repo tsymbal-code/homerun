@@ -33,7 +33,7 @@ plans.
 | [backend/tests/test_main_lifespan_smoke.py](../../../backend/tests/test_main_lifespan_smoke.py) | Plan 0019 — verifies `import main`, `app` shape, full `lifespan` startup/shutdown via subprocess against a throwaway DB |
 | [backend/tests/test_alembic_roundtrip.py](../../../backend/tests/test_alembic_roundtrip.py) | Plan 0019 — head migration `downgrade → upgrade` round-trip on a stamped DB |
 | [backend/tests/test_*.py](../../../backend/tests/) | 197 test files, all `test_<subsystem>.py` |
-| [scripts/run_tests_remote.sh](../../../scripts/run_tests_remote.sh) | Plan 0019 — operator helper: `bash scripts/run_tests_remote.sh [pytest-args...]` runs the suite on `polyhome-1` against the live Postgres |
+| [scripts/run_tests_remote.sh](../../../scripts/run_tests_remote.sh) | Plan 0019 (extended in Plan 0056): operator helper. Resolves the branch-derived target (see [deploy-targets.md](deploy-targets.md)) and runs `bash scripts/run_tests_remote.sh [pytest-args...]` against the live Postgres there |
 | [.github/workflows/ci.yml](../../../.github/workflows/ci.yml) | Backend lint + tests (with `pytest-cov` summary, Plan 0019) + frontend tsc + frontend build |
 | [.github/workflows/sloppy.yml](../../../.github/workflows/sloppy.yml) | Code quality scan, fail-below threshold 60 |
 | [.github/workflows/greencheck.yml](../../../.github/workflows/greencheck.yml) | Auto-fix attempt on CI failure |
@@ -147,7 +147,9 @@ In CI these tests work because
 "single most important fact"). The operator-facing recipe for
 running pytest against the live remote stack is
 [`scripts/run_tests_remote.sh`](../../../scripts/run_tests_remote.sh)
-(Plan 0019): SSH into `polyhome-1`, `docker compose run --rm --no-deps`
+(Plan 0019, branch-aware after Plan 0056): SSH into the
+branch-derived target (see [deploy-targets.md](deploy-targets.md)),
+`docker compose run --rm --no-deps`
 a throwaway backend container with `backend/tests/` and
 `backend/pyproject.toml` bind-mounted in (the runtime image excludes
 `tests/` by `.dockerignore`), pointed at the running Postgres

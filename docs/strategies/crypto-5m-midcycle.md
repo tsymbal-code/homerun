@@ -90,10 +90,13 @@ Plan 0046 додав offline-бектест для `crypto_update`-страте�
 - Sweep робить cartesian-grid combinations і повертає
   `leaderboard` посортований за `composite_score = total_pnl_usd * win_rate`.
 
-**Curl-приклад** (виконувати з `polyhome-1`, не локально):
+**Curl-приклад** (виконувати з віддаленого хоста, не локально;
+`<HOMERUN_HOST>` — це `polyhome-prod` для `main` і `polyhome-1`
+для `dev`, див.
+[`docs/plans/architecture/deploy-targets.md`](../plans/architecture/deploy-targets.md)):
 
 ```bash
-ssh polyhome-1 'curl -fsS -X POST http://127.0.0.1:8888/api/validation/code-backtest/optimize-strategy \
+ssh <HOMERUN_HOST> 'curl -fsS -X POST http://127.0.0.1:8888/api/validation/code-backtest/optimize-strategy \
   -H "Content-Type: application/json" \
   -d "{
     \"strategy_slug\": \"crypto_5m_midcycle\",

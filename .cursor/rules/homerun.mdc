@@ -1,5 +1,5 @@
 ---
-description: Homerun base rules — read first. Project runs on remote polyhome-1, not localhost.
+description: Homerun base rules — read first. Project runs on a branch-derived remote host, not localhost.
 alwaysApply: true
 ---
 
@@ -11,14 +11,33 @@ and [`CLAUDE.md`](mdc:CLAUDE.md). Open them before any non-trivial
 task. The summary below is what you must internalize even before
 reading those.
 
+## First action of every session
+
+Before running any SSH/deploy command, determine the deploy target
+from the current branch:
+
+```bash
+git branch --show-current
+```
+
+Mapping (canonical: [`docs/plans/architecture/deploy-targets.md`](mdc:docs/plans/architecture/deploy-targets.md)):
+
+- `main` → `polyhome-prod` (production)
+- `dev`  → `polyhome-1`    (staging)
+
+Substitute the resolved host wherever this rule shows
+`<HOMERUN_HOST>`. The deploy script enforces the same mapping and
+refuses cross-target syncs without `FORCE_HOST=1`; pre-flight with
+`bash deploy/sync_remote.sh --dry-run-host` before any sync.
+
 ## The single most important fact
 
 **Homerun does NOT run on the operator's local machine.** The full
 application stack (postgres, redis, backend, three worker planes,
-frontend) lives on remote server `polyhome-1` (SSH alias resolved via
-`~/.ssh/config`) under `/home/polyhome/homerun`. Locally is **editor
-+ git only** — no postgres, no backend, no scanner, no Vite dev
-server.
+frontend) lives on the branch-derived remote target (SSH alias
+resolved via `~/.ssh/config`) under `/home/polyhome/homerun`. Locally
+is **editor + git only** — no postgres, no backend, no scanner, no
+Vite dev server.
 
 Concretely:
 
@@ -34,10 +53,10 @@ Concretely:
 Every diagnostic command must be wrapped in SSH:
 
 ```bash
-ssh polyhome-1 'cd /home/polyhome/homerun && docker compose ps'
-ssh polyhome-1 'cd /home/polyhome/homerun && docker compose logs --tail=200 backend'
-ssh polyhome-1 'curl -fsS http://127.0.0.1:8888/api/strategies' | jq
-ssh polyhome-1 'cd /home/polyhome/homerun && docker compose exec -T postgres \
+ssh <HOMERUN_HOST> 'cd /home/polyhome/homerun && docker compose ps'
+ssh <HOMERUN_HOST> 'cd /home/polyhome/homerun && docker compose logs --tail=200 backend'
+ssh <HOMERUN_HOST> 'curl -fsS http://127.0.0.1:8888/api/strategies' | jq
+ssh <HOMERUN_HOST> 'cd /home/polyhome/homerun && docker compose exec -T postgres \
   psql -U homerun -d homerun -c "select id, llm_provider from app_settings"'
 ```
 
@@ -53,8 +72,8 @@ stack — there is no CI deploying.
 ```bash
 ./deploy/sync_remote.sh                                  # rsync + remote redeploy
 DEPLOY_AFTER_SYNC=0 ./deploy/sync_remote.sh              # sync, don't restart
-ssh polyhome-1 'cd /home/polyhome/homerun && BUILD_IMAGES=0 bash deploy/remote_redeploy.sh'
-ssh polyhome-1 'cd /home/polyhome/homerun && docker compose restart backend'
+ssh <HOMERUN_HOST> 'cd /home/polyhome/homerun && BUILD_IMAGES=0 bash deploy/remote_redeploy.sh'
+ssh <HOMERUN_HOST> 'cd /home/polyhome/homerun && docker compose restart backend'
 ```
 
 ## Code conventions (excerpted from `agents.md`)
@@ -95,6 +114,10 @@ ssh polyhome-1 'cd /home/polyhome/homerun && docker compose restart backend'
   exclude `data/`, so an `rsync --delete` would wipe the server's
   bind mount.
 - Don't `docker compose up` locally and treat its output as prod.
+- Don't bypass the branch → host mapping. The deploy script's
+  `FORCE_HOST=1` escape hatch exists for deliberate cross-target
+  soaks, not for "I forgot which branch I'm on" — that is the moment
+  to run `git branch --show-current`, not to set `FORCE_HOST`.
 
 ## Where to read more
 
@@ -102,6 +125,7 @@ ssh polyhome-1 'cd /home/polyhome/homerun && docker compose restart backend'
 |---|---|
 | Full agent codex (architecture, patterns, footguns) | [`agents.md`](mdc:agents.md) |
 | Server access, logs, redeploy, recipes | [`deploy/AGENTS.md`](mdc:deploy/AGENTS.md) |
+| Branch → host mapping, `<HOMERUN_HOST>` placeholder, `FORCE_HOST` semantics | [`docs/plans/architecture/deploy-targets.md`](mdc:docs/plans/architecture/deploy-targets.md) |
 | Plans system + commit-trailer convention | [`docs/plans/README.md`](mdc:docs/plans/README.md) |
 | Runtime topology and worker planes | [`docs/plans/architecture/system-overview.md`](mdc:docs/plans/architecture/system-overview.md) |
 | Backend / Frontend / DB / Settings / Testing notes | [`docs/plans/architecture/`](mdc:docs/plans/architecture/) |

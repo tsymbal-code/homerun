@@ -26,8 +26,13 @@ code-editing workspace only — no postgres, no backend, no scanner, no
 frontend dev server. Treat the local checkout as source-of-truth for
 edits and nothing else.
 
-- **Server:** SSH alias `polyhome-1` (resolves via the operator's
-  `~/.ssh/config`). User `polyhome`. Repo path `/home/polyhome/homerun`.
+- **Server:** the SSH alias is **branch-derived**. Run
+  `git branch --show-current` and read the resolved alias from the
+  SSOT table in
+  [`docs/plans/architecture/deploy-targets.md`](docs/plans/architecture/deploy-targets.md).
+  Every command example below uses the placeholder `<HOMERUN_HOST>` —
+  substitute the resolved alias before running. User on the remote:
+  `polyhome`. Repo path on both targets: `/home/polyhome/homerun`.
 - **Edge:** host nginx (TLS + Basic Auth) → `127.0.0.1:3000` →
   `homerun-frontend` container → docker-net to `backend:8000`.
 - **Deploy flow:** edit locally → `./deploy/sync_remote.sh` rsyncs the
@@ -35,9 +40,12 @@ edits and nothing else.
   `docker compose down --remove-orphans && docker compose up -d --build`
   (or `pull` when `BUILD_IMAGES=0`). Migrations run automatically via
   the `migrate` one-shot service that `backend` and `worker-*` depend on.
+  The script resolves the target host from the branch and refuses
+  cross-target syncs without `FORCE_HOST=1`; verify with
+  `bash deploy/sync_remote.sh --dry-run-host` before any deploy.
 - **Logs / DB / state live ONLY on the server.** To inspect anything
   runtime — logs, postgres rows, redis, container status, `curl`-ing an
-  endpoint, `docker exec` — SSH to `polyhome-1` first. Do not run
+  endpoint, `docker exec` — SSH to `<HOMERUN_HOST>` first. Do not run
   `docker compose ...`, `psql`, `redis-cli`, `curl localhost:8888`, or
   similar against your local checkout: there is nothing to talk to, and
   any state you'd see would be stale or empty.
@@ -128,6 +136,7 @@ that code, in the same commit.
 | `services/crypto_service.py` (and crypto-lane glue in `market_runtime.py`) | [`crypto-fast-binary-lane.md`](docs/plans/architecture/crypto-fast-binary-lane.md) |
 | `services/market_regime.py`, `quality_filter.py`, `market_monitor.py`, `market_prioritizer.py`, `sport_classifier.py`, `category_buffers.py`, `depth_analyzer.py` | [`market-quality-and-prioritization.md`](docs/plans/architecture/market-quality-and-prioritization.md) |
 | `docker-compose.yml`, `deploy/**` | [`system-overview.md`](docs/plans/architecture/system-overview.md), [`deploy/AGENTS.md`](deploy/AGENTS.md) |
+| `deploy/sync_remote.sh`, `scripts/run_tests_remote.sh`, `.claude/hooks/remind-ssh.sh`, `.claude/settings.json` (host-targeting) | [`deploy-targets.md`](docs/plans/architecture/deploy-targets.md) |
 
 If the change is genuinely doc-irrelevant (a refactor with no
 contract change, no behaviour change), say so explicitly in the

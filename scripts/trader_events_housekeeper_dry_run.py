@@ -7,7 +7,9 @@ Useful before tuning ``trader_events_firehose_retention_days`` or
 first to check how much volume the new horizon would prune in the
 next 6 h cycle.
 
-Usage (from the live backend container on ``polyhome-1``):
+Usage (from the live backend container on the branch-derived host —
+see ``docs/plans/architecture/deploy-targets.md`` for the SSH
+alias for the current branch):
 
     docker compose exec -T backend python -m \
         scripts.trader_events_housekeeper_dry_run

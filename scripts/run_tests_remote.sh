@@ -1,8 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Run the backend pytest suite on the remote `polyhome-1` host against
-# the live Postgres container, without disturbing the running stack.
+# Run the backend pytest suite on the branch-derived remote host
+# against the live Postgres container, without disturbing the running
+# stack.
+#
+# Target resolution
+# -----------------
+# The remote target is derived from the current git branch, matching
+# `deploy/sync_remote.sh`. See
+# `docs/plans/architecture/deploy-targets.md` for the SSOT mapping.
+# The `case` block below MUST stay in lock-step with the deploy
+# script's resolver and the hook in `.claude/hooks/remind-ssh.sh`.
 #
 # Why this script exists
 # ----------------------
@@ -14,13 +23,14 @@ set -euo pipefail
 # running pytest locally fails with `ConnectionRefusedError` or
 # import-time errors well before any test executes.
 #
-# This script bridges both gaps: it SSHes to polyhome-1 and starts a
-# throwaway backend container with the rsynced `backend/tests/`
-# directory bind-mounted in, pointed at the running Postgres service
-# inside the compose network.  The throwaway container shares the
-# compose network so DNS resolves `postgres`/`redis` correctly, but
-# `--no-deps` + `--rm` keep it from touching the long-running
-# backend / worker containers and from leaving state behind.
+# This script bridges both gaps: it SSHes to the branch-derived
+# target and starts a throwaway backend container with the rsynced
+# `backend/tests/` directory bind-mounted in, pointed at the running
+# Postgres service inside the compose network.  The throwaway
+# container shares the compose network so DNS resolves
+# `postgres`/`redis` correctly, but `--no-deps` + `--rm` keep it from
+# touching the long-running backend / worker containers and from
+# leaving state behind.
 #
 # Throwaway databases (allocated by `build_postgres_session_factory`
 # in tests that need a real Postgres) are created with the `homerun`
@@ -37,11 +47,35 @@ set -euo pipefail
 #   bash scripts/run_tests_remote.sh -k 'lifespan or alembic_roundtrip'
 #   bash scripts/run_tests_remote.sh -m 'not slow'
 #
-# Override the SSH alias or remote path with env vars:
-#   SSH_HOST=other-host REMOTE_PATH=/srv/homerun bash scripts/run_tests_remote.sh
+# Override the SSH alias or remote path with env vars (deliberate,
+# not workflow). Cross-target overrides require `FORCE_HOST=1`:
+#   FORCE_HOST=1 SSH_HOST=polyhome-prod bash scripts/run_tests_remote.sh
+#   REMOTE_PATH=/srv/homerun bash scripts/run_tests_remote.sh
 
-SSH_HOST="${SSH_HOST:-polyhome-1}"
+CURRENT_BRANCH="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)"
+case "${CURRENT_BRANCH}" in
+  main) DERIVED_HOST="polyhome-prod" ;;
+  dev)  DERIVED_HOST="polyhome-1"    ;;
+  *)
+    echo "REFUSING: branch '${CURRENT_BRANCH}' is not mapped to a deploy target." >&2
+    echo "See docs/plans/architecture/deploy-targets.md for the mapping." >&2
+    exit 1
+    ;;
+esac
+
+SSH_HOST="${SSH_HOST:-${DERIVED_HOST}}"
 REMOTE_PATH="${REMOTE_PATH:-/home/polyhome/homerun}"
+
+if [[ "${SSH_HOST}" != "${DERIVED_HOST}" && "${FORCE_HOST:-0}" != "1" ]]; then
+  echo "REFUSING: branch '${CURRENT_BRANCH}' is mapped to '${DERIVED_HOST}'" >&2
+  echo "         but SSH_HOST is set to '${SSH_HOST}'." >&2
+  echo "  To override deliberately: FORCE_HOST=1 SSH_HOST=${SSH_HOST} bash scripts/run_tests_remote.sh" >&2
+  exit 1
+fi
+
+if [[ "${SSH_HOST}" != "${DERIVED_HOST}" ]]; then
+  echo "WARN: cross-target test run — branch=${CURRENT_BRANCH} (${DERIVED_HOST}) -> SSH_HOST=${SSH_HOST}" >&2
+fi
 
 # Default arguments mirror the CI invocation when the caller passes
 # nothing.  Once a caller supplies any positional, take theirs verbatim.

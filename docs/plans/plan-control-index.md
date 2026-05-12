@@ -98,6 +98,10 @@ notes.
 | 0051 | [REST book-fallback for crypto_5m_last_outcome](completed/0051-rest-book-fallback-for-crypto-5m-last-outcome.md) | B        | 0047          |
 | 0052 | [Grace period in expire_source_signals_except](completed/0052-grace-period-in-expire-source-signals-except.md) | R        | 0011, 0047, 0051 |
 | 0053 | [Fast-trader signal cache miss between signal_bus INSERT and intent_runtime read](backlog/0053-fast-trader-signal-cache-miss-between-signal-bus-insert-and-runtime-read.md) | R        | 0010, 0011, 0032, 0044, 0052 |
+| 0054 | [Cap firehose emission load to unblock copy-trade signal-to-decision throughput](0054-cap-firehose-emission-load.md) | R        | 0044, 0049    |
+| 0055 | [Raise the copy-trade signal-processor concurrency ceiling](0055-copy-trade-processor-concurrency-ceiling.md) | R        | 0054          |
+| 0056 | [Branch-derived deploy targets (unify prod and stage in one repo)](completed/0056-branch-derived-deploy-targets.md) | D        | —             |
+| 0057 | [Normal-tier runtime_sequence cursor race for trader signal consumption](0057-normal-tier-runtime-sequence-cursor-race.md) | R        | 0054, 0053    |
 
 When adding a row: keep this table sorted by ID ascending. Don't
 re-number plans — gaps in IDs are normal and expected (deleted or
@@ -471,6 +475,113 @@ Only notes that aren't obvious from the title. All plans must follow
   trade_signals → 8 trader_decisions for the 18:30-19:00 window;
   post-fix pass criterion is `count(trader_decisions) ≥
   0.9 × count(trade_signals)`.
+- **Plan 0054 — Cap firehose emission load.** Refactor /
+  hardening (R). Opportunistic, observability-only fix targeting
+  `worker-trading` event-loop saturation: lowers
+  `_INFLIGHT_TASK_BUDGET` from 256 → 64 in
+  `backend/services/strategies/_firehose.py` and adds a
+  `FIREHOSE_MIN_VERBOSITY` env knob (default `MURMUR`) that
+  short-circuits sub-floor emissions before
+  `_fire_and_forget` allocates an asyncio task. Targets the
+  `Focused - 0x10c95474a8` copy-trade bot
+  (`trader_id=8c1d3d6561e94c37a81ef351bd5fc071`) which under the
+  current load mix (5 × `crypto_5m_midcycle` + 1 ×
+  `crypto_5m_last_outcome` + the copy bot) was consuming < 30 %
+  of incoming `traders_copy_trade` signals because the orchestrator
+  cycle stretched to 10 s per signal and `max_signal_age_seconds=120`
+  expired the rest. Task 1 is a pre-fix evidence gate that has to
+  disambiguate event-loop saturation (α — fixable here) from
+  per-signal Postgres latency (β — needs `trader_decisions.payload_json`
+  thinning instead); the operator must read Task 1's verdict before
+  letting Tasks 2-4 ship.   Out-of-scope: the normal-tier mirror of
+  Plan 0053's branch-C cursor race (3 missed signals over a 30 min
+  audit) — that opens as Plan 0057 immediately after this one.
+  Complementary to plan 0049's retention sweep (which trims the
+  *output* of the firehose); this plan caps the *input*.
+  **Outcome (2026-05-12):** technical Tasks 2-7 landed. α-side
+  load collapsed by **−99.86 %** (whisper firehose: 61/s → 0/s);
+  `Trader cycle slow` events fell from 2/30 min to **0/30 min**;
+  consumption gaps ≥ 30 s collapsed from 9 to 3. Coverage and
+  p99 acceptance (≥ 90 % / ≤ 5 s) **failed** because the residual
+  is the normal-tier cursor race — see Plan 0057. Plan 0054 stays
+  active until Plan 0057 ships, at which point both move to
+  `completed/` together (Plan 0057 § Task 7 owns the
+  paired `git mv`).
+- **Plan 0055 — Raise the copy-trade signal-processor
+  concurrency ceiling.** Refactor / hardening (R). Operator's
+  diagnosis of Plan 0054's residual: post-fix coverage tracks
+  signal rate linearly (76 % @ 17 sig/min → 6 % @ 48 sig/min),
+  pointing at the 8 hardcoded `_processor_loop` coroutines in
+  [`backend/services/traders_copy_trade_signal_service.py`](../../backend/services/traders_copy_trade_signal_service.py)
+  draining one `asyncio.Queue(maxsize=20000)`. At burst rates
+  > 30 signals/min the queue depth grows until signals exceed
+  `max_signal_age_seconds=100` inside the
+  `traders_copy_trade` strategy and are dropped pre-decision.
+  **Iteration 1:** expose the concurrency as a hot-reloadable
+  `Settings` field
+  (`TRADERS_COPY_TRADE_PROCESSOR_CONCURRENCY`, default **24**,
+  range 1–64) backed by `app_settings`, surfaced in the
+  Settings UI under "Traders / Copy-Trade Pipeline", and read
+  by the service's `__init__`. **Iteration 2** (gated on
+  Iteration 1 measurement, scoped in Task 4 as a separate plan):
+  picks between DB-write batching, a `worker-copy-trade`
+  plane split, or a different boring-knob lift depending on
+  whether the residual is DB-bound, CPU-bound, or
+  permit-starved. **Secondary scope:** the same
+  `_processor_loop` saturation deterministically breaches the
+  `_FAST_LEG_SUBMIT_TIMEOUT_SECONDS = 5.0` guard in
+  [`backend/services/trader_orchestrator/fast_submit.py`](../../backend/services/trader_orchestrator/fast_submit.py)
+  on `mode=live` crypto orders, even though the strategy's
+  evaluate phase passes — that is why prod has 0 executed
+  crypto orders while stage (shadow-mode, no CLOB) works
+  normally. Acceptance: copy-trade coverage ≥ 75 % AND p99
+  ≤ 10 s AND crypto CLOB timeouts ≤ 1 / 30 min across the 5
+  clones. Sibling to Plan 0057 (cursor race) — both
+  diagnose Plan 0054's coverage shortfall, possibly both
+  fixes are required. Prereq: Plan 0054.
+- **Plan 0057 — Normal-tier runtime_sequence cursor race.**
+  Refactor / hardening (R). Direct follow-up to Plan 0054's
+  Out-of-scope. The trader orchestrator's per-trader
+  `runtime_sequence` cursor advances past pending
+  `trade_signals` rows when newer signals commit their
+  `runtime_sequence` before older ones do; the trader silently
+  skips them. Plan 0053 documents this at the **fast** tier;
+  Plan 0054's post-fix evidence proves the same race at the
+  **normal** tier (41 of 86 lead-wallet signals missing from
+  `trader_signal_consumption` for `Focused - 0x10c95474a8` in a
+  30-min window where the worker had idle slack). Fix shape
+  (per Task 1 decision): bounded re-scan window
+  `(cursor - window, cursor]` with `INSERT … ON CONFLICT
+  (trader_id, signal_id) DO NOTHING` for idempotent
+  consumption. Cross-tier — must coordinate with the
+  fast-tier helper in Plan 0053. Acceptance:
+  signal-to-decision coverage ≥ 90 % AND ≤ 3 absolute signals
+  missing from `trader_signal_consumption` per 30-min window.
+  Note: 0057's siblings are Plan 0055 (processor concurrency
+  ceiling — operator's parallel diagnosis of the same Plan 0054
+  residual, rate-dependent coverage drop) and Plan 0053
+  (fast-tier mirror). If acceptance fails after both 0057 and
+  0055, escalate to a process-model split plan (Options 1–3 in
+  [`architecture/worker-trading.md`](architecture/worker-trading.md);
+  use the next free number — 0056 is taken by
+  [`completed/0056-branch-derived-deploy-targets.md`](completed/0056-branch-derived-deploy-targets.md)).
+- **Plan 0056 — Branch-derived deploy targets.** Documentation /
+  tooling (D). Prerequisites: —. Lands the merge of the prod and
+  staging repos into one branched repo (`main → polyhome-prod`,
+  `dev → polyhome-1`). Introduces a single SSOT
+  ([`architecture/deploy-targets.md`](architecture/deploy-targets.md))
+  and a `<HOMERUN_HOST>` placeholder used by every agent-facing
+  doc and recipe; the literal hostname survives only in the
+  `case` blocks of `deploy/sync_remote.sh`,
+  `scripts/run_tests_remote.sh`, `.claude/hooks/remind-ssh.sh`,
+  and the Bash allowlist in `.claude/settings.json` (JSON-schema
+  patterns cannot use placeholders). `deploy/sync_remote.sh`
+  gains a `--dry-run-host` preview and a `FORCE_HOST=1` escape
+  hatch for deliberate cross-target soaks. No runtime code
+  changes — only docs, hooks, the deploy script's resolver, and
+  the test-runner. Prerequisite for any future plan that adds a
+  third environment (preview / hotfix-soak): extends the `case`
+  block in one place, no doc surgery needed.
 - **Plan 0049 — Retention housekeeper for `trader_events`.**
   Refactor / hardening (R). Direct follow-up to plan 0044, which
   unlocked the volume that triggered this plan. Plan 0044's

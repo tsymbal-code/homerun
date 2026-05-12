@@ -50,10 +50,12 @@ worker plane її ганяє і на які події вона підписан
 `news_momentum_breakout`, `prob_surface_arb`, `settlement_lag`,
 `stat_arb`, `temporal_decay`, `vpin_toxicity`, `weather_distribution`.
 
-Перевірити поточний стан самостійно:
+Перевірити поточний стан самостійно (де `<HOMERUN_HOST>` — це
+`polyhome-prod` для гілки `main` і `polyhome-1` для `dev`, див.
+[`docs/plans/architecture/deploy-targets.md`](../plans/architecture/deploy-targets.md)):
 
 ```bash
-ssh polyhome-1 'cd /home/polyhome/homerun && docker compose exec -T \
+ssh <HOMERUN_HOST> 'cd /home/polyhome/homerun && docker compose exec -T \
   postgres psql -U homerun -d homerun -c \
   "select slug, enabled, status from strategies order by enabled desc, slug"'
 ```

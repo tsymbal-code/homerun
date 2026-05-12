@@ -167,7 +167,8 @@ HOMERUN_BACKTEST_POLL_INTERVAL_SECONDS         (env, default 3 s)
   stalls. Operators can `cancel` a job from the UI; otherwise
   consider raising `max_iterations` rather than spinning new jobs.
 - **Backtest CPU saturation.** Each backtest pegs one core. Three
-  concurrent backtests on a 4-vCPU host (the `polyhome-1` size)
+  concurrent backtests on a 4-vCPU host (the standard
+  `<HOMERUN_HOST>` size; see [deploy-targets.md](deploy-targets.md))
   starves everything else on this plane. The single-job-at-a-time
   worker is intentional.
 - **Polybacktest empty data.** A successful import with zero

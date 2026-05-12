@@ -173,14 +173,16 @@ Use this in order. Each step either confirms the layer is healthy or
 isolates the failure to one stage. Stop when you find a layer with
 zero activity that should have activity.
 
-All commands assume `polyhome-1` SSH alias from
-[`deploy/AGENTS.md`](../../../deploy/AGENTS.md). Each section has a
+All commands use the `<HOMERUN_HOST>` placeholder — substitute the
+branch-derived SSH alias (run `git branch --show-current`; canonical
+mapping in
+[`deploy-targets.md`](deploy-targets.md)). Each section has a
 copy-pasteable one-liner.
 
 ### Step 0 — Verify the stack is up
 
 ```bash
-ssh polyhome-1 'cd /home/polyhome/homerun && docker compose ps'
+ssh <HOMERUN_HOST> 'cd /home/polyhome/homerun && docker compose ps'
 ```
 
 All seven containers should be `Up (healthy)` (frontend has no
@@ -190,7 +192,7 @@ the last few minutes, expect partial decision history.
 ### Step 1 — Orchestrator + control state
 
 ```bash
-ssh polyhome-1 'curl -fsS http://127.0.0.1:8888/api/trader-orchestrator/overview' \
+ssh <HOMERUN_HOST> 'curl -fsS http://127.0.0.1:8888/api/trader-orchestrator/overview' \
   > /tmp/orch.json && jq '{
     control: {mode: .control.mode, paused: .control.is_paused, kill_switch: .control.kill_switch, selected_account: .control.settings.selected_account_id, enabled_strategies: .control.settings.enabled_strategies},
     worker: {running: .worker.running, traders_total: .worker.traders_total, traders_running: .worker.traders_running, decisions_count: .worker.decisions_count, orders_count: .worker.orders_count, last_error: .worker.last_error, current_activity: .worker.current_activity}
@@ -208,7 +210,7 @@ mean "no bot exists."
 ### Step 2 — Bot configs
 
 ```bash
-ssh polyhome-1 'curl -fsS http://127.0.0.1:8888/api/traders' > /tmp/traders.json
+ssh <HOMERUN_HOST> 'curl -fsS http://127.0.0.1:8888/api/traders' > /tmp/traders.json
 jq '.traders[] | {name, mode, is_enabled, is_paused, block_new_orders,
   sources: [.source_configs[]? | "\(.source_key)/\(.strategy_key)"],
   position_size_usd: .risk_limits.max_position_notional_usd,
@@ -229,7 +231,7 @@ Look for:
 ### Step 3 — Signal flow (are upstream signals arriving?)
 
 ```bash
-ssh polyhome-1 "cd /home/polyhome/homerun && docker compose exec -T postgres \
+ssh <HOMERUN_HOST> "cd /home/polyhome/homerun && docker compose exec -T postgres \
   psql -U homerun -d homerun -c \"
   select source, count(*) total,
     sum((created_at > now() - interval '1 hour')::int) recent_1h,
@@ -251,7 +253,7 @@ them.
 For the `traders/*` family, check the wallet pool too:
 
 ```bash
-ssh polyhome-1 "cd /home/polyhome/homerun && docker compose exec -T postgres \
+ssh <HOMERUN_HOST> "cd /home/polyhome/homerun && docker compose exec -T postgres \
   psql -U homerun -d homerun -c \"
   select 'tracked: ' || count(*) from tracked_wallets;
   select 'discovered_pool: ' || count(*) from discovered_wallets;
@@ -263,7 +265,7 @@ If `tracked + pool` is empty, `traders/*` signals will never appear.
 ### Step 4 — Decision activity (is the orchestrator routing?)
 
 ```bash
-ssh polyhome-1 "cd /home/polyhome/homerun && docker compose exec -T postgres \
+ssh <HOMERUN_HOST> "cd /home/polyhome/homerun && docker compose exec -T postgres \
   psql -U homerun -d homerun -c \"
   select t.name, d.decision, count(*),
     substring(d.reason from 1 for 80) as reason_sample
@@ -291,7 +293,7 @@ signals. Cross-check with Step 5.
 ### Step 5 — Signal consumption per bot (deeper-dive routing)
 
 ```bash
-ssh polyhome-1 "cd /home/polyhome/homerun && docker compose exec -T postgres \
+ssh <HOMERUN_HOST> "cd /home/polyhome/homerun && docker compose exec -T postgres \
   psql -U homerun -d homerun -c \"
   select t.name, count(*),
     sum((c.outcome='selected')::int) selected,
@@ -314,7 +316,7 @@ same reason, that's strategy-level filtering. If most are
 ### Step 6 — Decision checks (which specific gate?)
 
 ```bash
-ssh polyhome-1 "cd /home/polyhome/homerun && docker compose exec -T postgres \
+ssh <HOMERUN_HOST> "cd /home/polyhome/homerun && docker compose exec -T postgres \
   psql -U homerun -d homerun -c \"
   select dc.check_name, dc.status, count(*),
     substring(dc.detail from 1 for 80) as detail_sample
@@ -344,7 +346,7 @@ often, with what detail**. Common gates and their meaning:
 ### Step 7 — Order materialisation (selected → submitted)
 
 ```bash
-ssh polyhome-1 "cd /home/polyhome/homerun && docker compose exec -T postgres \
+ssh <HOMERUN_HOST> "cd /home/polyhome/homerun && docker compose exec -T postgres \
   psql -U homerun -d homerun -c \"
   select t.name,
     (select count(*) from trader_orders o where o.trader_id=t.id and o.created_at > now() - interval '15 min') trader_orders,
@@ -405,7 +407,7 @@ or strategy slug:
 
 ```bash
 TRADER_NAME="Sandbox - Tail-End"
-ssh polyhome-1 "cd /home/polyhome/homerun && docker compose logs --since 10m worker-trading 2>&1 \
+ssh <HOMERUN_HOST> "cd /home/polyhome/homerun && docker compose logs --since 10m worker-trading 2>&1 \
   | grep -iE \"$TRADER_NAME|tail_end_carry|preflight|fast_submit|reject|skip|gate\" | tail -50"
 ```
 

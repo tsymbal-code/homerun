@@ -16,8 +16,8 @@ fictional local stack, and waste the operator's time. Don't.
 
 | Layer | Location |
 |---|---|
-| Application stack (postgres, redis, backend, 3 workers, frontend) | Remote server **`polyhome-1`** under `/home/polyhome/homerun` |
-| Edge HTTPS + Basic Auth | Host nginx on `polyhome-1` (config: `deploy/nginx/homerun.conf`) |
+| Application stack (postgres, redis, backend, 3 workers, frontend) | Branch-derived remote server (see [Which server am I on?](#which-server-am-i-on)) under `/home/polyhome/homerun` |
+| Edge HTTPS + Basic Auth | Host nginx on the branch-derived target (config: `deploy/nginx/homerun.conf`) |
 | Source of truth for code | Operator's local checkout (this repo) |
 | Source of truth for state (DB rows, settings, secrets, usage logs) | Server's `/home/polyhome/homerun/data/postgres` and `app_settings` table |
 
@@ -27,18 +27,48 @@ the operator looks at the prod URL through nginx, not at `localhost:3000`.
 
 ---
 
-## SSH access
+## Which server am I on?
 
-The operator has `polyhome-1` configured in `~/.ssh/config`. From there:
+The remote target is selected by the current git branch — the operator
+keeps prod and stage in one repo, two branches:
+
+| Branch | Environment | SSH alias       | Remote path                |
+|--------|-------------|-----------------|----------------------------|
+| `main` | production  | `polyhome-prod` | `/home/polyhome/homerun`   |
+| `dev`  | staging     | `polyhome-1`    | `/home/polyhome/homerun`   |
+
+Run as the first command of every session:
 
 ```bash
-ssh polyhome-1                              # interactive shell as `polyhome`
-ssh polyhome-1 'cd /home/polyhome/homerun && docker compose ps'
+git branch --show-current
+```
+
+Substitute the resolved SSH alias for the placeholder `<HOMERUN_HOST>`
+in every command example in this file. The deploy script enforces the
+mapping and refuses cross-target syncs without `FORCE_HOST=1`; pre-flight
+with `bash deploy/sync_remote.sh --dry-run-host` before any sync.
+
+Authoritative reference (including `FORCE_HOST` semantics and the rule
+that this is the ONLY place hostname literals appear as authoritative
+configuration):
+[`docs/plans/architecture/deploy-targets.md`](../docs/plans/architecture/deploy-targets.md).
+
+---
+
+## SSH access
+
+The operator has both `polyhome-prod` and `polyhome-1` configured in
+`~/.ssh/config`. From there:
+
+```bash
+ssh <HOMERUN_HOST>                              # interactive shell as `polyhome`
+ssh <HOMERUN_HOST> 'cd /home/polyhome/homerun && docker compose ps'
 ```
 
 Every diagnostic command in this file assumes you're either in an
-`ssh polyhome-1` session or wrapping the command with `ssh polyhome-1
-'... '`. There is no other way to reach the running stack.
+`ssh <HOMERUN_HOST>` session or wrapping the command with
+`ssh <HOMERUN_HOST> '... '`. There is no other way to reach the
+running stack.
 
 ---
 
@@ -103,7 +133,7 @@ Application code logs as JSON via `backend/utils/logger.py`; uvicorn
 prints its own access lines.
 
 ```bash
-ssh polyhome-1
+ssh <HOMERUN_HOST>
 cd /home/polyhome/homerun
 
 # All services, follow:
@@ -145,7 +175,7 @@ Postgres is bound to loopback only. Use the container directly — much
 easier than wrestling with the host port mapping:
 
 ```bash
-ssh polyhome-1
+ssh <HOMERUN_HOST>
 cd /home/polyhome/homerun
 
 # Open a psql shell inside the postgres container:
@@ -209,20 +239,20 @@ server tree is rsynced, not cloned.
 DEPLOY_AFTER_SYNC=0 ./deploy/sync_remote.sh
 
 # Restart on server without rebuilding (use GHCR images instead):
-ssh polyhome-1 'cd /home/polyhome/homerun && BUILD_IMAGES=0 bash deploy/remote_redeploy.sh'
+ssh <HOMERUN_HOST> 'cd /home/polyhome/homerun && BUILD_IMAGES=0 bash deploy/remote_redeploy.sh'
 
 # Restart a single container without full down/up:
-ssh polyhome-1 'cd /home/polyhome/homerun && docker compose restart backend'
+ssh <HOMERUN_HOST> 'cd /home/polyhome/homerun && docker compose restart backend'
 
 # Force-rebuild only the backend image and recreate that one service:
-ssh polyhome-1 'cd /home/polyhome/homerun && docker compose up -d --build --no-deps backend'
+ssh <HOMERUN_HOST> 'cd /home/polyhome/homerun && docker compose up -d --build --no-deps backend'
 ```
 
 After any redeploy:
 
 ```bash
-ssh polyhome-1 'cd /home/polyhome/homerun && docker compose ps'
-ssh polyhome-1 'cd /home/polyhome/homerun && docker compose logs --tail=80 backend'
+ssh <HOMERUN_HOST> 'cd /home/polyhome/homerun && docker compose ps'
+ssh <HOMERUN_HOST> 'cd /home/polyhome/homerun && docker compose logs --tail=80 backend'
 ```
 
 Healthy = all services `Up (healthy)` except `migrate` (which is `Exited (0)` — that's success).
@@ -239,13 +269,13 @@ also excludes `tests/` from the build context (see
 `file or directory not found`.
 
 The recipe is [scripts/run_tests_remote.sh](../scripts/run_tests_remote.sh):
-it SSHes to `polyhome-1` and starts a throwaway `backend` container
-with `--no-deps` (does not touch the long-lived stack), bind-mounts
-the rsynced `backend/tests/` and `backend/pyproject.toml` into the
-image's expected paths, and points `DATABASE_URL` at the running
-`postgres` service. Tests that need a real DB allocate throwaway
-databases via `build_postgres_session_factory` and drop them on
-teardown.
+it resolves the branch-derived target, SSHes to `<HOMERUN_HOST>`, and
+starts a throwaway `backend` container with `--no-deps` (does not
+touch the long-lived stack), bind-mounts the rsynced `backend/tests/`
+and `backend/pyproject.toml` into the image's expected paths, and
+points `DATABASE_URL` at the running `postgres` service. Tests that
+need a real DB allocate throwaway databases via
+`build_postgres_session_factory` and drop them on teardown.
 
 ```bash
 bash scripts/run_tests_remote.sh                                # full suite
@@ -271,7 +301,7 @@ marked today — the existing 195 files predate the registry.
    before syncing, and never have a local `data/postgres/` directory.
    If you're about to sync and you're unsure, do a dry run first:
    ```bash
-   rsync -avzn --delete --exclude '.git/' ./ polyhome-1:/home/polyhome/homerun/
+   rsync -avzn --delete --exclude '.git/' ./ <HOMERUN_HOST>:/home/polyhome/homerun/
    ```
 
 2. **Frontend port binding.** `docker-compose.yml` declares the
